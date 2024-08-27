@@ -10,6 +10,8 @@ from ast import literal_eval
 # create interactive plot with gradio
 import gradio as gr
 from gradio.components import scatter_plot
+import requests
+
 
 # load the embeddings from the json files
 folder_path = 'embeddings'
@@ -47,7 +49,7 @@ df_tsne = df.copy()
 df_tsne['tsne_x'] = tsne_embeddings[:, 0]
 df_tsne['tsne_y'] = tsne_embeddings[:, 1]
 
-embeddings = np.array(df['embedding'].map(lambda x: np.array(x[0])))
+embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
 embeddings = np.stack(embeddings)
 
 # add interactive tab to choose the dimension of the embeddings and then plt the embeddings, two values between 0 and 1536
@@ -80,6 +82,35 @@ def get_embeddings(dim1, dim2):
 
     return plot
 
+def get_embedding_from_api(text, url="http://localhost:8000/embed"):
+    payload = {"text": text}
+    headers = {"Content-Type": "application/json"}
+    
+    response = requests.post(url, data=json.dumps(payload), headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()["embedding"], response.json()["num_tokens"]
+    else:
+        print(f"Error: {response.status_code}")
+        print(response.text)
+        return None
+
+def get_similar_embeddings(query):
+    # get the embedding from the api
+    embedding, num_tokens = get_embedding_from_api(query)
+
+    # calculate the cosine similarity between the query embedding and the embeddings in the dataframe
+    cosine_similarities = np.dot(embeddings, embedding)
+    # get the indices of the top 5 most similar embeddings
+    top_indices = np.argsort(cosine_similarities)[::-1][:5]
+    # get the titles of the most similar embeddings
+    similar_titles = df.iloc[top_indices]['title'].tolist()
+    # get the abstracts of the most similar embeddings
+    similar_abstracts = df.iloc[top_indices]['abstract'].tolist()
+
+    return similar_titles, similar_abstracts
+
+
 # create interactive gr.ScatterPlot
 
 with gr.Blocks() as demo:
@@ -101,7 +132,14 @@ with gr.Blocks() as demo:
            
                 gr.Interface(get_embeddings, [gr.Textbox("0", label="Dimension 1", info="Enter a value between 0 and 1024", min_width=200),
                                             gr.Textbox("1", label="Dimension 2", info="Enter a value between 0 and 1024", min_width=200)], scatter_plot.ScatterPlot(width=600), title="Embeddings of abstracts")
-
+                
+        # add a tab that allows entering a query and then displays the most similar embeddings, use cosine similarity. the result should be a list of the titles of the most similar embeddings, showing the title and the abstract of the most similar embedding
+        with gr.Tab("Query"):
+            query = gr.Textbox("Enter a query", label="Query")
+            submit = gr.Button("Submit")
+            similar_titles = gr.Textbox("Most similar embeddings", label="Most similar embeddings")
+            similar_abstracts = gr.Textbox("Most similar embeddings", label="Most similar embeddings")
+            submit.click(get_similar_embeddings, query, [similar_titles, similar_abstracts])
             
 
 # launch
