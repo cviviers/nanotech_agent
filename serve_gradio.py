@@ -119,7 +119,14 @@ def get_query_embedding(query):
     # get the embedding from the api
     embedding, num_tokens = get_embedding_from_api(query)
 
+    # add the embedding to the dataframe
+    df_query = df.copy()
+    # add the query embedding to the dataframe with the title "Query" and abstract the value of the query, all other fields 'Not Available'
     
+
+
+
+
 
 
 # create interactive gr.ScatterPlot
@@ -159,4 +166,4 @@ with gr.Blocks() as demo:
             
 
 # launch
-demo.launch(share=False)
+demo.launch(share=True)

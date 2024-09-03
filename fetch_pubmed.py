@@ -58,3 +58,49 @@ def fetch_pubmed_data_given_ids(id_list):
     handle = Entrez.efetch(db='pubmed', retmode='xml', id=ids)
     results = Entrez.read(handle)
     return results
+
+# data class for papers
+
+@dataclass
+class Paper:
+    id: str
+    title: str
+    abstract: str
+    authors: list
+    journal: str
+    publication_date: str
+    doi: str
+    keywords: list
+    language_list: list
+    embedding: np.array
+
+    def __init__(self, id, title, abstract, authors, journal, publication_year, publication_month, publication_day, doi, keywords, language_list, embedding= None):
+        self.id = id
+        self.title = title
+        self.abstract = abstract
+        self.authors = authors
+        self.journal = journal
+        self.publication_year = publication_year
+        self.publication_month = publication_month
+        self.publication_day = publication_day
+        self.doi = doi
+        self.keywords = keywords
+        self.language_list = language_list
+        self.embedding = embedding
+
+    def __str__(self):
+        return f"Paper(id={self.id}, title={self.title}, abstract={self.abstract}, authors={self.authors}, journal={self.journal}, publication_year={self.publication_year}, publication_month={self.publication_month}, publication_day={self.publication_day}, doi={self.doi}, keywords={self.keywords}, language_list={self.language_list}, embedding={self.embedding})"
+    
+    def __repr__(self):
+        return f"Paper(id={self.id}, title={self.title}, abstract={self.abstract}, authors={self.authors}, journal={self.journal}, publication_year={self.publication_year}, publication_month={self.publication_month}, publication_day={self.publication_day}, doi={self.doi}, keywords={self.keywords}, language_list={self.language_list}, embedding={self.embedding})"
+    
+    def save_to_json(self, filename):
+        # save the paper to a json file in a nice format
+        with open(filename, 'w') as f:
+            json.dump(self.__dict__, f, indent=4)
+
+    def load_from_json(self, filename):
+        with open(filename, 'r') as f:
+            data = json.load(f)
+            return Paper(**data)
+        
