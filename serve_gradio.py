@@ -108,7 +108,18 @@ def get_similar_embeddings(query):
     # get the abstracts of the most similar embeddings
     similar_abstracts = df.iloc[top_indices]['abstract'].tolist()
 
-    return similar_titles, similar_abstracts
+    # create a dataframe with the most similar embeddings
+    similar_df = df.iloc[top_indices].copy()
+    similar_df['size'] = 10
+    similar_df['color'] = 'red'
+
+    return similar_df
+
+def get_query_embedding(query):
+    # get the embedding from the api
+    embedding, num_tokens = get_embedding_from_api(query)
+
+    
 
 
 # create interactive gr.ScatterPlot
@@ -136,11 +147,16 @@ with gr.Blocks() as demo:
         # add a tab that allows entering a query and then displays the most similar embeddings, use cosine similarity. the result should be a list of the titles of the most similar embeddings, showing the title and the abstract of the most similar embedding
         with gr.Tab("Query"):
             query = gr.Textbox("Enter a query", label="Query")
-            submit = gr.Button("Submit")
-            similar_titles = gr.Textbox("Most similar embeddings", label="Most similar embeddings")
-            similar_abstracts = gr.Textbox("Most similar embeddings", label="Most similar embeddings")
-            submit.click(get_similar_embeddings, query, [similar_titles, similar_abstracts])
+
+            # display results in gr.dataframe
+            gr.Interface(get_similar_embeddings, query, gr.Dataframe(headers=["title", "abstract"], row_count=10), title="Most similar embeddings")
+
+        # add a tab that embeds a query and displays the tsne plot of the embeddings with the query in blue
+        with gr.Tab("Embedding Query"):
+            query = gr.Textbox("Enter a query", label="Query") 
+
+            gr.Interface(get_query_embedding, query, scatter_plot.ScatterPlot(width=600), title="Embedding Query")
             
 
 # launch
-demo.launch(share=True)
+demo.launch(share=False)
