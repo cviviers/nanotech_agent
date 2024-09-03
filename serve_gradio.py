@@ -101,8 +101,8 @@ def get_similar_embeddings(query):
 
     # calculate the cosine similarity between the query embedding and the embeddings in the dataframe
     cosine_similarities = np.dot(embeddings, embedding)
-    # get the indices of the top 5 most similar embeddings
-    top_indices = np.argsort(cosine_similarities)[::-1][:5]
+    # get the indices of the top 10 most similar embeddings
+    top_indices = np.argsort(cosine_similarities)[::-1][:10]
     # get the titles of the most similar embeddings
     similar_titles = df.iloc[top_indices]['title'].tolist()
     # get the abstracts of the most similar embeddings
@@ -121,9 +121,34 @@ def get_query_embedding(query):
 
     # add the embedding to the dataframe
     df_query = df.copy()
+    df_query['size'] = 10
+    df_query['color'] = 'red'
     # add the query embedding to the dataframe with the title "Query" and abstract the value of the query, all other fields 'Not Available'
     
+    df_query.loc[0] = {'title': 'Query', 'abstract': query, 'embedding': embedding,  'color': 'blue', 'size': 12}
 
+
+    # get the tsne embeddings of the query
+    query_embedding = np.array(df_query['embedding'].map(lambda x: np.array(x)))
+    query_embedding = np.stack(query_embedding)
+    query_tsne = tsne.fit_transform(query_embedding)
+    df_query['tsne_x'] = query_tsne[:, 0]
+    df_query['tsne_y'] = query_tsne[:, 1]
+
+    plot = scatter_plot.ScatterPlot(
+            value=df_query,
+            x="tsne_x",
+            y="tsne_y",
+            title="Embedding Query",
+            color='color',
+            size= 'size',
+            # tooltip displays the title of the article
+            tooltip=['title', 'abstract'],
+            width=600,
+            height=600
+        )
+
+    return plot
 
 
 
