@@ -5,6 +5,7 @@ import json
 
 import pandas as pd
 from sklearn.manifold import TSNE
+import umap
 import numpy as np
 from ast import literal_eval
 # create interactive plot with gradio
@@ -12,6 +13,7 @@ import gradio as gr
 from gradio.components import scatter_plot
 import requests
 
+reducer = umap.UMAP(random_state=42)
 
 # load the embeddings from the json files
 folder_path = 'embeddings'
@@ -150,10 +152,43 @@ def get_query_embedding(query):
 
     return plot
 
+def color_embeddings(property, color):
+    # get the embeddings from the dataframe
 
+    property = property.split(',')
+    color = color.split(',')
 
+    df_color = df_tsne.copy()
+    # color the embeddings according to the property, replace the color of the embeddings that contain the property with the color
+    for prop, col in zip(property, color):
+        df_temp_color = df_color[df_color['abstract'].str.contains(prop)]
 
+        df_temp_color['color'] = col
+        df_color = pd.concat([df_color, df_temp_color])
 
+    plot = scatter_plot.ScatterPlot(
+            value=df_color,
+            x="tsne_x",
+            y="tsne_y",
+            title="Color embeddings",
+            color='color',
+            )
+    
+    return plot
+
+def umap_embedding():  
+    umpa_embedding = reducer.fit_transform(embeddings)
+    df_umpa = df.copy()
+    df_umpa['x'] = umpa_embedding[:, 0]
+    df_umpa['y'] = umpa_embedding[:, 1]
+
+    plot = scatter_plot.ScatterPlot(
+            value=df_umpa,
+            x="x",
+            y="y",
+            title="UMAP",
+            )
+    return plot
 # create interactive gr.ScatterPlot
 
 with gr.Blocks() as demo:
@@ -188,7 +223,16 @@ with gr.Blocks() as demo:
             query = gr.Textbox("Enter a query", label="Query") 
 
             gr.Interface(get_query_embedding, query, scatter_plot.ScatterPlot(width=600), title="Embedding Query")
-            
 
+        with gr.Tab("Color embeddings"):
+            # enter property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. 
+            # The color will be a string with the color name, e.g. "blue", "red", "green", etc.
+            # Multiple properties can be entered, separated by commas.
+            property = gr.Textbox("Enter a property", label="Property")
+            color = gr.Textbox("Enter a color", label="Color")
+
+            gr.Interface(color_embeddings, [property, color], scatter_plot.ScatterPlot(width=600), title="Color embeddings")
+        with gr.Tab("UMAP"):
+            gr.Interface(umap_embedding,None, scatter_plot.ScatterPlot(width=600), title="UMAP")
 # launch
 demo.launch(share=True)
