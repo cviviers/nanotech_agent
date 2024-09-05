@@ -2,6 +2,7 @@
 import os
 import getpass
 import json
+import altair as alt
 
 import pandas as pd
 from sklearn.manifold import TSNE
@@ -14,6 +15,7 @@ from gradio.components import scatter_plot
 import requests
 
 reducer = umap.UMAP(random_state=42)
+alt.data_transformers.disable_max_rows()
 
 # load the embeddings from the json files
 folder_path = 'embeddings'
@@ -27,6 +29,62 @@ for file in json_files:
 df = pd.DataFrame(data).T
 df['size'] = 8
 df['color'] = 'blue'
+
+# filter the dataframe to only include journals from the following list
+# List of journals to include
+journals_to_include = [
+    "ACS Applied Materials & Interfaces",
+    "ACS Nano",
+    "Advanced Functional Materials",
+    "Advanced Materials",
+    "Angewandte Chemie",
+    "Biology and Medicine",
+    "Biomaterials",
+    "Cell",
+    "Clinical Cancer Research",
+    "Frontiers in Nanotechnology",
+    "Immunity",
+    "International Journal of Nanomedicine",
+    "Journal of Controlled Release",
+    "Journal of Materials Chemistry B",
+    "Matter",
+    "Molecular Therapy",
+    "Nano Letters",
+    "Nano Micro Small",
+    "Nano Research",
+    "Nanomedicine",
+    "Nanomedicine: Nanotechnology",
+    "Nanoscale",
+    "Nature",
+    "Nature Biomedical Engineering",
+    "Nature Cancer",
+    "Nature Communications",
+    "Nature Materials",
+    "Nature Medicine",
+    "Nature Nanotechnology",
+    "NPG Asia Materials",
+    "Pharmaceutics",
+    "PNAS",
+    "Science",
+    "Science Advances",
+    "Science Translational Medicine",
+    "Scientific Reports",
+    "Small"
+]
+
+# journals as small letters
+journals_to_include = [journal.lower() for journal in journals_to_include]
+
+# Exclusion criteria
+keywords_exclusion = ["review"]
+
+# filter the dataframe to only include journals from the list
+df = df[df['journal'].str.lower().isin(journals_to_include)]
+
+# filter the dataframe to exclude titles with keywords from the exclusion list
+df = df[~df['title'].str.lower().str.contains('|'.join(keywords_exclusion))]
+
+
 
 print(df.head())
 print(df)
@@ -54,10 +112,8 @@ df_tsne['tsne_y'] = tsne_embeddings[:, 1]
 embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
 embeddings = np.stack(embeddings)
 
-# add interactive tab to choose the dimension of the embeddings and then plt the embeddings, two values between 0 and 1536
-# create a function that takes the dimension and the data and returns the embeddings
 
-# hovering over a point should display the title of the article and change the cursor to a hand
+
 # create a scatter plot of the embeddin
 def get_embeddings(dim1, dim2):
     # get the embeddings from the data
