@@ -13,22 +13,34 @@ from ast import literal_eval
 import gradio as gr
 from gradio.components import scatter_plot
 import requests
+from itertools import islice
+import hdbscan
+import matplotlib.pyplot as plts
 
-reducer = umap.UMAP(random_state=42)
+reducer = umap.UMAP()
 alt.data_transformers.disable_max_rows()
+
 
 # load the embeddings from the json files
 folder_path = 'embeddings'
 json_files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
+# json_files = json_files[:1000]
 data = {}
+
 for file in json_files:
     with open(os.path.join(folder_path, file), 'r') as f:
         data[file] = json.load(f)
 
+
+
+
 # data to dataframe
 df = pd.DataFrame(data).T
-df['size'] = 8
-df['color'] = 'blue'
+df['size'] = 10
+df['color'] = 'red'
+
+# replace abstracts with the first abstract in the list if it is a list
+df['abstract'] = df['abstract'].apply(lambda x: x[0] if isinstance(x, list) else x)
 
 # filter the dataframe to only include journals from the following list
 # List of journals to include
@@ -76,7 +88,7 @@ journals_to_include = [
 journals_to_include = [journal.lower() for journal in journals_to_include]
 
 # Exclusion criteria
-keywords_exclusion = ["review"]
+keywords_exclusion = ["review", "not available"]
 
 # filter the dataframe to only include journals from the list
 df = df[df['journal'].str.lower().isin(journals_to_include)]
@@ -87,7 +99,7 @@ df = df[~df['title'].str.lower().str.contains('|'.join(keywords_exclusion))]
 
 
 print(df.head())
-print(df)
+
 # store the embeddings in a numpy array
 embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
 
@@ -101,8 +113,6 @@ tsne = TSNE(n_components=2, random_state=42, init='random', learning_rate=200, m
 # fit the t-SNE object to the embeddings
 tsne_embeddings = tsne.fit_transform(np.stack(embeddings[:]))
 
-print(tsne_embeddings.shape)
-
 # create new pandas df with old df added the tsne embeddings
 df_tsne = df.copy()
 
@@ -112,13 +122,8 @@ df_tsne['tsne_y'] = tsne_embeddings[:, 1]
 embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
 embeddings = np.stack(embeddings)
 
-
-
 # create a scatter plot of the embeddin
 def get_embeddings(dim1, dim2):
-    # get the embeddings from the data
-    embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
-    embeddings = np.stack(embeddings)
 
     # create new pandas df with old df added the tsne embeddings
     df_embed = df.copy()
@@ -182,10 +187,7 @@ def get_query_embedding(query):
     df_query['size'] = 10
     df_query['color'] = 'red'
     # add the query embedding to the dataframe with the title "Query" and abstract the value of the query, all other fields 'Not Available'
-    
     df_query.loc[0] = {'title': 'Query', 'abstract': query, 'embedding': embedding,  'color': 'blue', 'size': 12}
-
-
     # get the tsne embeddings of the query
     query_embedding = np.array(df_query['embedding'].map(lambda x: np.array(x)))
     query_embedding = np.stack(query_embedding)
@@ -214,13 +216,18 @@ def color_embeddings(property, color):
     property = property.split(',')
     color = color.split(',')
 
+    print(property, color)
+
     df_color = df_tsne.copy()
+    df_color['size'] = 10
+    df_color['color'] = 'red'
     # color the embeddings according to the property, replace the color of the embeddings that contain the property with the color
     for prop, col in zip(property, color):
-        df_temp_color = df_color[df_color['abstract'].str.contains(prop)]
-
-        df_temp_color['color'] = col
-        df_color = pd.concat([df_color, df_temp_color])
+        mask = df_color['abstract'].fillna('Not Available').str.contains(prop, case=False, na=False)
+        # replace the color of the embeddings that contain the property with the color
+        # print number of embeddings that contain the property
+        print(f"Number of embeddings that contain the property '{prop}': {mask.sum()}")
+        df_color.loc[mask, 'color'] = col
 
     plot = scatter_plot.ScatterPlot(
             value=df_color,
@@ -228,6 +235,10 @@ def color_embeddings(property, color):
             y="tsne_y",
             title="Color embeddings",
             color='color',
+            size= 'size',
+            tooltip=['title', 'abstract'],
+            width=600,
+            height=600
             )
     
     return plot
@@ -237,12 +248,19 @@ def umap_embedding():
     df_umpa = df.copy()
     df_umpa['x'] = umpa_embedding[:, 0]
     df_umpa['y'] = umpa_embedding[:, 1]
+    df_umpa['size'] = 10
+    df_umpa['color'] = 'red'
 
     plot = scatter_plot.ScatterPlot(
             value=df_umpa,
             x="x",
             y="y",
             title="UMAP",
+            color='color',
+            size= 'size',
+            tooltip=['title', 'abstract'],
+            width=600,
+            height=600
             )
     return plot
 # create interactive gr.ScatterPlot
@@ -284,11 +302,39 @@ with gr.Blocks() as demo:
             # enter property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. 
             # The color will be a string with the color name, e.g. "blue", "red", "green", etc.
             # Multiple properties can be entered, separated by commas.
-            property = gr.Textbox("Enter a property", label="Property")
-            color = gr.Textbox("Enter a color", label="Color")
+            property = gr.Textbox("Enter a property eg. cancer,gene,virus", label="Property")
+            color = gr.Textbox("Enter a color eg. blue,green,yellow", label="Color")
 
-            gr.Interface(color_embeddings, [property, color], scatter_plot.ScatterPlot(width=600), title="Color embeddings")
+            # add label field with additional information
+            desc = 'Enter a property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. The color will be a string with the color name, e.g. "blue", "red", "green", etc. Multiple properties can be entered, separated by commas. The colors will be overwritten in the order of the properties entered.'
+
+
+            gr.Interface(color_embeddings, [property, color], scatter_plot.ScatterPlot(width=600), title="Color embeddings", description=desc)
         with gr.Tab("UMAP"):
             gr.Interface(umap_embedding,None, scatter_plot.ScatterPlot(width=600), title="UMAP")
+        with gr.Tab("Cluster"):
+            # add a tab that clusters the embeddings using HDBSCAN and displays the clusters in the scatter plot
+            # the result should be a scatter plot with the clusters colored differently
+            # the plot should show the title and abstract of the embeddings
+            clusterer = hdbscan.HDBSCAN(min_cluster_size=10)
+            cluster_labels = clusterer.fit_predict(data)
+            _
+            df_cluster = df.copy()
+            hierarchy = clusterer.cluster_hierarchy_
+
+            # Number of clusters in labels, ignoring noise if present.
+            n_clusters_hdb_ = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+            hdb_unique_labels = set(cluster_labels)
+            hdb_colors = plt.cm.Spectral(np.linspace(0, 1, len(hdb_unique_labels)))
+
+            df_cluster['size'] = 10
+            df_cluster['color'] = 'red'
+            #change the color of the embeddings according to the cluster
+            # convert the cluster_labels to colors
+
+
+
+
+        
 # launch
-demo.launch(share=True)
+demo.launch(share=False)
