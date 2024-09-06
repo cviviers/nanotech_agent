@@ -17,6 +17,7 @@ from itertools import islice
 import hdbscan
 from sklearn import metrics
 import matplotlib.pyplot as plt
+import seaborn as sns
 
 reducer = umap.UMAP()
 alt.data_transformers.disable_max_rows()
@@ -103,7 +104,7 @@ print(df.head())
 
 # store the embeddings in a numpy array
 embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
-
+embeddings = np.stack(embeddings)
 # use the embeddings to create a t-SNE plot
 # get the embeddings from the dataframe
 # embeddings = df['embedding'].apply(lambda x: np.array(x)).values
@@ -119,9 +120,6 @@ df_tsne = df.copy()
 
 df_tsne['tsne_x'] = tsne_embeddings[:, 0]
 df_tsne['tsne_y'] = tsne_embeddings[:, 1]
-
-embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
-embeddings = np.stack(embeddings)
 
 # create a scatter plot of the embeddin
 def get_embeddings(dim1, dim2):
@@ -265,44 +263,37 @@ def umap_embedding():
             )
     return plot
 
-def cluster_embeddings():
+def cluster_embeddings(min_cluster_size=10):
         # a tab that clusters the embeddings using HDBSCAN and displays the clusters in the scatter plot
         # the result should be a scatter plot with the clusters colored differently
         # the plot should show the title and abstract of the embeddings
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=10)
-        cluster_labels = clusterer.fit_predict(embeddings)
-
-        # provide statistics on the number of clusters and the size of the clusters
-        
-        print('Silhouette Coefficient: %0.3f'
-            % metrics.silhouette_score(embeddings, cluster_labels))
-
-        n_clusters_db_ = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
-
-        print('\n\n++ DBSCAN Results')
-        print('Estimated number of clusters: %d' % n_clusters_db_)
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=100,  prediction_data=True, branch_detection_data=True, alpha=0.5, cluster_selection_method='leaf').fit(tsne_embeddings)
+        n_clusters_ = len(set(clusterer.labels_)) - (1 if -1 in clusterer.labels_ else 0)
+        print('Estimated number of clusters: %d' % n_clusters_)
         
         
-        df_cluster = df.copy()
-        hierarchy = clusterer.cluster_hierarchy_
+        df_cluster = df_tsne.copy()
 
         # save the hierarchy plot as png
-        plt.figure()
-        plt.plot(hierarchy)
-        plt.savefig('hierarchy.png')
+        soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
+        color_palette = sns.color_palette('Paired', n_clusters_)
+        cluster_colors = [color_palette[np.argmax(x)]
+                        for x in soft_clusters]
+        plt.scatter(*tsne_embeddings.T, s=50, linewidth=0, c=cluster_colors, alpha=0.25)
+        plt.savefig('hierarchy_plot.png')
 
 
         # Number of clusters in labels, ignoring noise if present.
-        n_clusters_hdb_ = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
-        hdb_unique_labels = set(cluster_labels)
-        hdb_colors = plt.cm.Spectral(np.linspace(0, 1, len(hdb_unique_labels)))
-        df_cluster['cluster_labels'] = cluster_labels
+       
+        hdb_colors = plt.cm.Spectral(np.linspace(0, 1, n_clusters_))
+        df_cluster['cluster_labels'] = clusterer
 
         df_cluster['size'] = 10
         # change the color of the embeddings according to the cluster
         # convert the cluster_labels to colors
-        df_cluster['color'] = df_cluster['cluster_labels'].apply(lambda x: hdb_colors[x])
-        df_cluster['color'] = df_cluster['color'].astype(str)
+        # df_cluster['color'] = df_cluster['cluster_labels'].apply(lambda x: hdb_colors[x])
+        cluster_colors_str = [str(x) for x in cluster_colors]
+        df_cluster['color'] = cluster_colors_str
 
         plot = scatter_plot.ScatterPlot(
                 value=df_cluster,
@@ -368,13 +359,14 @@ with gr.Blocks() as demo:
         with gr.Tab("UMAP"):
             gr.Interface(umap_embedding,None, scatter_plot.ScatterPlot(width=600), title="UMAP")
         with gr.Tab("Cluster"):
-            gr.Interface(cluster_embeddings,None, scatter_plot.ScatterPlot(width=600), title="Cluster")
+            min_cluster_size = gr.Textbox("10", label="Min Cluster Size")
+            gr.Interface(cluster_embeddings,min_cluster_size, scatter_plot.ScatterPlot(width=600), title="Cluster")
         
 
 
 
 
 
-        
+
 # launch
-demo.launch(share=False)
+demo.launch(share=True)
