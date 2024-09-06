@@ -286,7 +286,8 @@ def cluster_embeddings(min_cluster_size=10):
         # Number of clusters in labels, ignoring noise if present.
        
         hdb_colors = plt.cm.Spectral(np.linspace(0, 1, n_clusters_))
-        df_cluster['cluster_labels'] = clusterer
+        df_cluster['cluster_labels'] = clusterer.labels_  # Use labels instead of the entire clusterer object
+
 
         df_cluster['size'] = 10
         # change the color of the embeddings according to the cluster
