@@ -15,7 +15,8 @@ from gradio.components import scatter_plot
 import requests
 from itertools import islice
 import hdbscan
-import matplotlib.pyplot as plts
+from sklearn import metrics
+import matplotlib.pyplot as plt
 
 reducer = umap.UMAP()
 alt.data_transformers.disable_max_rows()
@@ -263,6 +264,60 @@ def umap_embedding():
             height=600
             )
     return plot
+
+def cluster_embeddings():
+        # a tab that clusters the embeddings using HDBSCAN and displays the clusters in the scatter plot
+        # the result should be a scatter plot with the clusters colored differently
+        # the plot should show the title and abstract of the embeddings
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=10)
+        cluster_labels = clusterer.fit_predict(embeddings)
+
+        # provide statistics on the number of clusters and the size of the clusters
+        
+        print('Silhouette Coefficient: %0.3f'
+            % metrics.silhouette_score(embeddings, cluster_labels))
+
+        n_clusters_db_ = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+
+        print('\n\n++ DBSCAN Results')
+        print('Estimated number of clusters: %d' % n_clusters_db_)
+        
+        
+        df_cluster = df.copy()
+        hierarchy = clusterer.cluster_hierarchy_
+
+        # save the hierarchy plot as png
+        plt.figure()
+        plt.plot(hierarchy)
+        plt.savefig('hierarchy.png')
+
+
+        # Number of clusters in labels, ignoring noise if present.
+        n_clusters_hdb_ = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
+        hdb_unique_labels = set(cluster_labels)
+        hdb_colors = plt.cm.Spectral(np.linspace(0, 1, len(hdb_unique_labels)))
+        df_cluster['cluster_labels'] = cluster_labels
+
+        df_cluster['size'] = 10
+        # change the color of the embeddings according to the cluster
+        # convert the cluster_labels to colors
+        df_cluster['color'] = df_cluster['cluster_labels'].apply(lambda x: hdb_colors[x])
+        df_cluster['color'] = df_cluster['color'].astype(str)
+
+        plot = scatter_plot.ScatterPlot(
+                value=df_cluster,
+                x="tsne_x",
+                y="tsne_y",
+                title="Cluster",
+                color='color',
+                size= 'size',
+                tooltip=['title', 'abstract'],
+                width=600,
+                height=600
+                )
+
+        return plot
+
 # create interactive gr.ScatterPlot
 
 with gr.Blocks() as demo:
@@ -313,24 +368,9 @@ with gr.Blocks() as demo:
         with gr.Tab("UMAP"):
             gr.Interface(umap_embedding,None, scatter_plot.ScatterPlot(width=600), title="UMAP")
         with gr.Tab("Cluster"):
-            # add a tab that clusters the embeddings using HDBSCAN and displays the clusters in the scatter plot
-            # the result should be a scatter plot with the clusters colored differently
-            # the plot should show the title and abstract of the embeddings
-            clusterer = hdbscan.HDBSCAN(min_cluster_size=10)
-            cluster_labels = clusterer.fit_predict(data)
-            _
-            df_cluster = df.copy()
-            hierarchy = clusterer.cluster_hierarchy_
+            gr.Interface(cluster_embeddings,None, scatter_plot.ScatterPlot(width=600), title="Cluster")
+        
 
-            # Number of clusters in labels, ignoring noise if present.
-            n_clusters_hdb_ = len(set(cluster_labels)) - (1 if -1 in cluster_labels else 0)
-            hdb_unique_labels = set(cluster_labels)
-            hdb_colors = plt.cm.Spectral(np.linspace(0, 1, len(hdb_unique_labels)))
-
-            df_cluster['size'] = 10
-            df_cluster['color'] = 'red'
-            #change the color of the embeddings according to the cluster
-            # convert the cluster_labels to colors
 
 
 
