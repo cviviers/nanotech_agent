@@ -324,17 +324,24 @@ def cluster_embeddings_kmeans(num_clusters):
     kmeans.fit(tsne_embeddings)
     df_cluster_kmeans = df_tsne.copy()
 
-    df_cluster_kmeans['cluster_labels'] = kmeans.labels_
+    # df_cluster_kmeans['cluster_labels'] = kmeans.labels_
     df_cluster_kmeans['size'] = 10
-
     color_palette = sns.color_palette('Paired', num_clusters)
+    # make a copy of the df and add the kmeans.labels_ to the df as a new entry with the title the cluster center and the abstract the cluster center and the color a unique color from the color palette
+    df_cluster_kmeans_copy = df_tsne.copy()
+    df_cluster_kmeans_copy['size'] = 10
+    for i, center in enumerate(kmeans.cluster_centers_):
+        df_cluster_kmeans_copy.loc[len(df_cluster_kmeans_copy)] = {'title': f'Cluster Center {i}', 'abstract': f'Cluster coordinates: {center}', 'color': color_palette[i], 'size': 12}
 
     # predict the cluster of the embeddings
     cluster_labels = kmeans.predict(tsne_embeddings)
     # add the cluster labels to the dataframe
     df_cluster_kmeans['cluster_labels'] = cluster_labels
-    # convert the cluster labels to colors
-    df_cluster_kmeans['color'] = [color_palette[label] for label in cluster_labels]
+
+    # color each embedding according to the cluster label
+    # get index of label in kmeans.cluster_centers_
+    df_cluster_kmeans['color'] = [color_palette[np.where(kmeans.cluster_centers_ == label)[0][0]] for label in cluster_labels]
+
 
     plot = scatter_plot.ScatterPlot(
             value=df_cluster_kmeans,
@@ -367,7 +374,7 @@ def select_and_filter(df, selection_column, selected_values):
         title="Filtered Plot",
         color='color',
         size='size',
-        tooltip=['title', 'abstract'],
+        tooltip=['title', 'abstract', 'color'],
         width=600,
         height=600
     )
@@ -392,7 +399,7 @@ with gr.Blocks() as demo:
             
             with gr.Row():
                 selection_column = gr.Dropdown(["cluster_labels", "color"], label="Select by")
-                selected_values = gr.Textbox(label="Enter values to keep (comma-separated)")
+                selected_values = gr.Textbox(label="Enter color to keep")
             
             filter_button = gr.Button("Filter Selection")
             
