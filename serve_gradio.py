@@ -18,6 +18,7 @@ import hdbscan
 from sklearn import metrics
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.cluster import KMeans
 
 reducer = umap.UMAP()
 alt.data_transformers.disable_max_rows()
@@ -240,7 +241,7 @@ def color_embeddings(property, color):
             height=600
             )
     
-    return plot
+    return plot, df_color
 
 def umap_embedding():  
     umpa_embedding = reducer.fit_transform(embeddings)
@@ -310,6 +311,62 @@ def cluster_embeddings(min_cluster_size=10):
 
         return plot
 
+def cluster_embeddings_kmeans(num_clusters):
+    kmeans = KMeans(n_clusters=int(num_clusters), random_state=42)
+    kmeans.fit(tsne_embeddings)
+    df_cluster_kmeans = df_tsne.copy()
+
+    df_cluster_kmeans['cluster_labels'] = kmeans.labels_
+    df_cluster_kmeans['size'] = 10
+
+    color_palette = sns.color_palette('Paired', num_clusters)
+
+    # predict the cluster of the embeddings
+    cluster_labels = kmeans.predict(tsne_embeddings)
+    # add the cluster labels to the dataframe
+    df_cluster_kmeans['cluster_labels'] = cluster_labels
+    # convert the cluster labels to colors
+    df_cluster_kmeans['color'] = [color_palette[label] for label in cluster_labels]
+
+    plot = scatter_plot.ScatterPlot(
+            value=df_cluster_kmeans,
+            x="tsne_x",
+            y="tsne_y",
+            title="Cluster KMEANS",
+            color='color',
+            size= 'size',
+            tooltip=['title', 'abstract'],
+            width=600,
+            height=600
+            )   
+
+    return plot, df_cluster_kmeans
+
+def apply_clustering_or_property(num_clusters, property, color, dataframe):
+    if property == "None" and color == "None":
+        plot, df_result = cluster_embeddings_kmeans(num_clusters)
+    else:
+        plot, df_result = color_embeddings(property, color)
+    return plot, df_result
+
+def select_and_filter(df, selection_column, selected_values):
+    selected_values = [val.strip() for val in selected_values.split(',')]
+    df_filtered = df[df[selection_column].isin(selected_values)]
+    plot = scatter_plot.ScatterPlot(
+        value=df_filtered,
+        x="tsne_x",
+        y="tsne_y",
+        title="Filtered Plot",
+        color='color',
+        size='size',
+        tooltip=['title', 'abstract'],
+        width=600,
+        height=600
+    )
+    return plot, df_filtered
+
+
+
 # create interactive gr.ScatterPlot
 
 with gr.Blocks() as demo:
@@ -359,9 +416,41 @@ with gr.Blocks() as demo:
             gr.Interface(color_embeddings, [property, color], scatter_plot.ScatterPlot(width=600), title="Color embeddings", description=desc)
         with gr.Tab("UMAP"):
             gr.Interface(umap_embedding,None, scatter_plot.ScatterPlot(width=600), title="UMAP")
-        with gr.Tab("Cluster"):
+        with gr.Tab("Cluster HDBSCAN"):
             min_cluster_size = gr.Textbox("10", label="Min Cluster Size")
             gr.Interface(cluster_embeddings,min_cluster_size, scatter_plot.ScatterPlot(width=600), title="Cluster")
+        with gr.Tab("Cluster KMEANS"):
+            num_clusters = gr.Textbox("10", label="Number of Clusters")
+            gr.Interface(cluster_embeddings_kmeans, num_clusters, scatter_plot.ScatterPlot(width=600), title="Cluster")
+        with gr.Tab("Layered Clusters"):
+            dataframe = gr.State(df_tsne.copy())
+            
+            with gr.Row():
+                num_clusters = gr.Textbox("10", label="Number of Clusters (enter 'None' if not clustering)")
+                property = gr.Textbox("None", label="Property (e.g., cancer,gene,virus)")
+                color = gr.Textbox("None", label="Color (e.g., blue,green,yellow)")
+            
+            apply_button = gr.Button("Apply Clustering/Property")
+            
+            plot_output = gr.Plot()
+            
+            with gr.Row():
+                selection_column = gr.Dropdown(["cluster_labels", "color"], label="Select by")
+                selected_values = gr.Textbox(label="Enter values to keep (comma-separated)")
+            
+            filter_button = gr.Button("Filter Selection")
+            
+            apply_button.click(
+                apply_clustering_or_property,
+                inputs=[num_clusters, property, color, dataframe],
+                outputs=[plot_output, dataframe]
+            )
+            
+            filter_button.click(
+                select_and_filter,
+                inputs=[dataframe, selection_column, selected_values],
+                outputs=[plot_output, dataframe]
+            )
         
 
 
