@@ -241,7 +241,7 @@ def color_embeddings(property, color, dataframe):
 
     print(property, color)
 
-    df_color = dataframe.copy()
+    df_color = dataframe
     df_color['size'] = 10
     df_color['color'] = 'red'
     # color the embeddings according to the property, replace the color of the embeddings that contain the property with the color
@@ -291,7 +291,7 @@ def cluster_embeddings(min_cluster_size=10):
         # a tab that clusters the embeddings using HDBSCAN and displays the clusters in the scatter plot
         # the result should be a scatter plot with the clusters colored differently
         # the plot should show the title and abstract of the embeddings
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=100,  prediction_data=True, branch_detection_data=True, alpha=0.5, cluster_selection_method='leaf').fit(tsne_embeddings)
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=int(min_cluster_size),  prediction_data=True, branch_detection_data=True, alpha=0.5, cluster_selection_method='leaf').fit(tsne_embeddings)
         n_clusters_ = len(set(clusterer.labels_)) - (1 if -1 in clusterer.labels_ else 0)
         print('Estimated number of clusters: %d' % n_clusters_)
         
@@ -390,11 +390,14 @@ def apply_clustering_or_property(num_clusters, property, color, dataframe):
     return plot, df_result
 
 def select_and_filter(df, selection_column, selected_value):
-    
+    print(f"Selected column: {selection_column}")
     df_filtered = df[df[selection_column] == selected_value]    
     df_filtered['size'] = 10
 
-
+    if selection_column == 'cluster_label':
+        tool_tip_list = ['title', 'abstract', 'color', 'cluster_label']
+    else:
+        tool_tip_list = ['title', 'abstract', 'color']
 
     # print number of elements in the filtered dataframe
     print(f"Number of elements in the filtered dataframe: {len(df_filtered)}")
@@ -412,7 +415,7 @@ def select_and_filter(df, selection_column, selected_value):
         title="Filtered Plot",
         color='color',
         size='size',
-        tooltip=['title', 'abstract', 'color', 'cluster_label'],
+        tooltip=tool_tip_list,
         width=600,
         height=600
     )
@@ -453,8 +456,6 @@ with gr.Blocks() as demo:
                 inputs=[dataframe, selection_column, selected_values],
                 outputs=[plot_output, dataframe]
             )
-        
-
 
         with gr.Tab("TSNE"):
             scatter_plot.ScatterPlot(
@@ -489,7 +490,8 @@ with gr.Blocks() as demo:
             gr.Interface(get_query_embedding, query, scatter_plot.ScatterPlot(width=600), title="Embedding Query")
 
         with gr.Tab("Color embeddings"):
-            dataframe_color = df_tsne.copy()
+            dataframe_color = gr.State(df_tsne.copy())
+            color_output = scatter_plot.ScatterPlot(width=600)
             # enter property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. 
             # The color will be a string with the color name, e.g. "blue", "red", "green", etc.
             # Multiple properties can be entered, separated by commas.
@@ -500,16 +502,17 @@ with gr.Blocks() as demo:
             desc = 'Enter a property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. The color will be a string with the color name, e.g. "blue", "red", "green", etc. Multiple properties can be entered, separated by commas. The colors will be overwritten in the order of the properties entered.'
 
 
-            gr.Interface(color_embeddings, [property, color, dataframe_color], scatter_plot.ScatterPlot(width=600), title="Color embeddings", description=desc)
+            gr.Interface(color_embeddings, [property, color, dataframe_color], outputs=[color_output, dataframe_color], title="Color embeddings", description=desc)
         with gr.Tab("UMAP"):
             gr.Interface(umap_embedding,None, scatter_plot.ScatterPlot(width=600), title="UMAP")
         with gr.Tab("Cluster HDBSCAN"):
             min_cluster_size = gr.Textbox("10", label="Min Cluster Size")
             gr.Interface(cluster_embeddings,min_cluster_size, scatter_plot.ScatterPlot(width=600), title="Cluster")
         with gr.Tab("Cluster KMEANS"):
-            dataframe_cluster = df_tsne.copy()
+            dataframe_cluster = gr.State(df_tsne.copy())
+            cluter_plot = scatter_plot.ScatterPlot(width=600)
             num_clusters = gr.Textbox("10", label="Number of Clusters")
-            gr.Interface(cluster_embeddings_kmeans, [num_clusters, dataframe_cluster], scatter_plot.ScatterPlot(width=600), title="Cluster")
+            gr.Interface(cluster_embeddings_kmeans, [num_clusters, dataframe_cluster], [cluter_plot, dataframe_cluster], title="Cluster")
         
 
 
