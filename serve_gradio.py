@@ -23,82 +23,89 @@ from sklearn.cluster import KMeans
 reducer = umap.UMAP()
 alt.data_transformers.disable_max_rows()
 
+if os.path.exists('embeddings.csv'):
+    df = pd.read_csv('embeddings.csv', index_col=0)
+    df['embedding'] = df['embedding'].apply(literal_eval)
+else:
 
-# load the embeddings from the json files
-folder_path = 'embeddings'
-json_files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
-# json_files = json_files[:1000]
-data = {}
+    # load the embeddings from the json files
+    folder_path = 'embeddings'
+    json_files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
+    # json_files = json_files[:1000]
+    data = {}
 
-for file in json_files:
-    with open(os.path.join(folder_path, file), 'r') as f:
-        data[file] = json.load(f)
-
-
+    for file in json_files:
+        with open(os.path.join(folder_path, file), 'r') as f:
+            data[file] = json.load(f)
 
 
-# data to dataframe
-df = pd.DataFrame(data).T
-df['size'] = 10
-df['color'] = 'red'
 
-# replace abstracts with the first abstract in the list if it is a list
-df['abstract'] = df['abstract'].apply(lambda x: x[0] if isinstance(x, list) else x)
 
-# filter the dataframe to only include journals from the following list
-# List of journals to include
-journals_to_include = [
-    "ACS Applied Materials & Interfaces",
-    "ACS Nano",
-    "Advanced Functional Materials",
-    "Advanced Materials",
-    "Angewandte Chemie",
-    "Biology and Medicine",
-    "Biomaterials",
-    "Cell",
-    "Clinical Cancer Research",
-    "Frontiers in Nanotechnology",
-    "Immunity",
-    "International Journal of Nanomedicine",
-    "Journal of Controlled Release",
-    "Journal of Materials Chemistry B",
-    "Matter",
-    "Molecular Therapy",
-    "Nano Letters",
-    "Nano Micro Small",
-    "Nano Research",
-    "Nanomedicine",
-    "Nanomedicine: Nanotechnology",
-    "Nanoscale",
-    "Nature",
-    "Nature Biomedical Engineering",
-    "Nature Cancer",
-    "Nature Communications",
-    "Nature Materials",
-    "Nature Medicine",
-    "Nature Nanotechnology",
-    "NPG Asia Materials",
-    "Pharmaceutics",
-    "PNAS",
-    "Science",
-    "Science Advances",
-    "Science Translational Medicine",
-    "Scientific Reports",
-    "Small"
-]
+    # data to dataframe
+    df = pd.DataFrame(data).T
+    df['size'] = 10
+    df['color'] = 'red'
 
-# journals as small letters
-journals_to_include = [journal.lower() for journal in journals_to_include]
+    # replace abstracts with the first abstract in the list if it is a list
+    df['abstract'] = df['abstract'].apply(lambda x: x[0] if isinstance(x, list) else x)
 
-# Exclusion criteria
-keywords_exclusion = ["review", "not available"]
+    # filter the dataframe to only include journals from the following list
+    # List of journals to include
+    journals_to_include = [
+        "ACS Applied Materials & Interfaces",
+        "ACS Nano",
+        "Advanced Functional Materials",
+        "Advanced Materials",
+        "Angewandte Chemie",
+        "Biology and Medicine",
+        "Biomaterials",
+        "Cell",
+        "Clinical Cancer Research",
+        "Frontiers in Nanotechnology",
+        "Immunity",
+        "International Journal of Nanomedicine",
+        "Journal of Controlled Release",
+        "Journal of Materials Chemistry B",
+        "Matter",
+        "Molecular Therapy",
+        "Nano Letters",
+        "Nano Micro Small",
+        "Nano Research",
+        "Nanomedicine",
+        "Nanomedicine: Nanotechnology",
+        "Nanoscale",
+        "Nature",
+        "Nature Biomedical Engineering",
+        "Nature Cancer",
+        "Nature Communications",
+        "Nature Materials",
+        "Nature Medicine",
+        "Nature Nanotechnology",
+        "NPG Asia Materials",
+        "Pharmaceutics",
+        "PNAS",
+        "Science",
+        "Science Advances",
+        "Science Translational Medicine",
+        "Scientific Reports",
+        "Small"
+    ]
 
-# filter the dataframe to only include journals from the list
-df = df[df['journal'].str.lower().isin(journals_to_include)]
+    # journals as small letters
+    journals_to_include = [journal.lower() for journal in journals_to_include]
 
-# filter the dataframe to exclude titles with keywords from the exclusion list
-df = df[~df['title'].str.lower().str.contains('|'.join(keywords_exclusion))]
+    # Exclusion criteria
+    keywords_exclusion = ["review", "not available"]
 
+    # filter the dataframe to only include journals from the list
+    df = df[df['journal'].str.lower().isin(journals_to_include)]
+
+    # filter the dataframe to exclude titles with keywords from the exclusion list
+    df = df[~df['title'].str.lower().str.contains('|'.join(keywords_exclusion))]
+
+    # store the dataframe as csv file
+    if not os.path.exists('embeddings.csv'):
+        df.to_csv('embeddings.csv')
 
 
 print(df.head())
@@ -312,6 +319,7 @@ def cluster_embeddings(min_cluster_size=10):
         return plot
 
 def cluster_embeddings_kmeans(num_clusters):
+    num_clusters = int(num_clusters)
     kmeans = KMeans(n_clusters=int(num_clusters), random_state=42)
     kmeans.fit(tsne_embeddings)
     df_cluster_kmeans = df_tsne.copy()
@@ -370,6 +378,38 @@ def select_and_filter(df, selection_column, selected_values):
 # create interactive gr.ScatterPlot
 
 with gr.Blocks() as demo:
+        with gr.Tab("Layered Clusters"):
+            dataframe = gr.State(df_tsne.copy())
+            
+            with gr.Row():
+                num_clusters = gr.Textbox("10", label="Number of Clusters (enter 'None' if not clustering)")
+                property = gr.Textbox("None", label="Property (e.g., cancer,gene,virus)")
+                color = gr.Textbox("None", label="Color (e.g., blue,green,yellow)")
+            
+            apply_button = gr.Button("Apply Clustering/Property")
+            
+            plot_output = scatter_plot.ScatterPlot()
+            
+            with gr.Row():
+                selection_column = gr.Dropdown(["cluster_labels", "color"], label="Select by")
+                selected_values = gr.Textbox(label="Enter values to keep (comma-separated)")
+            
+            filter_button = gr.Button("Filter Selection")
+            
+            apply_button.click(
+                apply_clustering_or_property,
+                inputs=[num_clusters, property, color, dataframe],
+                outputs=[plot_output, dataframe]
+            )
+            
+            filter_button.click(
+                select_and_filter,
+                inputs=[dataframe, selection_column, selected_values],
+                outputs=[plot_output, dataframe]
+            )
+        
+
+
         with gr.Tab("TSNE"):
             scatter_plot.ScatterPlot(
                 value=df_tsne,
@@ -422,41 +462,10 @@ with gr.Blocks() as demo:
         with gr.Tab("Cluster KMEANS"):
             num_clusters = gr.Textbox("10", label="Number of Clusters")
             gr.Interface(cluster_embeddings_kmeans, num_clusters, scatter_plot.ScatterPlot(width=600), title="Cluster")
-        with gr.Tab("Layered Clusters"):
-            dataframe = gr.State(df_tsne.copy())
-            
-            with gr.Row():
-                num_clusters = gr.Textbox("10", label="Number of Clusters (enter 'None' if not clustering)")
-                property = gr.Textbox("None", label="Property (e.g., cancer,gene,virus)")
-                color = gr.Textbox("None", label="Color (e.g., blue,green,yellow)")
-            
-            apply_button = gr.Button("Apply Clustering/Property")
-            
-            plot_output = gr.Plot()
-            
-            with gr.Row():
-                selection_column = gr.Dropdown(["cluster_labels", "color"], label="Select by")
-                selected_values = gr.Textbox(label="Enter values to keep (comma-separated)")
-            
-            filter_button = gr.Button("Filter Selection")
-            
-            apply_button.click(
-                apply_clustering_or_property,
-                inputs=[num_clusters, property, color, dataframe],
-                outputs=[plot_output, dataframe]
-            )
-            
-            filter_button.click(
-                select_and_filter,
-                inputs=[dataframe, selection_column, selected_values],
-                outputs=[plot_output, dataframe]
-            )
         
 
 
 
 
-
-
 # launch
-demo.launch(share=True)
+demo.launch(share=False)
