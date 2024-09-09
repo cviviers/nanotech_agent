@@ -19,6 +19,7 @@ from sklearn import metrics
 import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.cluster import KMeans
+import matplotlib.colors as mcolors
 
 reducer = umap.UMAP()
 alt.data_transformers.disable_max_rows()
@@ -26,6 +27,12 @@ alt.data_transformers.disable_max_rows()
 if os.path.exists('embeddings.csv'):
     df = pd.read_csv('embeddings.csv', index_col=0)
     df['embedding'] = df['embedding'].apply(literal_eval)
+    embeddings = np.stack(df['embedding'].values)
+
+if os.path.exists('tsne_embeddings.csv'):
+    df_tsne = pd.read_csv('tsne_embeddings.csv', index_col=0)
+    tsne_embeddings = np.stack(df_tsne['embedding'].apply(literal_eval))
+
 else:
 
     # load the embeddings from the json files
@@ -103,31 +110,39 @@ else:
     # filter the dataframe to exclude titles with keywords from the exclusion list
     df = df[~df['title'].str.lower().str.contains('|'.join(keywords_exclusion))]
 
+    
+
+
+
+
+    # store the embeddings in a numpy array
+    embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
+    embeddings = np.stack(embeddings)
+    # use the embeddings to create a t-SNE plot
+    # get the embeddings from the dataframe
+    # embeddings = df['embedding'].apply(lambda x: np.array(x)).values
+
+    # create a t-SNE object
+    tsne = TSNE(n_components=2, random_state=42, init='random', learning_rate=200, max_iter=1000)
+
+    # fit the t-SNE object to the embeddings
+    tsne_embeddings = tsne.fit_transform(np.stack(embeddings[:]))
+
+    # create new pandas df with old df added the tsne embeddings
+    df_tsne = df.copy()
+
+    df_tsne['tsne_x'] = tsne_embeddings[:, 0]
+    df_tsne['tsne_y'] = tsne_embeddings[:, 1]
+
     # store the dataframe as csv file
-    if not os.path.exists('embeddings.csv'):
-        df.to_csv('embeddings.csv')
+    if not os.path.exists('df_embeddings.csv'):
+        df.to_csv('df_embeddings.csv')
 
+    # store the embeddings as csv file
+    if not os.path.exists('tsne_embeddings.csv'):
+        df_tsne.to_csv('tsne_embeddings.csv')
 
-print(df.head())
-
-# store the embeddings in a numpy array
-embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
-embeddings = np.stack(embeddings)
-# use the embeddings to create a t-SNE plot
-# get the embeddings from the dataframe
-# embeddings = df['embedding'].apply(lambda x: np.array(x)).values
-
-# create a t-SNE object
-tsne = TSNE(n_components=2, random_state=42, init='random', learning_rate=200, max_iter=1000)
-
-# fit the t-SNE object to the embeddings
-tsne_embeddings = tsne.fit_transform(np.stack(embeddings[:]))
-
-# create new pandas df with old df added the tsne embeddings
-df_tsne = df.copy()
-
-df_tsne['tsne_x'] = tsne_embeddings[:, 0]
-df_tsne['tsne_y'] = tsne_embeddings[:, 1]
+    
 
 # create a scatter plot of the embeddin
 def get_embeddings(dim1, dim2):
@@ -320,27 +335,29 @@ def cluster_embeddings(min_cluster_size=10):
 
 def cluster_embeddings_kmeans(num_clusters):
     num_clusters = int(num_clusters)
-    kmeans = KMeans(n_clusters=int(num_clusters), random_state=42)
-    kmeans.fit(tsne_embeddings)
+    kmeans = KMeans(n_clusters=int(num_clusters), random_state=42).fit(tsne_embeddings)
+    kmeans_labels = kmeans.labels_
+
     df_cluster_kmeans = df_tsne.copy()
 
     # df_cluster_kmeans['cluster_labels'] = kmeans.labels_
     df_cluster_kmeans['size'] = 10
-    color_palette = sns.color_palette('Paired', num_clusters)
+    
+
+    colors_keys = list(mcolors.XKCD_COLORS.keys())
+    colors_values = list(mcolors.XKCD_COLORS.values())
+    
     # make a copy of the df and add the kmeans.labels_ to the df as a new entry with the title the cluster center and the abstract the cluster center and the color a unique color from the color palette
-    df_cluster_kmeans_copy = df_tsne.copy()
-    df_cluster_kmeans_copy['size'] = 10
-    for i, center in enumerate(kmeans.cluster_centers_):
-        df_cluster_kmeans_copy.loc[len(df_cluster_kmeans_copy)] = {'title': f'Cluster Center {i}', 'abstract': f'Cluster coordinates: {center}', 'color': color_palette[i], 'size': 12}
 
     # predict the cluster of the embeddings
-    cluster_labels = kmeans.predict(tsne_embeddings)
     # add the cluster labels to the dataframe
-    df_cluster_kmeans['cluster_labels'] = cluster_labels
+    df_cluster_kmeans['cluster_label'] = kmeans_labels
+    df_colors = [str(colors_values[x]) for x in kmeans_labels]
 
     # color each embedding according to the cluster label
     # get index of label in kmeans.cluster_centers_
-    df_cluster_kmeans['color'] = [color_palette[np.where(kmeans.cluster_centers_ == label)[0][0]] for label in cluster_labels]
+    df_cluster_kmeans['color'] = df_colors
+
 
 
     plot = scatter_plot.ScatterPlot(
@@ -350,7 +367,7 @@ def cluster_embeddings_kmeans(num_clusters):
             title="Cluster KMEANS",
             color='color',
             size= 'size',
-            tooltip=['title', 'abstract'],
+            tooltip=['title', 'abstract', 'cluster_label'],
             width=600,
             height=600
             )   
@@ -366,7 +383,9 @@ def apply_clustering_or_property(num_clusters, property, color, dataframe):
 
 def select_and_filter(df, selection_column, selected_values):
     selected_values = [val.strip() for val in selected_values.split(',')]
+    print(selected_values)
     df_filtered = df[df[selection_column].isin(selected_values)]
+    print(df[selection_column].isin(selected_values))
     plot = scatter_plot.ScatterPlot(
         value=df_filtered,
         x="tsne_x",
@@ -374,7 +393,7 @@ def select_and_filter(df, selection_column, selected_values):
         title="Filtered Plot",
         color='color',
         size='size',
-        tooltip=['title', 'abstract', 'color'],
+        tooltip=['title', 'abstract', 'color', 'cluster_label'],
         width=600,
         height=600
     )
@@ -398,8 +417,8 @@ with gr.Blocks() as demo:
             plot_output = scatter_plot.ScatterPlot()
             
             with gr.Row():
-                selection_column = gr.Dropdown(["cluster_labels", "color"], label="Select by")
-                selected_values = gr.Textbox(label="Enter color to keep")
+                selection_column = gr.Dropdown(["cluster_label", "color"], label="Select by")
+                selected_values = gr.Textbox(label="Enter value to keep")
             
             filter_button = gr.Button("Filter Selection")
             
