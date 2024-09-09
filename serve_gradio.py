@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from sklearn.cluster import KMeans
 import matplotlib.colors as mcolors
+import ast
 
 reducer = umap.UMAP()
 alt.data_transformers.disable_max_rows()
@@ -232,7 +233,7 @@ def get_query_embedding(query):
 
     return plot
 
-def color_embeddings(property, color):
+def color_embeddings(property, color, dataframe):
     # get the embeddings from the dataframe
 
     property = property.split(',')
@@ -240,7 +241,7 @@ def color_embeddings(property, color):
 
     print(property, color)
 
-    df_color = df_tsne.copy()
+    df_color = dataframe.copy()
     df_color['size'] = 10
     df_color['color'] = 'red'
     # color the embeddings according to the property, replace the color of the embeddings that contain the property with the color
@@ -333,12 +334,15 @@ def cluster_embeddings(min_cluster_size=10):
 
         return plot
 
-def cluster_embeddings_kmeans(num_clusters):
+def cluster_embeddings_kmeans(num_clusters, dataframe):
     num_clusters = int(num_clusters)
-    kmeans = KMeans(n_clusters=int(num_clusters), random_state=42).fit(tsne_embeddings)
+    local_tsn_embeddings = dataframe['embedding'].apply(lambda x: np.array(ast.literal_eval(x)))
+    local_tsn_embeddings = np.stack(local_tsn_embeddings)
+    kmeans = KMeans(n_clusters=int(num_clusters), random_state=42).fit(local_tsn_embeddings)
     kmeans_labels = kmeans.labels_
+    kmeans_labels_as_str = [str(x) for x in kmeans_labels]
 
-    df_cluster_kmeans = df_tsne.copy()
+    df_cluster_kmeans = dataframe
 
     # df_cluster_kmeans['cluster_labels'] = kmeans.labels_
     df_cluster_kmeans['size'] = 10
@@ -351,7 +355,7 @@ def cluster_embeddings_kmeans(num_clusters):
 
     # predict the cluster of the embeddings
     # add the cluster labels to the dataframe
-    df_cluster_kmeans['cluster_label'] = kmeans_labels
+    df_cluster_kmeans['cluster_label'] = kmeans_labels_as_str
     df_colors = [str(colors_values[x]) for x in kmeans_labels]
 
     # color each embedding according to the cluster label
@@ -376,30 +380,31 @@ def cluster_embeddings_kmeans(num_clusters):
 
 def apply_clustering_or_property(num_clusters, property, color, dataframe):
     if property == "None" and color == "None":
-        plot, df_result = cluster_embeddings_kmeans(num_clusters)
+        plot, df_result = cluster_embeddings_kmeans(num_clusters, dataframe)
+    elif property != "None" and color != "None":
+        plot, df_result = color_embeddings(property, color, dataframe)
     else:
-        plot, df_result = color_embeddings(property, color)
+        # throw error
+        print("Please enter a property and a color.")
+        return None, None
     return plot, df_result
 
-def select_and_filter(df, selection_column, selected_values):
-    selected_values = [val.strip() for val in selected_values.split(',')]
+def select_and_filter(df, selection_column, selected_value):
     
-    df_filtered = df[df[selection_column].isin(selected_values)]
+    df_filtered = df[df[selection_column] == selected_value]    
     df_filtered['size'] = 10
 
-    print(df[selection_column].isin(selected_values))
+
+
+    # print number of elements in the filtered dataframe
+    print(f"Number of elements in the filtered dataframe: {len(df_filtered)}")
     
     # Ensure the DataFrame is not empty
     if df_filtered.empty:
         print("No data matches the selected criteria.")
         return None, df_filtered
     
-    # Convert 'color' column to string type if it exists
-    if 'color' in df_filtered.columns:
-        df_filtered['color'] = df_filtered['color'].astype(str)
-    
- 
-    
+    df_filtered['color'] = 'red'
     plot = scatter_plot.ScatterPlot(
         value=df_filtered,
         x="tsne_x",
@@ -418,9 +423,10 @@ def select_and_filter(df, selection_column, selected_values):
 # create interactive gr.ScatterPlot
 
 with gr.Blocks() as demo:
+        
         with gr.Tab("Layered Clusters"):
-            dataframe = gr.State(df_tsne.copy())
             
+            dataframe = gr.State(df_tsne.copy())
             with gr.Row():
                 num_clusters = gr.Textbox("10", label="Number of Clusters (enter 'None' if not clustering)")
                 property = gr.Textbox("None", label="Property (e.g., cancer,gene,virus)")
@@ -483,6 +489,7 @@ with gr.Blocks() as demo:
             gr.Interface(get_query_embedding, query, scatter_plot.ScatterPlot(width=600), title="Embedding Query")
 
         with gr.Tab("Color embeddings"):
+            dataframe_color = df_tsne.copy()
             # enter property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. 
             # The color will be a string with the color name, e.g. "blue", "red", "green", etc.
             # Multiple properties can be entered, separated by commas.
@@ -493,15 +500,16 @@ with gr.Blocks() as demo:
             desc = 'Enter a property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. The color will be a string with the color name, e.g. "blue", "red", "green", etc. Multiple properties can be entered, separated by commas. The colors will be overwritten in the order of the properties entered.'
 
 
-            gr.Interface(color_embeddings, [property, color], scatter_plot.ScatterPlot(width=600), title="Color embeddings", description=desc)
+            gr.Interface(color_embeddings, [property, color, dataframe_color], scatter_plot.ScatterPlot(width=600), title="Color embeddings", description=desc)
         with gr.Tab("UMAP"):
             gr.Interface(umap_embedding,None, scatter_plot.ScatterPlot(width=600), title="UMAP")
         with gr.Tab("Cluster HDBSCAN"):
             min_cluster_size = gr.Textbox("10", label="Min Cluster Size")
             gr.Interface(cluster_embeddings,min_cluster_size, scatter_plot.ScatterPlot(width=600), title="Cluster")
         with gr.Tab("Cluster KMEANS"):
+            dataframe_cluster = df_tsne.copy()
             num_clusters = gr.Textbox("10", label="Number of Clusters")
-            gr.Interface(cluster_embeddings_kmeans, num_clusters, scatter_plot.ScatterPlot(width=600), title="Cluster")
+            gr.Interface(cluster_embeddings_kmeans, [num_clusters, dataframe_cluster], scatter_plot.ScatterPlot(width=600), title="Cluster")
         
 
 
