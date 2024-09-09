@@ -383,9 +383,23 @@ def apply_clustering_or_property(num_clusters, property, color, dataframe):
 
 def select_and_filter(df, selection_column, selected_values):
     selected_values = [val.strip() for val in selected_values.split(',')]
-    print(selected_values)
+    
     df_filtered = df[df[selection_column].isin(selected_values)]
+    df_filtered['size'] = 10
+
     print(df[selection_column].isin(selected_values))
+    
+    # Ensure the DataFrame is not empty
+    if df_filtered.empty:
+        print("No data matches the selected criteria.")
+        return None, df_filtered
+    
+    # Convert 'color' column to string type if it exists
+    if 'color' in df_filtered.columns:
+        df_filtered['color'] = df_filtered['color'].astype(str)
+    
+ 
+    
     plot = scatter_plot.ScatterPlot(
         value=df_filtered,
         x="tsne_x",
