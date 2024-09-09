@@ -25,8 +25,8 @@ import ast
 reducer = umap.UMAP()
 alt.data_transformers.disable_max_rows()
 
-if os.path.exists('embeddings.csv'):
-    df = pd.read_csv('embeddings.csv', index_col=0)
+if os.path.exists('df_embeddings.csv'):
+    df = pd.read_csv('df_embeddings.csv', index_col=0)
     df['embedding'] = df['embedding'].apply(literal_eval)
     embeddings = np.stack(df['embedding'].values)
 
@@ -303,8 +303,8 @@ def cluster_embeddings(min_cluster_size=10):
         color_palette = sns.color_palette('Paired', n_clusters_)
         cluster_colors = [color_palette[np.argmax(x)]
                         for x in soft_clusters]
-        plt.scatter(*tsne_embeddings.T, s=50, linewidth=0, c=cluster_colors, alpha=0.25)
-        plt.savefig('hierarchy_plot.png')
+        # plt.scatter(*tsne_embeddings.T, s=50, linewidth=0, c=cluster_colors, alpha=0.25)
+        # plt.savefig('hierarchy_plot.png')
 
 
         # Number of clusters in labels, ignoring noise if present.
