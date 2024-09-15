@@ -1,5 +1,6 @@
 import os
 os.environ['HF_HOME'] = '/home/chris/Data/Projects/HF_CACHE'
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 import torch
 from transformers import AutoModel, AutoTokenizer
 from sklearn.preprocessing import normalize
@@ -22,8 +23,8 @@ def get_embedding(text):
         input_data = tokenizer(text, padding="longest", truncation=True, return_tensors="pt")
         # if token is longer than 512, split use the first 512 tokens
         num_tokens = input_data["input_ids"].shape[1]
-        if num_tokens > 512:
-            input_data = tokenizer(text, padding="longest", truncation=True, max_length=512, return_tensors="pt")
+        # if num_tokens > 512:
+        #     input_data = tokenizer(text, padding="longest", truncation=True, max_length=512, return_tensors="pt")
         input_data = {k: v.cuda() for k, v in input_data.items()}
         attention_mask = input_data["attention_mask"]
         last_hidden_state = model(**input_data)[0]

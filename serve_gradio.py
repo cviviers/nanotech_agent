@@ -378,36 +378,61 @@ def cluster_embeddings_kmeans(num_clusters, dataframe):
 
     return plot, df_cluster_kmeans
 
-def apply_clustering_or_property(num_clusters, property, color, dataframe):
-    if property == "None" and color == "None":
-        plot, df_result = cluster_embeddings_kmeans(num_clusters, dataframe)
-    elif property != "None" and color != "None":
-        plot, df_result = color_embeddings(property, color, dataframe)
-    else:
-        # throw error
-        print("Please enter a property and a color.")
-        return None, None
-    return plot, df_result
+# def apply_clustering_or_property(num_clusters, property, color, dataframe):
+#     if property == "None" and color == "None":
+#         plot, df_result = cluster_embeddings_kmeans(num_clusters, dataframe)
+#     elif property != "None" and color != "None":
+#         plot, df_result = color_embeddings(property, color, dataframe)
+#     else:
+#         # throw error
+#         print("Please enter a property and a color.")
+#         return None, None
+#     return plot, df_result
 
-def select_and_filter(df, selection_column, selected_value):
-    print(f"Selected column: {selection_column}")
-    df_filtered = df[df[selection_column] == selected_value]    
-    df_filtered['size'] = 10
+def select_cluster(df, selected_value):
+    print("Selected value: ", selected_value)
+    df_filtered = df[df["cluster_label"] == selected_value]    
+    df_filtered.loc[:, 'size'] = 10
 
-    if selection_column == 'cluster_label':
-        tool_tip_list = ['title', 'abstract', 'color', 'cluster_label']
-    else:
-        tool_tip_list = ['title', 'abstract', 'color']
+    tool_tip_list = ['title', 'abstract', 'color', 'cluster_label']
+    # print number of elements in the filtered dataframe
+    print(f"Number of elements in the filtered dataframe: {len(df_filtered)}")
+    
+    # Ensure the DataFrame is not empty
+    if df_filtered.empty:
+        raise gr.Error("No data matches the selected criteria. 💥!", duration=30)
+    
+    df_filtered.loc[:, 'color'] = 'red'
+    plot = scatter_plot.ScatterPlot(
+        value=df_filtered,
+        x="tsne_x",
+        y="tsne_y",
+        title="Filtered Plot",
+        color='color',
+        size='size',
+        tooltip=tool_tip_list,
+        width=600,
+        height=600
+    )
+    return plot, df_filtered
+
+def select_color(df, selected_value):
+    print("Selected value: ", selected_value)
+    df_filtered = df[df["color"] == selected_value]    
+    df_filtered.loc[:, 'size'] = 10
+
+    
+    tool_tip_list = ['title', 'abstract', 'color']
 
     # print number of elements in the filtered dataframe
     print(f"Number of elements in the filtered dataframe: {len(df_filtered)}")
     
     # Ensure the DataFrame is not empty
     if df_filtered.empty:
-        print("No data matches the selected criteria.")
-        return None, df_filtered
+        raise gr.Error("No data matches the selected criteria. 💥!", duration=30)
+
     
-    df_filtered['color'] = 'red'
+    df_filtered.loc[:, 'color'] = 'red'
     plot = scatter_plot.ScatterPlot(
         value=df_filtered,
         x="tsne_x",
@@ -422,7 +447,6 @@ def select_and_filter(df, selection_column, selected_value):
     return plot, df_filtered
 
 
-
 # create interactive gr.ScatterPlot
 
 with gr.Blocks() as demo:
@@ -434,26 +458,40 @@ with gr.Blocks() as demo:
                 num_clusters = gr.Textbox("10", label="Number of Clusters (enter 'None' if not clustering)")
                 property = gr.Textbox("None", label="Property (e.g., cancer,gene,virus)")
                 color = gr.Textbox("None", label="Color (e.g., blue,green,yellow)")
-            
-            apply_button = gr.Button("Apply Clustering/Property")
+            with gr.Row():
+                apply_cluster_button = gr.Button("Apply Clustering")
+                apply_property_button = gr.Button("Apply Property")
             
             plot_output = scatter_plot.ScatterPlot()
             
             with gr.Row():
-                selection_column = gr.Dropdown(["cluster_label", "color"], label="Select by")
-                selected_values = gr.Textbox(label="Enter value to keep")
+                selected_cluster_values = gr.Textbox(label="Enter cluster label to keep")
+                selected_color_values = gr.Textbox(label="Enter color value to keep")
+            with gr.Row():
+                filter_cluster_button = gr.Button("Filter by cluster")
+                filter_color_button = gr.Button("Filter by color")
+                
             
-            filter_button = gr.Button("Filter Selection")
-            
-            apply_button.click(
-                apply_clustering_or_property,
-                inputs=[num_clusters, property, color, dataframe],
+            apply_cluster_button.click(
+                cluster_embeddings_kmeans,
+                inputs=[num_clusters, dataframe],
+                outputs=[plot_output, dataframe]
+            )
+
+            apply_property_button.click(
+                color_embeddings,
+                inputs=[property, color, dataframe],
                 outputs=[plot_output, dataframe]
             )
             
-            filter_button.click(
-                select_and_filter,
-                inputs=[dataframe, selection_column, selected_values],
+            filter_cluster_button.click(
+                select_cluster,
+                inputs=[dataframe, selected_cluster_values],
+                outputs=[plot_output, dataframe]
+            )
+            filter_color_button.click(
+                select_color,
+                inputs=[dataframe,  selected_color_values],
                 outputs=[plot_output, dataframe]
             )
 
@@ -519,4 +557,4 @@ with gr.Blocks() as demo:
 
 
 # launch
-demo.launch(share=False)
+demo.launch(share=True)

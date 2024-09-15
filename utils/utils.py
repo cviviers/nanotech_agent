@@ -13,6 +13,19 @@ import xmltodict, json
 # ElementTree
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+import requests
+import re
+import string
+import nltk
+import json
+
+# Download NLTK data files (only need to run once)
+nltk.download('stopwords')
+nltk.download('wordnet')
+nltk.download('omw-1.4')
+
+from nltk.corpus import stopwords
+from nltk.stem import WordNetLemmatizer
 
 class ScholarlyPublication:
     def __init__(self, container_type=None, source=None, bib=None, filled=None, gsrank=None, pub_url=None, 
@@ -189,4 +202,53 @@ class Paper:
         with open(filename, 'r') as f:
             data = json.load(f)
             return Paper(**data)
-        
+
+def get_embedding_from_api(text, url="http://localhost:8000/embed"):
+    payload = {"text": text}
+    headers = {"Content-Type": "application/json"}
+    
+    response = requests.post(url, data=json.dumps(payload), headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()["embedding"], response.json()["num_tokens"]
+    else:
+        print(f"Error: {response.status_code}")
+        print(response.text)
+        return None
+    
+# Function to preprocess text
+def preprocess_text(text, custom_terms=None):
+    # Convert to lowercase
+    text = text.lower()
+    
+    if custom_terms is not None:
+        # Replace special nanomedicine terms with placeholders to preserve them
+        for term in custom_terms:
+            # Replace spaces in term with underscores
+            term_underscore = term.replace(' ', '_')
+            # Use regex to replace the term in text
+            text = re.sub(r'\b' + re.escape(term.lower()) + r'\b', term_underscore, text)
+    
+    # Remove punctuation and **NOT** numbers
+    text = re.sub(r'[{}]'.format(string.punctuation), ' ', text)
+    # text = re.sub(r'\d+', '', text)
+    
+    # Tokenize the text
+    tokens = text.split()
+    
+    # Remove stopwords
+    stop_words = set(stopwords.words('english'))
+    tokens = [word for word in tokens if word not in stop_words]
+    
+    # Lemmatization
+    lemmatizer = WordNetLemmatizer()
+    tokens = [lemmatizer.lemmatize(word) for word in tokens]
+    
+    if custom_terms is not None:
+        # Replace placeholders back to original terms with spaces
+        tokens = [word.replace('_', ' ') if word in [t.replace(' ', '_') for t in custom_terms] else word for word in tokens]
+
+    # Join tokens back into a string
+    processed_text = ' '.join(tokens)
+    
+    return processed_text
