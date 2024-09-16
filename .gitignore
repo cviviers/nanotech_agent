@@ -3,3 +3,7 @@
 *.pdf
 *.zip
 *.pptx
+
+old/*
+lda_visualizations/*
+lda_models/*

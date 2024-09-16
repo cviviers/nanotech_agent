@@ -512,7 +512,7 @@ def run_gradio(df, df_umpa):
             #     )
 
     # launch
-    demo.launch(share=False)
+    demo.launch(share=True)
 
 # entry point for the gradio interface
 if __name__ == "__main__":
