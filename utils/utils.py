@@ -214,7 +214,7 @@ def get_embedding_from_api(text, url="http://localhost:8000/embed"):
     else:
         print(f"Error: {response.status_code}")
         print(response.text)
-        return None
+        return None, None
     
 # Function to preprocess text
 def preprocess_text(text, custom_terms=None):

@@ -21,104 +21,44 @@ import seaborn as sns
 from sklearn.cluster import KMeans
 import matplotlib.colors as mcolors
 import ast
+from utils.utils import get_embedding_from_api
 
-reducer = umap.UMAP()
+reducer = umap.UMAP(random_state=42)
 alt.data_transformers.disable_max_rows()
 
-if os.path.exists('df_embeddings.csv'):
-    df = pd.read_csv('df_embeddings.csv', index_col=0)
-    df['embedding'] = df['embedding'].apply(literal_eval)
-    embeddings = np.stack(df['embedding'].values)
 
-if os.path.exists('tsne_embeddings.csv'):
-    df_tsne = pd.read_csv('tsne_embeddings.csv', index_col=0)
-    tsne_embeddings = np.stack(df_tsne['embedding'].apply(literal_eval))
+def load_temp_data(folder_path):
+    if os.path.exists(folder_path):
+        # read df with embeddings
+            # load the embeddings from the json files
+        json_files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
+        # json_files = json_files[:1000]
+        data = {}
 
-else:
-
-    # load the embeddings from the json files
-    folder_path = 'embeddings'
-    json_files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
-    # json_files = json_files[:1000]
-    data = {}
-
-    for file in json_files:
-        with open(os.path.join(folder_path, file), 'r') as f:
-            data[file] = json.load(f)
+        for file in json_files:
+            with open(os.path.join(folder_path, file), 'r') as f:
+                data[file] = json.load(f)
 
 
 
 
-    # data to dataframe
-    df = pd.DataFrame(data).T
-    df['size'] = 10
-    df['color'] = 'red'
+        # data to dataframe
+        df = pd.DataFrame(data).T
+        df['size'] = 10
+        df['color'] = 'red'
 
-    # replace abstracts with the first abstract in the list if it is a list
-    df['abstract'] = df['abstract'].apply(lambda x: x[0] if isinstance(x, list) else x)
+        # replace abstracts with the first abstract in the list if it is a list
+        df['abstract'] = df['abstract'].apply(lambda x: x[0] if isinstance(x, list) else x)
 
-    # filter the dataframe to only include journals from the following list
-    # List of journals to include
-    journals_to_include = [
-        "ACS Applied Materials & Interfaces",
-        "ACS Nano",
-        "Advanced Functional Materials",
-        "Advanced Materials",
-        "Angewandte Chemie",
-        "Biology and Medicine",
-        "Biomaterials",
-        "Cell",
-        "Clinical Cancer Research",
-        "Frontiers in Nanotechnology",
-        "Immunity",
-        "International Journal of Nanomedicine",
-        "Journal of Controlled Release",
-        "Journal of Materials Chemistry B",
-        "Matter",
-        "Molecular Therapy",
-        "Nano Letters",
-        "Nano Micro Small",
-        "Nano Research",
-        "Nanomedicine",
-        "Nanomedicine: Nanotechnology",
-        "Nanoscale",
-        "Nature",
-        "Nature Biomedical Engineering",
-        "Nature Cancer",
-        "Nature Communications",
-        "Nature Materials",
-        "Nature Medicine",
-        "Nature Nanotechnology",
-        "NPG Asia Materials",
-        "Pharmaceutics",
-        "PNAS",
-        "Science",
-        "Science Advances",
-        "Science Translational Medicine",
-        "Scientific Reports",
-        "Small"
-    ]
+        # store the embeddings in a numpy array
+        embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
+        embeddings = np.stack(embeddings)
 
-    # journals as small letters
-    journals_to_include = [journal.lower() for journal in journals_to_include]
-
-    # Exclusion criteria
-    keywords_exclusion = ["review", "not available"]
-
-    # filter the dataframe to only include journals from the list
-    df = df[df['journal'].str.lower().isin(journals_to_include)]
-
-    # filter the dataframe to exclude titles with keywords from the exclusion list
-    df = df[~df['title'].str.lower().str.contains('|'.join(keywords_exclusion))]
-
+        return df, embeddings
     
 
-
-
-
-    # store the embeddings in a numpy array
-    embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
-    embeddings = np.stack(embeddings)
+def create_tsne_embeddings(df, embeddings):
+    
     # use the embeddings to create a t-SNE plot
     # get the embeddings from the dataframe
     # embeddings = df['embedding'].apply(lambda x: np.array(x)).values
@@ -132,106 +72,107 @@ else:
     # create new pandas df with old df added the tsne embeddings
     df_tsne = df.copy()
 
-    df_tsne['tsne_x'] = tsne_embeddings[:, 0]
-    df_tsne['tsne_y'] = tsne_embeddings[:, 1]
+    df_tsne['low_x'] = tsne_embeddings[:, 0]
+    df_tsne['low_y'] = tsne_embeddings[:, 1]
 
-    # store the dataframe as csv file
-    if not os.path.exists('df_embeddings.csv'):
-        df.to_csv('df_embeddings.csv')
+    return df_tsne, tsne_embeddings
 
-    # store the embeddings as csv file
-    if not os.path.exists('tsne_embeddings.csv'):
-        df_tsne.to_csv('tsne_embeddings.csv')
+def create_umap_embeddings(df, embeddings):
+    reducer = umap.UMAP(random_state=42)
+    umpa_embedding = reducer.fit_transform(embeddings)
+    df_umpa = df.copy()
+    df_umpa['low_x'] = umpa_embedding[:, 0]
+    df_umpa['low_y'] = umpa_embedding[:, 1]
+    df_umpa['size'] = 10
+    df_umpa['color'] = 'red'
 
-    
+    return df_umpa, umpa_embedding
 
-# create a scatter plot of the embeddin
-def get_embeddings(dim1, dim2):
 
-    # create new pandas df with old df added the tsne embeddings
-    df_embed = df.copy()
-    df_embed['x'] = embeddings[:, int(dim1)]
-    df_embed['y'] = embeddings[:, int(dim2)]
-
-    plot = scatter_plot.ScatterPlot(
-                value=df_embed,
-                x="x",
-                y="y",
-                title="Embeddings of abstracts",
-                color='color',
-                size= 'size',
-                # tooltip displays the title of the article
-                tooltip=['title', 'abstract'],
-                width=600,
-                height=600
-            )
-
-    return plot
-
-def get_embedding_from_api(text, url="http://localhost:8000/embed"):
-    payload = {"text": text}
-    headers = {"Content-Type": "application/json"}
-    
-    response = requests.post(url, data=json.dumps(payload), headers=headers)
-    
-    if response.status_code == 200:
-        return response.json()["embedding"], response.json()["num_tokens"]
-    else:
-        print(f"Error: {response.status_code}")
-        print(response.text)
-        return None
-
-def get_similar_embeddings(query):
+def get_similar_embeddings(query, df,  num_cases=10):
     # get the embedding from the api
-    embedding, num_tokens = get_embedding_from_api(query)
-
+    # try converting the number of cases to an integer
+    try:
+        num_cases = int(num_cases)
+    except:
+        raise gr.Error("Please enter a valid number of cases to return", duration=30)
+    # get the embedding from the api
+    try:
+        embedding, num_tokens = get_embedding_from_api(query)
+        if embedding is None:
+            raise gr.Error("No embedding returned. The embeddng server could be down", duration=30)
+    except:
+        raise gr.Error("Please enter a valid query", duration=30)
+  
+    embeddings = df['embedding'].apply(lambda x: np.array(x))
+    embeddings = np.stack(embeddings)
     # calculate the cosine similarity between the query embedding and the embeddings in the dataframe
     cosine_similarities = np.dot(embeddings, embedding)
     # get the indices of the top 10 most similar embeddings
-    top_indices = np.argsort(cosine_similarities)[::-1][:10]
-    # get the titles of the most similar embeddings
-    similar_titles = df.iloc[top_indices]['title'].tolist()
-    # get the abstracts of the most similar embeddings
-    similar_abstracts = df.iloc[top_indices]['abstract'].tolist()
+    top_indices = np.argsort(cosine_similarities)[::-1][:num_cases]
+
 
     # create a dataframe with the most similar embeddings
-    similar_df = df.iloc[top_indices].copy()
+    similar_df = df.copy()
+    similar_df = similar_df.iloc[top_indices].copy()
     similar_df['size'] = 10
     similar_df['color'] = 'red'
 
     return similar_df
 
-def get_query_embedding(query):
+def get_query_embedding(query, df, dim_reduction='UMAP'):
     # get the embedding from the api
-    embedding, num_tokens = get_embedding_from_api(query)
+    try:
+        embedding, num_tokens = get_embedding_from_api(query)
+        if embedding is None:
+            raise gr.Error("No embedding returned. The embeddng server could be down", duration=30)
+    except:
+        raise gr.Error("Please enter a valid query", duration=30)
 
     # add the embedding to the dataframe
-    df_query = df.copy()
+    df_query = df
     df_query['size'] = 10
-    df_query['color'] = 'red'
+    # df_query['color'] = 'red'
+
     # add the query embedding to the dataframe with the title "Query" and abstract the value of the query, all other fields 'Not Available'
-    df_query.loc[0] = {'title': 'Query', 'abstract': query, 'embedding': embedding,  'color': 'blue', 'size': 12}
+    new_entry = {'title': 'Query', 'abstract': query, 'embedding': embedding,  'color': 'black', 'size': 200}
+    for column in df.columns:
+        if column not in new_entry:
+            new_entry[column] = 'Not Available'
+
+    df_query.loc[len(df_query)] = new_entry
     # get the tsne embeddings of the query
     query_embedding = np.array(df_query['embedding'].map(lambda x: np.array(x)))
     query_embedding = np.stack(query_embedding)
-    query_tsne = tsne.fit_transform(query_embedding)
-    df_query['tsne_x'] = query_tsne[:, 0]
-    df_query['tsne_y'] = query_tsne[:, 1]
+
+    if dim_reduction == 'UMAP':
+        reducer = umap.UMAP(random_state=42) 
+        query_umpa = reducer.fit_transform(query_embedding)
+        
+        df_query['low_x'] = query_umpa[:, 0]
+        df_query['low_y'] = query_umpa[:, 1]
+
+    elif dim_reduction == 't-SNE':
+        tsne = TSNE(n_components=2, random_state=42, init='random', learning_rate=200, max_iter=1000)
+        query_tsne = tsne.fit_transform(query_embedding)
+        
+        df_query['low_x'] = query_tsne[:, 0]
+        df_query['low_y'] = query_tsne[:, 1]
 
     plot = scatter_plot.ScatterPlot(
             value=df_query,
-            x="tsne_x",
-            y="tsne_y",
+            x="low_x",
+            y="low_y",
             title="Embedding Query",
             color='color',
             size= 'size',
             # tooltip displays the title of the article
             tooltip=['title', 'abstract'],
-            width=600,
-            height=600
+            width=1200,
+            height=1200
         )
 
-    return plot
+    return plot, df_query
 
 def color_embeddings(property, color, dataframe):
     # get the embeddings from the dataframe
@@ -254,19 +195,19 @@ def color_embeddings(property, color, dataframe):
 
     plot = scatter_plot.ScatterPlot(
             value=df_color,
-            x="tsne_x",
-            y="tsne_y",
+            x="low_x",
+            y="low_y",
             title="Color embeddings",
             color='color',
             size= 'size',
             tooltip=['title', 'abstract'],
-            width=600,
-            height=600
+            width=1200,
+            height=1200
             )
     
     return plot, df_color
 
-def umap_embedding():  
+def umap_embedding(df, embeddings):  
     umpa_embedding = reducer.fit_transform(embeddings)
     df_umpa = df.copy()
     df_umpa['x'] = umpa_embedding[:, 0]
@@ -282,63 +223,65 @@ def umap_embedding():
             color='color',
             size= 'size',
             tooltip=['title', 'abstract'],
-            width=600,
-            height=600
+            width=1200,
+            height=1200
             )
     return plot
 
-def cluster_embeddings(min_cluster_size=10):
-        # a tab that clusters the embeddings using HDBSCAN and displays the clusters in the scatter plot
-        # the result should be a scatter plot with the clusters colored differently
-        # the plot should show the title and abstract of the embeddings
-        clusterer = hdbscan.HDBSCAN(min_cluster_size=int(min_cluster_size),  prediction_data=True, branch_detection_data=True, alpha=0.5, cluster_selection_method='leaf').fit(tsne_embeddings)
-        n_clusters_ = len(set(clusterer.labels_)) - (1 if -1 in clusterer.labels_ else 0)
-        print('Estimated number of clusters: %d' % n_clusters_)
-        
-        
-        df_cluster = df_tsne.copy()
+def cluster_embeddings(df, embeddings, min_cluster_size=10):
+    # a tab that clusters the embeddings using HDBSCAN and displays the clusters in the scatter plot
+    # the result should be a scatter plot with the clusters colored differently
+    # the plot should show the title and abstract of the embeddings
+    clusterer = hdbscan.HDBSCAN(min_cluster_size=int(min_cluster_size),  prediction_data=True, branch_detection_data=True, alpha=0.5, cluster_selection_method='leaf').fit(embeddings)
+    n_clusters_ = len(set(clusterer.labels_)) - (1 if -1 in clusterer.labels_ else 0)
+    print('Estimated number of clusters: %d' % n_clusters_)
+    
+    
+    df_cluster = df
 
-        # save the hierarchy plot as png
-        soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
-        color_palette = sns.color_palette('Paired', n_clusters_)
-        cluster_colors = [color_palette[np.argmax(x)]
-                        for x in soft_clusters]
-        # plt.scatter(*tsne_embeddings.T, s=50, linewidth=0, c=cluster_colors, alpha=0.25)
-        # plt.savefig('hierarchy_plot.png')
-
-
-        # Number of clusters in labels, ignoring noise if present.
-       
-        hdb_colors = plt.cm.Spectral(np.linspace(0, 1, n_clusters_))
-        df_cluster['cluster_labels'] = clusterer.labels_  # Use labels instead of the entire clusterer object
+    # save the hierarchy plot as png
+    soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
+    color_palette = sns.color_palette('Paired', n_clusters_)
+    cluster_colors = [color_palette[np.argmax(x)]
+                    for x in soft_clusters]
+    # plt.scatter(*tsne_embeddings.T, s=50, linewidth=0, c=cluster_colors, alpha=0.25)
+    # plt.savefig('hierarchy_plot.png')
 
 
-        df_cluster['size'] = 10
-        # change the color of the embeddings according to the cluster
-        # convert the cluster_labels to colors
-        # df_cluster['color'] = df_cluster['cluster_labels'].apply(lambda x: hdb_colors[x])
-        cluster_colors_str = [str(x) for x in cluster_colors]
-        df_cluster['color'] = cluster_colors_str
+    # Number of clusters in labels, ignoring noise if present.
 
-        plot = scatter_plot.ScatterPlot(
-                value=df_cluster,
-                x="tsne_x",
-                y="tsne_y",
-                title="Cluster",
-                color='color',
-                size= 'size',
-                tooltip=['title', 'abstract'],
-                width=600,
-                height=600
-                )
+    hdb_colors = plt.cm.Spectral(np.linspace(0, 1, n_clusters_))
+    df_cluster['cluster_labels'] = clusterer.labels_  # Use labels instead of the entire clusterer object
 
-        return plot
 
-def cluster_embeddings_kmeans(num_clusters, dataframe):
+    df_cluster['size'] = 10
+    # change the color of the embeddings according to the cluster
+    # convert the cluster_labels to colors
+    # df_cluster['color'] = df_cluster['cluster_labels'].apply(lambda x: hdb_colors[x])
+    cluster_colors_str = [str(x) for x in cluster_colors]
+    df_cluster['color'] = cluster_colors_str
+
+    plot = scatter_plot.ScatterPlot(
+            value=df_cluster,
+            x="low_x",
+            y="low_y",
+            title="Cluster",
+            color='color',
+            size= 'size',
+            tooltip=['title', 'abstract'],
+            width=1200,
+            height=1200
+            )
+
+    return plot
+
+def cluster_embeddings_kmeans(num_clusters, dataframe, dim_reduction='UMAP'):
     num_clusters = int(num_clusters)
-    local_tsn_embeddings = dataframe['embedding'].apply(lambda x: np.array(ast.literal_eval(x)))
-    local_tsn_embeddings = np.stack(local_tsn_embeddings)
-    kmeans = KMeans(n_clusters=int(num_clusters), random_state=42).fit(local_tsn_embeddings)
+
+    local_embeddings = dataframe['embedding'].apply(lambda x: np.array(x))
+    local_embeddings = np.stack(local_embeddings)
+
+    kmeans = KMeans(n_clusters=int(num_clusters), random_state=42).fit(local_embeddings)
     kmeans_labels = kmeans.labels_
     kmeans_labels_as_str = [str(x) for x in kmeans_labels]
 
@@ -362,32 +305,38 @@ def cluster_embeddings_kmeans(num_clusters, dataframe):
     # get index of label in kmeans.cluster_centers_
     df_cluster_kmeans['color'] = df_colors
 
+    if dim_reduction == 'UMAP':
+        reducer = umap.UMAP(random_state=42)
+        umpa_embedding = reducer.fit_transform(local_embeddings)
+        df_cluster_kmeans['low_x'] = umpa_embedding[:, 0]
+        df_cluster_kmeans['low_y'] = umpa_embedding[:, 1]
+    elif dim_reduction == 't-SNE':
+        tsne = TSNE(n_components=2, random_state=42, init='random', learning_rate=200, max_iter=1000)
+        tsne_embedding = tsne.fit_transform(local_embeddings)
+        df_cluster_kmeans['low_x'] = tsne_embedding[:, 0]
+        df_cluster_kmeans['low_y'] = tsne_embedding[:, 1]
+
 
 
     plot = scatter_plot.ScatterPlot(
             value=df_cluster_kmeans,
-            x="tsne_x",
-            y="tsne_y",
+            x="low_x",
+            y="low_y",
             title="Cluster KMEANS",
             color='color',
             size= 'size',
             tooltip=['title', 'abstract', 'cluster_label'],
-            width=600,
-            height=600
+            width=1200,
+            height=1200,
+
+            # add custom css for tooltip hovering, classes .custom-tooltip .tooltip-text .custom-tooltip .tooltip-text::after .custom-tooltip:hover .tooltip-text exist
+
+    
             )   
 
     return plot, df_cluster_kmeans
 
-# def apply_clustering_or_property(num_clusters, property, color, dataframe):
-#     if property == "None" and color == "None":
-#         plot, df_result = cluster_embeddings_kmeans(num_clusters, dataframe)
-#     elif property != "None" and color != "None":
-#         plot, df_result = color_embeddings(property, color, dataframe)
-#     else:
-#         # throw error
-#         print("Please enter a property and a color.")
-#         return None, None
-#     return plot, df_result
+
 
 def select_cluster(df, selected_value):
     print("Selected value: ", selected_value)
@@ -402,17 +351,20 @@ def select_cluster(df, selected_value):
     if df_filtered.empty:
         raise gr.Error("No data matches the selected criteria. 💥!", duration=30)
     
+    if "low_x" not in df_filtered.columns:
+        raise gr.Error("The DataFrame has not been clustered. 💥!", duration=30)
+    
     df_filtered.loc[:, 'color'] = 'red'
     plot = scatter_plot.ScatterPlot(
         value=df_filtered,
-        x="tsne_x",
-        y="tsne_y",
+        x="low_x",
+        y="low_y",
         title="Filtered Plot",
         color='color',
         size='size',
         tooltip=tool_tip_list,
-        width=600,
-        height=600
+        width=1200,
+        height=1200
     )
     return plot, df_filtered
 
@@ -435,126 +387,143 @@ def select_color(df, selected_value):
     df_filtered.loc[:, 'color'] = 'red'
     plot = scatter_plot.ScatterPlot(
         value=df_filtered,
-        x="tsne_x",
-        y="tsne_y",
+        x="low_x",
+        y="low_y",
         title="Filtered Plot",
         color='color',
         size='size',
         tooltip=tool_tip_list,
-        width=600,
-        height=600
+        width=1200,
+        height=1200
     )
     return plot, df_filtered
 
 
-# create interactive gr.ScatterPlot
 
-with gr.Blocks() as demo:
-        
-        with gr.Tab("Layered Clusters"):
-            
-            dataframe = gr.State(df_tsne.copy())
-            with gr.Row():
-                num_clusters = gr.Textbox("10", label="Number of Clusters (enter 'None' if not clustering)")
-                property = gr.Textbox("None", label="Property (e.g., cancer,gene,virus)")
-                color = gr.Textbox("None", label="Color (e.g., blue,green,yellow)")
-            with gr.Row():
-                apply_cluster_button = gr.Button("Apply Clustering")
-                apply_property_button = gr.Button("Apply Property")
-            
-            plot_output = scatter_plot.ScatterPlot()
-            
-            with gr.Row():
-                selected_cluster_values = gr.Textbox(label="Enter cluster label to keep")
-                selected_color_values = gr.Textbox(label="Enter color value to keep")
-            with gr.Row():
-                filter_cluster_button = gr.Button("Filter by cluster")
-                filter_color_button = gr.Button("Filter by color")
+def run_gradio(df, df_umpa):
+    # create interactive gr.ScatterPlot
+
+    with gr.Blocks(theme=gr.themes.Soft()) as demo:
+            with gr.Tab("Layered Clusters"):
                 
-            
-            apply_cluster_button.click(
-                cluster_embeddings_kmeans,
-                inputs=[num_clusters, dataframe],
-                outputs=[plot_output, dataframe]
-            )
+                dataframe = gr.State(df.copy())
+                with gr.Row():
+                    # dropdown with the dimensionality reduction methods
+                    method = gr.Dropdown(["UMAP", "t-SNE"], label="Method", value="UMAP")
 
-            apply_property_button.click(
-                color_embeddings,
-                inputs=[property, color, dataframe],
-                outputs=[plot_output, dataframe]
-            )
-            
-            filter_cluster_button.click(
-                select_cluster,
-                inputs=[dataframe, selected_cluster_values],
-                outputs=[plot_output, dataframe]
-            )
-            filter_color_button.click(
-                select_color,
-                inputs=[dataframe,  selected_color_values],
-                outputs=[plot_output, dataframe]
-            )
-
-        with gr.Tab("TSNE"):
-            scatter_plot.ScatterPlot(
-                value=df_tsne,
-                x="tsne_x",
-                y="tsne_y",
-                title="Embeddings of abstracts",
-                color='color',
-                # tooltip displays the title of the article
-                # create list with the value 10 repeated for the length of the dataframe
-                size= 'size',
-                tooltip=['title', 'abstract'],
-                width=800,
-                height=800
-            )
-        with gr.Tab("Specific dimensions"):
-           
-                gr.Interface(get_embeddings, [gr.Textbox("0", label="Dimension 1", info="Enter a value between 0 and 1024", min_width=200),
-                                            gr.Textbox("1", label="Dimension 2", info="Enter a value between 0 and 1024", min_width=200)], scatter_plot.ScatterPlot(width=600), title="Embeddings of abstracts")
+                with gr.Row():
+                    num_clusters = gr.Textbox("10", label="Number of Clusters (enter 'None' if not clustering)")
+                    property = gr.Textbox("None", label="Property (e.g., cancer,gene,virus)")
+                    color = gr.Textbox("None", label="Color (e.g., blue,green,yellow)")
+                with gr.Row():
+                    apply_cluster_button = gr.Button("Apply Clustering")
+                    apply_property_button = gr.Button("Apply Property")
                 
-        # add a tab that allows entering a query and then displays the most similar embeddings, use cosine similarity. the result should be a list of the titles of the most similar embeddings, showing the title and the abstract of the most similar embedding
-        with gr.Tab("Query"):
-            query = gr.Textbox("Enter a query", label="Query")
+                plot_output = scatter_plot.ScatterPlot()
+                
+                with gr.Row():
+                    selected_cluster_values = gr.Textbox(label="Enter cluster label to keep")
+                    selected_color_values = gr.Textbox(label="Enter color value to keep")
+                with gr.Row():
+                    filter_cluster_button = gr.Button("Filter by cluster")
+                    filter_color_button = gr.Button("Filter by color")
+                with gr.Row():
+                    query = gr.Textbox("Enter a query", label="Query")
+                    apply_query_button = gr.Button("Apply Query")
+                    
+                
+                apply_cluster_button.click(
+                    cluster_embeddings_kmeans,
+                    inputs=[num_clusters, dataframe, method],
+                    outputs=[plot_output, dataframe]
+                )
 
-            # display results in gr.dataframe
-            gr.Interface(get_similar_embeddings, query, gr.Dataframe(headers=["title", "abstract"], row_count=10), title="Most similar embeddings")
+                apply_property_button.click(
+                    color_embeddings,
+                    inputs=[property, color, dataframe],
+                    outputs=[plot_output, dataframe]
+                )
+                
+                filter_cluster_button.click(
+                    select_cluster,
+                    inputs=[dataframe, selected_cluster_values],
+                    outputs=[plot_output, dataframe]
+                )
+                filter_color_button.click(
+                    select_color,
+                    inputs=[dataframe,  selected_color_values],
+                    outputs=[plot_output, dataframe]
+                )
+                apply_query_button.click(
+                    get_query_embedding,
+                    inputs=[query, dataframe, method],
+                    outputs=[plot_output, dataframe]
+                )
 
-        # add a tab that embeds a query and displays the tsne plot of the embeddings with the query in blue
-        with gr.Tab("Embedding Query"):
-            query = gr.Textbox("Enter a query", label="Query") 
+    
+            # add a tab that allows entering a query and then displays the most similar embeddings, use cosine similarity. the result should be a list of the titles of the most similar embeddings, showing the title and the abstract of the most similar embedding
+            with gr.Tab("Query search"):
+                dataframe = gr.State(df.copy())
+               
 
-            gr.Interface(get_query_embedding, query, scatter_plot.ScatterPlot(width=600), title="Embedding Query")
+                with gr.Row():
+                    query = gr.Textbox("Enter a query", label="Query")
+                    num_cases = gr.Textbox("10", label="Number of cases to return")
+                with gr.Row():
+                    apply_query_button = gr.Button("Apply search")
 
-        with gr.Tab("Color embeddings"):
-            dataframe_color = gr.State(df_tsne.copy())
-            color_output = scatter_plot.ScatterPlot(width=600)
-            # enter property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. 
-            # The color will be a string with the color name, e.g. "blue", "red", "green", etc.
-            # Multiple properties can be entered, separated by commas.
-            property = gr.Textbox("Enter a property eg. cancer,gene,virus", label="Property")
-            color = gr.Textbox("Enter a color eg. blue,green,yellow", label="Color")
+                df_output = gr.Dataframe()
 
-            # add label field with additional information
-            desc = 'Enter a property and an associated color. The property will be searched in the abstract and the embeddings will be colored according to the property. The color will be a string with the color name, e.g. "blue", "red", "green", etc. Multiple properties can be entered, separated by commas. The colors will be overwritten in the order of the properties entered.'
+                apply_query_button.click(
+                    get_similar_embeddings,
+                    inputs=[query, dataframe, num_cases],
+                    outputs=[df_output]
+                )
+   
+            # add a tab that embeds a query and displays the tsne plot of the embeddings with the query in blue
+            # with gr.Tab("Embedding Query"):
+            #     dataframe = gr.State(df.copy())
+            #     with gr.Row():
+            #         query = gr.Textbox("Enter a query", label="Query")
+            #         method = gr.Dropdown(["UMAP", "t-SNE"], label="Method")
+            #     with gr.Row():
+            #         apply_query_button = gr.Button("Apply Query")
 
+            #     plot_output = scatter_plot.ScatterPlot()
 
-            gr.Interface(color_embeddings, [property, color, dataframe_color], outputs=[color_output, dataframe_color], title="Color embeddings", description=desc)
-        with gr.Tab("UMAP"):
-            gr.Interface(umap_embedding,None, scatter_plot.ScatterPlot(width=600), title="UMAP")
-        with gr.Tab("Cluster HDBSCAN"):
-            min_cluster_size = gr.Textbox("10", label="Min Cluster Size")
-            gr.Interface(cluster_embeddings,min_cluster_size, scatter_plot.ScatterPlot(width=600), title="Cluster")
-        with gr.Tab("Cluster KMEANS"):
-            dataframe_cluster = gr.State(df_tsne.copy())
-            cluter_plot = scatter_plot.ScatterPlot(width=600)
-            num_clusters = gr.Textbox("10", label="Number of Clusters")
-            gr.Interface(cluster_embeddings_kmeans, [num_clusters, dataframe_cluster], [cluter_plot, dataframe_cluster], title="Cluster")
-        
+            #     apply_query_button.click(
+            #         get_query_embedding,
+            #         inputs=[query, dataframe, method],
+            #         outputs=[plot_output]
+            #     )
 
+            # with gr.Tab("Cluster HDBSCAN (Under construction)"):
 
+            #     dataframe = gr.State(df.copy())
+            #     with gr.Row():
+            #         min_cluster_size = gr.Textbox("10", label="Min Cluster Size")
+            #     with gr.Row():
+            #         apply_cluster_button = gr.Button("Apply Clustering")
+            #     plot_output = scatter_plot.ScatterPlot()
+            #     apply_cluster_button.click(
+            #         cluster_embeddings,
+            #         inputs=[dataframe, embeddings, min_cluster_size],
+            #         outputs=[plot_output]
+            #     )
 
+    # launch
+    demo.launch(share=False)
 
-# launch
-demo.launch(share=True)
+# entry point for the gradio interface
+if __name__ == "__main__":
+    # load the data
+    print("Starting the gradio interface")
+    folder_path = 'embeddings_subset'
+    df, embeddings = load_temp_data(folder_path)
+    # create tsne embeddings
+    # df_tsne, tsne_embeddings = create_tsne_embeddings(df, embeddings)
+    # create umap embeddings
+    df_umpa, umpa_embedding = create_umap_embeddings(df, embeddings)
+    print("Finished loading the data")
+    run_gradio(df, df_umpa)
+    
