@@ -203,7 +203,27 @@ class Paper:
             data = json.load(f)
             return Paper(**data)
 
-def get_embedding_from_api(text, url="http://localhost:8000/embed"):
+def get_embedding_from_api(text, query_type="document"):
+    payload = {"text": text}
+    headers = {"Content-Type": "application/json"}
+    
+    if query_type == "document":
+        url="http://localhost:8000/embed",
+    elif query_type == "s2s":
+        url="http://localhost:8000/embed_queries_s2s",
+    elif query_type == "s2p":
+        url="http://localhost:8000/embed_queries_s2p",
+    
+    response = requests.post(url, data=json.dumps(payload), headers=headers)
+    
+    if response.status_code == 200:
+        return response.json()["embedding"], response.json()["num_tokens"]
+    else:
+        print(f"Error: {response.status_code}")
+        print(response.text)
+        return None, None
+
+
     payload = {"text": text}
     headers = {"Content-Type": "application/json"}
     

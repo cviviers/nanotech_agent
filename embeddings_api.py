@@ -33,6 +33,8 @@ def get_embedding(text):
         vector = normalize(vector_linear(vector).cpu().numpy())
     return vector.tolist()[0], num_tokens
 
+
+
 app = FastAPI()
 
 class TextInput(BaseModel):
@@ -42,6 +44,34 @@ class TextInput(BaseModel):
 async def embed_text(input: TextInput):
     embedding, num_tokens = get_embedding(input.text)
     return {"embedding": embedding, "num_tokens": num_tokens}
+
+
+
+@app.post("/embed_queries_s2s")
+async def embed_text(input: TextInput):
+    # Prompt of s2s task(e.g. semantic textual similarity task):
+    query_prompt = "Instruct: Retrieve semantically similar text.\nQuery: "
+    query =  query_prompt  + input.text
+    embedding, num_tokens = get_embedding(query)
+    return {"embedding": embedding, "num_tokens": num_tokens}
+
+@app.post("/embed_queries_s2p")
+async def embed_text(input: TextInput):
+    # Prompt of s2p task(e.g. retrieve task):
+    query_prompt = "Instruct: Given a web search query, retrieve relevant passages that answer the query.\nQuery: "
+    query =  query_prompt  + input.text
+    embedding, num_tokens = get_embedding(query)
+    return {"embedding": embedding, "num_tokens": num_tokens}
+
+
+
+@app.post("/compute_similarity")
+async def compute_similarity(input: dict):
+    embedding_docs = torch.tensor(input["embedding_docs"]).cuda()
+    embedding_query = torch.tensor(input["embedding_query"]).cuda()
+    
+    similarity = embedding_query @ embedding_docs.T
+    return {"similarity": similarity}
 
 if __name__ == "__main__":
     import uvicorn

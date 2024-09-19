@@ -89,7 +89,7 @@ def create_umap_embeddings(df, embeddings):
     return df_umpa, umpa_embedding
 
 
-def get_similar_embeddings(query, df,  num_cases=10):
+def get_semantic_similar_embeddings(query, df,  num_cases=10):
     # get the embedding from the api
     # try converting the number of cases to an integer
     try:
@@ -98,7 +98,7 @@ def get_similar_embeddings(query, df,  num_cases=10):
         raise gr.Error("Please enter a valid number of cases to return", duration=30)
     # get the embedding from the api
     try:
-        embedding, num_tokens = get_embedding_from_api(query)
+        embedding, num_tokens = get_embedding_from_api(query, query_type="s2s")	
         if embedding is None:
             raise gr.Error("No embedding returned. The embeddng server could be down", duration=30)
     except:
@@ -106,19 +106,101 @@ def get_similar_embeddings(query, df,  num_cases=10):
   
     embeddings = df['embedding'].apply(lambda x: np.array(x))
     embeddings = np.stack(embeddings)
-    # calculate the cosine similarity between the query embedding and the embeddings in the dataframe
-    cosine_similarities = np.dot(embeddings, embedding)
-    # get the indices of the top 10 most similar embeddings
-    top_indices = np.argsort(cosine_similarities)[::-1][:num_cases]
+    
+    # calculate the dot product of the embeddings with the query embedding
+    similarities = np.dot(embeddings, embedding)
 
+
+
+    # get the indices of the top 10 most similar embeddings
+    sorted_indices = np.argsort(similarities)[::-1]
+    # sorted_similarities = similarities[sorted_indices]
+    top_indices = sorted_indices[:num_cases]
 
     # create a dataframe with the most similar embeddings
     similar_df = df.copy()
-    similar_df = similar_df.iloc[top_indices].copy()
+    similar_df['similarity'] = similarities
+
+    # sort df by similarity
+    similar_df = similar_df.sort_values(by='similarity', ascending=False)
+    similar_df['current_index'] = similar_df.index
     similar_df['size'] = 10
     similar_df['color'] = 'red'
 
-    return similar_df
+    # create scatter plot with the similarity 
+
+    plot = scatter_plot.ScatterPlot(
+            value=similar_df,
+            x="current_index",
+            y="similarity",
+            title="Semantic similarity",
+            color='color',
+            size= 'size',
+            # tooltip displays the title of the article
+            tooltip=['title', 'abstract'],
+            width=1200,
+            height=400
+        )
+    top_similar_df = similar_df.iloc[top_indices]
+    return top_similar_df, plot
+
+def get_retrieval_embeddings(query, df,  num_cases=10):
+    # get the embedding from the api
+    # try converting the number of cases to an integer
+    try:
+        num_cases = int(num_cases)
+    except:
+        raise gr.Error("Please enter a valid number of cases to return", duration=30)
+    # get the embedding from the api
+    try:
+        embedding, num_tokens = get_embedding_from_api(query, query_type="s2p")	
+        if embedding is None:
+            raise gr.Error("No embedding returned. The embeddng server could be down", duration=30)
+    except:
+        raise gr.Error("Please enter a valid query", duration=30)
+  
+    embeddings = df['embedding'].apply(lambda x: np.array(x))
+    embeddings = np.stack(embeddings)
+    print(embeddings.shape)
+    print(embedding.shape)
+    # calculate the dot product of the embeddings with the query embedding
+    similarities = np.dot(embeddings, embedding)
+    print(similarities.shape)
+
+
+
+    # get the indices of the top 10 most similar embeddings
+    sorted_indices = np.argsort(similarities)[::-1]
+    # sorted_similarities = similarities[sorted_indices]
+    top_indices = sorted_indices[:num_cases]
+
+    # create a dataframe with the most similar embeddings
+    similar_df = df.copy()
+    similar_df['similarity'] = similarities
+
+    # sort df by similarity
+    similar_df = similar_df.sort_values(by='similarity', ascending=False)
+    similar_df['current_index'] = similar_df.index
+    similar_df['size'] = 10
+    similar_df['color'] = 'red'
+
+    # create scatter plot with the similarity 
+
+    plot = scatter_plot.ScatterPlot(
+            value=similar_df,
+            x="current_index",
+            y="similarity",
+            title="Semantic similarity",
+            color='color',
+            size= 'size',
+            # tooltip displays the title of the article
+            tooltip=['title', 'abstract'],
+            width=1200,
+            height=400
+        )
+    top_similar_df = similar_df.iloc[top_indices]
+    return top_similar_df, plot
+
 
 def get_query_embedding(query, df, dim_reduction='UMAP'):
     # get the embedding from the api
@@ -462,23 +544,48 @@ def run_gradio(df, df_umpa):
 
     
             # add a tab that allows entering a query and then displays the most similar embeddings, use cosine similarity. the result should be a list of the titles of the most similar embeddings, showing the title and the abstract of the most similar embedding
-            with gr.Tab("Query search"):
+            with gr.Tab("Semantic textual similarity"):
                 dataframe = gr.State(df.copy())
-               
-
                 with gr.Row():
+                    description = gr.Label("Instruct: Retrieve semantically similar text.")
+                # Instruct: Retrieve semantically similar text.\nQuery: {query}
+                with gr.Row():
+                    # add label with discription
                     query = gr.Textbox("Enter a query", label="Query")
                     num_cases = gr.Textbox("10", label="Number of cases to return")
                 with gr.Row():
                     apply_query_button = gr.Button("Apply search")
 
                 df_output = gr.Dataframe()
+                df_plot = scatter_plot.ScatterPlot()
 
                 apply_query_button.click(
-                    get_similar_embeddings,
+                    get_semantic_similar_embeddings,
                     inputs=[query, dataframe, num_cases],
-                    outputs=[df_output]
+                    outputs=[df_output, df_plot]
                 )
+            
+            with gr.Tab("Retrieve question answering"):
+                dataframe = gr.State(df.copy())
+                with gr.Row():
+                    description = gr.Label("Instruct: Given a search query, retrieve relevant abstracts that answer the query.")
+                with gr.Row():
+                    # add label with discription
+                    query = gr.Textbox("Enter a query", label="Query")
+                    num_cases = gr.Textbox("10", label="Number of cases to return")
+                with gr.Row():
+                    apply_query_button = gr.Button("Apply search")
+
+                df_output = gr.Dataframe()
+                df_plot = scatter_plot.ScatterPlot()
+
+                apply_query_button.click(
+                    get_retrieval_embeddings,
+                    inputs=[query, dataframe, num_cases],
+                    outputs=[df_output, df_plot]
+                )
+
+            
    
             # add a tab that embeds a query and displays the tsne plot of the embeddings with the query in blue
             # with gr.Tab("Embedding Query"):
