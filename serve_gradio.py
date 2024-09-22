@@ -99,6 +99,7 @@ def get_semantic_similar_embeddings(query, df,  num_cases=10):
     # get the embedding from the api
     try:
         embedding, num_tokens = get_embedding_from_api(query, query_type="s2s")	
+        embedding_array = np.array(embedding)
         if embedding is None:
             raise gr.Error("No embedding returned. The embeddng server could be down", duration=30)
     except:
@@ -108,21 +109,18 @@ def get_semantic_similar_embeddings(query, df,  num_cases=10):
     embeddings = np.stack(embeddings)
     
     # calculate the dot product of the embeddings with the query embedding
-    similarities = np.dot(embeddings, embedding)
 
 
-
-    # get the indices of the top 10 most similar embeddings
+    similarities = np.dot(embeddings, embedding_array)
     sorted_indices = np.argsort(similarities)[::-1]
-    # sorted_similarities = similarities[sorted_indices]
-    top_indices = sorted_indices[:num_cases]
-
+    
     # create a dataframe with the most similar embeddings
     similar_df = df.copy()
     similar_df['similarity'] = similarities
-
+    
     # sort df by similarity
-    similar_df = similar_df.sort_values(by='similarity', ascending=False)
+    # Sort DataFrame by similarity scores
+    similar_df = similar_df.iloc[sorted_indices].reset_index(drop=True)
     similar_df['current_index'] = similar_df.index
     similar_df['size'] = 10
     similar_df['color'] = 'red'
@@ -141,7 +139,7 @@ def get_semantic_similar_embeddings(query, df,  num_cases=10):
             width=1200,
             height=400
         )
-    top_similar_df = similar_df.iloc[top_indices]
+    top_similar_df = similar_df.iloc[:num_cases]
     return top_similar_df, plot
 
 def get_retrieval_embeddings(query, df,  num_cases=10):
@@ -154,6 +152,7 @@ def get_retrieval_embeddings(query, df,  num_cases=10):
     # get the embedding from the api
     try:
         embedding, num_tokens = get_embedding_from_api(query, query_type="s2p")	
+        embedding_array = np.array(embedding)
         if embedding is None:
             raise gr.Error("No embedding returned. The embeddng server could be down", duration=30)
     except:
@@ -161,25 +160,18 @@ def get_retrieval_embeddings(query, df,  num_cases=10):
   
     embeddings = df['embedding'].apply(lambda x: np.array(x))
     embeddings = np.stack(embeddings)
-    print(embeddings.shape)
-    print(embedding.shape)
+
     # calculate the dot product of the embeddings with the query embedding
-    similarities = np.dot(embeddings, embedding)
-    print(similarities.shape)
-
-
-
-    # get the indices of the top 10 most similar embeddings
+    similarities = np.dot(embeddings, embedding_array)
     sorted_indices = np.argsort(similarities)[::-1]
-    # sorted_similarities = similarities[sorted_indices]
-    top_indices = sorted_indices[:num_cases]
-
+    
     # create a dataframe with the most similar embeddings
     similar_df = df.copy()
     similar_df['similarity'] = similarities
-
+    
     # sort df by similarity
-    similar_df = similar_df.sort_values(by='similarity', ascending=False)
+    # Sort DataFrame by similarity scores
+    similar_df = similar_df.iloc[sorted_indices].reset_index(drop=True)
     similar_df['current_index'] = similar_df.index
     similar_df['size'] = 10
     similar_df['color'] = 'red'
@@ -198,14 +190,14 @@ def get_retrieval_embeddings(query, df,  num_cases=10):
             width=1200,
             height=400
         )
-    top_similar_df = similar_df.iloc[top_indices]
+    top_similar_df = similar_df.iloc[:num_cases]
     return top_similar_df, plot
 
 
 def get_query_embedding(query, df, dim_reduction='UMAP'):
     # get the embedding from the api
     try:
-        embedding, num_tokens = get_embedding_from_api(query)
+        embedding, num_tokens = get_embedding_from_api(query, query_type="s2p")
         if embedding is None:
             raise gr.Error("No embedding returned. The embeddng server could be down", duration=30)
     except:
@@ -310,104 +302,110 @@ def umap_embedding(df, embeddings):
             )
     return plot
 
-def cluster_embeddings(df, embeddings, min_cluster_size=10):
-    # a tab that clusters the embeddings using HDBSCAN and displays the clusters in the scatter plot
-    # the result should be a scatter plot with the clusters colored differently
-    # the plot should show the title and abstract of the embeddings
-    clusterer = hdbscan.HDBSCAN(min_cluster_size=int(min_cluster_size),  prediction_data=True, branch_detection_data=True, alpha=0.5, cluster_selection_method='leaf').fit(embeddings)
-    n_clusters_ = len(set(clusterer.labels_)) - (1 if -1 in clusterer.labels_ else 0)
-    print('Estimated number of clusters: %d' % n_clusters_)
-    
-    
-    df_cluster = df
 
-    # save the hierarchy plot as png
-    soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
-    color_palette = sns.color_palette('Paired', n_clusters_)
-    cluster_colors = [color_palette[np.argmax(x)]
-                    for x in soft_clusters]
-    # plt.scatter(*tsne_embeddings.T, s=50, linewidth=0, c=cluster_colors, alpha=0.25)
-    # plt.savefig('hierarchy_plot.png')
+# convert RGB to HEX
+def rgb_to_hex(rgb):
+    return '#%02x%02x%02x' % rgb
 
 
-    # Number of clusters in labels, ignoring noise if present.
 
-    hdb_colors = plt.cm.Spectral(np.linspace(0, 1, n_clusters_))
-    df_cluster['cluster_labels'] = clusterer.labels_  # Use labels instead of the entire clusterer object
+def cluster_embeddings(cluster_property, dataframe, dim_reduction='UMAP', cluster_method='k-Means'):
 
+    cluster_property = int(cluster_property)
 
+    local_embeddings = dataframe['embedding'].apply(lambda x: np.array(x))
+    local_embeddings = np.stack(local_embeddings)
+
+    df_cluster = dataframe
     df_cluster['size'] = 10
-    # change the color of the embeddings according to the cluster
-    # convert the cluster_labels to colors
-    # df_cluster['color'] = df_cluster['cluster_labels'].apply(lambda x: hdb_colors[x])
-    cluster_colors_str = [str(x) for x in cluster_colors]
-    df_cluster['color'] = cluster_colors_str
+    df_cluster['color'] = 'red'
+
+    if cluster_method == 'HDBSCAN':
+        clusterer = hdbscan.HDBSCAN(min_cluster_size=cluster_property,  prediction_data=True, branch_detection_data=True, alpha=0.5, cluster_selection_method='leaf').fit(local_embeddings)
+        # number of clusters
+        n_clusters_ = len(set(clusterer.labels_)) - (1 if -1 in clusterer.labels_ else 0)
+
+
+        
+        print('Estimated number of clusters: %d' % n_clusters_)
+
+        colors_values = list(mcolors.XKCD_COLORS.values())
+        if n_clusters_ > len(colors_values):
+            raise gr.Error("The number of clusters is greater than the number of colors available", duration=30) 
+        
+        # df_colors = [str(colors_values[x]) for x in clusterer.labels_]
+
+        soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
+        color_palette = sns.color_palette('Paired', n_clusters_)
+        cluster_colors = [color_palette[np.argmax(x)]
+                        for x in soft_clusters]
+
+        hex_colors = [rgb_to_hex((int(r * 255), int(g * 255), int(b * 255))) for r, g, b in cluster_colors]
+        cluster_labels_as_str = [str(x) for x in clusterer.labels_]
+        df_cluster['cluster_label'] = cluster_labels_as_str  # Use labels instead of the entire clusterer object
+        df_cluster['color'] = hex_colors
+        df_cluster['probabilities'] = soft_clusters.max(axis=1)
+
+        # set size of the elements to the probability of the lement belonging to the cluster
+        df_cluster['size'] = soft_clusters.max(axis=1) * 10
+
+
+
+    elif cluster_method == 'k-Means':
+        kmeans = KMeans(n_clusters=int(cluster_property), random_state=42).fit(local_embeddings)
+        kmeans_labels = kmeans.labels_
+        kmeans_labels_as_str = [str(x) for x in kmeans_labels]
+
+
+        colors_keys = list(mcolors.XKCD_COLORS.keys())
+        colors_values = list(mcolors.XKCD_COLORS.values())
+
+        # predict the cluster of the embeddings
+        # add the cluster labels to the dataframe
+        df_cluster['cluster_label'] = kmeans_labels_as_str
+        df_colors = [str(colors_values[x]) for x in kmeans_labels]
+
+        # color each embedding according to the cluster label
+        # get index of label in kmeans.cluster_centers_
+        df_cluster['color'] = df_colors
+
+    else:
+        raise gr.Error("Please select a valid clustering method", duration=30)
+
+    # df_cluster_kmeans['cluster_labels'] = kmeans.labels_
+    
+    
+
+    
+    # make a copy of the df and add the kmeans.labels_ to the df as a new entry with the title the cluster center and the abstract the cluster center and the color a unique color from the color palette
+
+    
+
+    if dim_reduction == 'UMAP':
+        reducer = umap.UMAP(random_state=42)
+        umpa_embedding = reducer.fit_transform(local_embeddings)
+        df_cluster['low_x'] = umpa_embedding[:, 0]
+        df_cluster['low_y'] = umpa_embedding[:, 1]
+
+    elif dim_reduction == 't-SNE':
+        tsne = TSNE(n_components=2, random_state=42, init='random', learning_rate=200, max_iter=1000)
+        tsne_embedding = tsne.fit_transform(local_embeddings)
+        df_cluster['low_x'] = tsne_embedding[:, 0]
+        df_cluster['low_y'] = tsne_embedding[:, 1]
+
+    if cluster_method == 'k-Means':
+       custom_tooltip = ['title', 'abstract', 'cluster_label']
+    else:
+        custom_tooltip = ['title', 'abstract', 'cluster_label', 'probabilities', 'color']
 
     plot = scatter_plot.ScatterPlot(
             value=df_cluster,
             x="low_x",
             y="low_y",
-            title="Cluster",
+            title="Cluster {}".format(cluster_method),
             color='color',
             size= 'size',
-            tooltip=['title', 'abstract'],
-            width=1200,
-            height=1200
-            )
-
-    return plot
-
-def cluster_embeddings_kmeans(num_clusters, dataframe, dim_reduction='UMAP'):
-    num_clusters = int(num_clusters)
-
-    local_embeddings = dataframe['embedding'].apply(lambda x: np.array(x))
-    local_embeddings = np.stack(local_embeddings)
-
-    kmeans = KMeans(n_clusters=int(num_clusters), random_state=42).fit(local_embeddings)
-    kmeans_labels = kmeans.labels_
-    kmeans_labels_as_str = [str(x) for x in kmeans_labels]
-
-    df_cluster_kmeans = dataframe
-
-    # df_cluster_kmeans['cluster_labels'] = kmeans.labels_
-    df_cluster_kmeans['size'] = 10
-    
-
-    colors_keys = list(mcolors.XKCD_COLORS.keys())
-    colors_values = list(mcolors.XKCD_COLORS.values())
-    
-    # make a copy of the df and add the kmeans.labels_ to the df as a new entry with the title the cluster center and the abstract the cluster center and the color a unique color from the color palette
-
-    # predict the cluster of the embeddings
-    # add the cluster labels to the dataframe
-    df_cluster_kmeans['cluster_label'] = kmeans_labels_as_str
-    df_colors = [str(colors_values[x]) for x in kmeans_labels]
-
-    # color each embedding according to the cluster label
-    # get index of label in kmeans.cluster_centers_
-    df_cluster_kmeans['color'] = df_colors
-
-    if dim_reduction == 'UMAP':
-        reducer = umap.UMAP(random_state=42)
-        umpa_embedding = reducer.fit_transform(local_embeddings)
-        df_cluster_kmeans['low_x'] = umpa_embedding[:, 0]
-        df_cluster_kmeans['low_y'] = umpa_embedding[:, 1]
-    elif dim_reduction == 't-SNE':
-        tsne = TSNE(n_components=2, random_state=42, init='random', learning_rate=200, max_iter=1000)
-        tsne_embedding = tsne.fit_transform(local_embeddings)
-        df_cluster_kmeans['low_x'] = tsne_embedding[:, 0]
-        df_cluster_kmeans['low_y'] = tsne_embedding[:, 1]
-
-
-
-    plot = scatter_plot.ScatterPlot(
-            value=df_cluster_kmeans,
-            x="low_x",
-            y="low_y",
-            title="Cluster KMEANS",
-            color='color',
-            size= 'size',
-            tooltip=['title', 'abstract', 'cluster_label'],
+            tooltip=custom_tooltip,
             width=1200,
             height=1200,
 
@@ -416,7 +414,7 @@ def cluster_embeddings_kmeans(num_clusters, dataframe, dim_reduction='UMAP'):
     
             )   
 
-    return plot, df_cluster_kmeans
+    return plot, df_cluster
 
 
 
@@ -480,7 +478,15 @@ def select_color(df, selected_value):
     )
     return plot, df_filtered
 
-
+def update_textbox(selected_option):
+    if selected_option == "k-Means":
+        # If option 1 is selected, show textbox 1
+        return gr.Textbox("10", label="Number of clusters to use in k-Means")
+    elif selected_option == "HDBSCAN":
+        # If option 2 is selected, show textbox 2
+        return gr.Textbox(value="50", label="Minumum number or elements in HDBSCAN cluster", visible=True)
+    else:
+        return gr.Textbox(visible=False)  # Default behavior, hide textbox
 
 def run_gradio(df, df_umpa):
     # create interactive gr.ScatterPlot
@@ -492,9 +498,9 @@ def run_gradio(df, df_umpa):
                 with gr.Row():
                     # dropdown with the dimensionality reduction methods
                     method = gr.Dropdown(["UMAP", "t-SNE"], label="Method", value="UMAP")
-
+                    clustering_method = gr.Dropdown(["k-Means", "HDBSCAN"], label="Method", value="k-Means")
                 with gr.Row():
-                    num_clusters = gr.Textbox("10", label="Number of Clusters (enter 'None' if not clustering)")
+                    cluster_property = gr.Textbox("10", label="Number of clusters to use in k-Means")
                     property = gr.Textbox("None", label="Property (e.g., cancer,gene,virus)")
                     color = gr.Textbox("None", label="Color (e.g., blue,green,yellow)")
                 with gr.Row():
@@ -510,13 +516,15 @@ def run_gradio(df, df_umpa):
                     filter_cluster_button = gr.Button("Filter by cluster")
                     filter_color_button = gr.Button("Filter by color")
                 with gr.Row():
-                    query = gr.Textbox("Enter a query", label="Query")
+                    description = gr.Label("Instruct: Given a search query, retrieve relevant abstracts that answer the query.")
+                    query = gr.Textbox("which nanoparticles improves delivery to cancer cells?", label="Query")
                     apply_query_button = gr.Button("Apply Query")
                     
+                clustering_method.change(fn=update_textbox, inputs=clustering_method, outputs=cluster_property)
                 
                 apply_cluster_button.click(
-                    cluster_embeddings_kmeans,
-                    inputs=[num_clusters, dataframe, method],
+                    cluster_embeddings,
+                    inputs=[cluster_property, dataframe, method, clustering_method],
                     outputs=[plot_output, dataframe]
                 )
 
@@ -551,7 +559,7 @@ def run_gradio(df, df_umpa):
                 # Instruct: Retrieve semantically similar text.\nQuery: {query}
                 with gr.Row():
                     # add label with discription
-                    query = gr.Textbox("Enter a query", label="Query")
+                    query = gr.Textbox("Nanoparticle delivery to solid tumours over the past ten years has slowed down", label="Query")
                     num_cases = gr.Textbox("10", label="Number of cases to return")
                 with gr.Row():
                     apply_query_button = gr.Button("Apply search")
@@ -571,7 +579,7 @@ def run_gradio(df, df_umpa):
                     description = gr.Label("Instruct: Given a search query, retrieve relevant abstracts that answer the query.")
                 with gr.Row():
                     # add label with discription
-                    query = gr.Textbox("Enter a query", label="Query")
+                    query = gr.Textbox("which nanoparticles improves delivery to cancer cells?", label="Query")
                     num_cases = gr.Textbox("10", label="Number of cases to return")
                 with gr.Row():
                     apply_query_button = gr.Button("Apply search")
@@ -584,39 +592,6 @@ def run_gradio(df, df_umpa):
                     inputs=[query, dataframe, num_cases],
                     outputs=[df_output, df_plot]
                 )
-
-            
-   
-            # add a tab that embeds a query and displays the tsne plot of the embeddings with the query in blue
-            # with gr.Tab("Embedding Query"):
-            #     dataframe = gr.State(df.copy())
-            #     with gr.Row():
-            #         query = gr.Textbox("Enter a query", label="Query")
-            #         method = gr.Dropdown(["UMAP", "t-SNE"], label="Method")
-            #     with gr.Row():
-            #         apply_query_button = gr.Button("Apply Query")
-
-            #     plot_output = scatter_plot.ScatterPlot()
-
-            #     apply_query_button.click(
-            #         get_query_embedding,
-            #         inputs=[query, dataframe, method],
-            #         outputs=[plot_output]
-            #     )
-
-            # with gr.Tab("Cluster HDBSCAN (Under construction)"):
-
-            #     dataframe = gr.State(df.copy())
-            #     with gr.Row():
-            #         min_cluster_size = gr.Textbox("10", label="Min Cluster Size")
-            #     with gr.Row():
-            #         apply_cluster_button = gr.Button("Apply Clustering")
-            #     plot_output = scatter_plot.ScatterPlot()
-            #     apply_cluster_button.click(
-            #         cluster_embeddings,
-            #         inputs=[dataframe, embeddings, min_cluster_size],
-            #         outputs=[plot_output]
-            #     )
 
     # launch
     demo.launch(share=True)

@@ -208,11 +208,11 @@ def get_embedding_from_api(text, query_type="document"):
     headers = {"Content-Type": "application/json"}
     
     if query_type == "document":
-        url="http://localhost:8000/embed",
+        url="http://localhost:8000/embed"
     elif query_type == "s2s":
-        url="http://localhost:8000/embed_queries_s2s",
+        url="http://localhost:8000/embed_queries_s2s"
     elif query_type == "s2p":
-        url="http://localhost:8000/embed_queries_s2p",
+        url="http://localhost:8000/embed_queries_s2p"
     
     response = requests.post(url, data=json.dumps(payload), headers=headers)
     
