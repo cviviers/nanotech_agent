@@ -21,10 +21,13 @@ import seaborn as sns
 from sklearn.cluster import KMeans
 import matplotlib.colors as mcolors
 import ast
-from utils.utils import get_embedding_from_api
+from utils.utils import get_embedding_from_api, write_df_to_excel
+from utils.lda_utils import create_lda_from_df, visualize_lda
+
 
 reducer = umap.UMAP(random_state=42)
 alt.data_transformers.disable_max_rows()
+
 
 
 def load_temp_data(folder_path):
@@ -194,7 +197,7 @@ def get_retrieval_embeddings(query, df,  num_cases=10):
     return top_similar_df, plot
 
 
-def get_query_embedding(query, df, dim_reduction='UMAP'):
+def get_query_embedding_and_similarity(query, df, dim_reduction='UMAP'):
     # get the embedding from the api
     try:
         embedding, num_tokens = get_embedding_from_api(query, query_type="s2p")
@@ -208,8 +211,18 @@ def get_query_embedding(query, df, dim_reduction='UMAP'):
     df_query['size'] = 10
     # df_query['color'] = 'red'
 
+    # compute the similarity of the query with the embeddings
+    query_embedding = np.array(embedding)
+    embeddings = df_query['embedding'].apply(lambda x: np.array(x))
+    embeddings = np.stack(embeddings)
+
+    similarities = np.dot(embeddings, query_embedding)
+    # sorted_indices = np.argsort(similarities)[::-1]
+
+    df_query['similarity'] = similarities
+
     # add the query embedding to the dataframe with the title "Query" and abstract the value of the query, all other fields 'Not Available'
-    new_entry = {'title': 'Query', 'abstract': query, 'embedding': embedding,  'color': 'black', 'size': 200}
+    new_entry = {'title': 'Query', 'abstract': query, 'embedding': embedding,  'color': 'black', 'size': 200, 'similarity': 1}
     for column in df.columns:
         if column not in new_entry:
             new_entry[column] = 'Not Available'
@@ -241,7 +254,7 @@ def get_query_embedding(query, df, dim_reduction='UMAP'):
             color='color',
             size= 'size',
             # tooltip displays the title of the article
-            tooltip=['title', 'abstract'],
+            tooltip=['title', 'abstract', 'similarity'],
             width=1200,
             height=1200
         )
@@ -478,6 +491,64 @@ def select_color(df, selected_value):
     )
     return plot, df_filtered
 
+def apply_query_threshold(query_threshold, df):
+    try:
+        query_threshold = float(query_threshold)
+    except:
+        raise gr.Error("Please enter a valid threshold", duration=30)
+
+    df_filtered = df[df["similarity"] > query_threshold]    
+    df_filtered.loc[:, 'size'] = 10
+
+
+    tool_tip_list = ['title', 'abstract', 'color', 'cluster_label', 'similarity']
+    # check if the dataframe contains all the tooltip columns, use the subset that is available
+    for column in tool_tip_list:
+        if column not in df_filtered.columns:
+            tool_tip_list.remove(column)
+
+
+    # print number of elements in the filtered dataframe
+    print(f"Number of elements in the filtered dataframe: {len(df_filtered)}")
+    
+    # Ensure the DataFrame is not empty
+    if df_filtered.empty:
+        raise gr.Error("No data matches the selected criteria. 💥!", duration=30)
+    
+    if "low_x" not in df_filtered.columns:
+        raise gr.Error("The DataFrame has not been clustered. 💥!", duration=30)
+    
+    df_filtered.loc[:, 'color'] = 'red'
+    plot = scatter_plot.ScatterPlot(
+        value=df_filtered,
+        x="low_x",
+        y="low_y",
+        title="Filtered Plot",
+        color='color',
+        size='size',
+        tooltip=tool_tip_list,
+        width=1200,
+        height=1200
+    )
+    return plot, df_filtered
+
+def generate_and_visualize_lda(df, num_topics):
+
+    try:
+        num_topics = int(num_topics)
+    except:
+        raise gr.Error("Please enter a valid number of topics", duration=30)
+    try:
+        lda_model, corpus_data = create_lda_from_df(df, num_topics)
+    except:
+        raise gr.Error("An error occurred while generating the LDA model", duration=30)
+    
+
+    visualize_lda(lda_model, corpus_data, 'output')
+
+    raise gr.Info("LDA saved! 🎉", duration=30)
+
+
 def update_textbox(selected_option):
     if selected_option == "k-Means":
         # If option 1 is selected, show textbox 1
@@ -516,9 +587,21 @@ def run_gradio(df, df_umpa):
                     filter_cluster_button = gr.Button("Filter by cluster")
                     filter_color_button = gr.Button("Filter by color")
                 with gr.Row():
-                    description = gr.Label("Instruct: Given a search query, retrieve relevant abstracts that answer the query.")
+                    description = gr.Label("Instruct: Given a search query, retrieve relevant abstracts that answer the query.",)
+                with gr.Row():
                     query = gr.Textbox("which nanoparticles improves delivery to cancer cells?", label="Query")
+                with gr.Row():
                     apply_query_button = gr.Button("Apply Query")
+                    query_threshold = gr.Textbox("0.65", label="Threshold")
+                    apply_query_threshold_button = gr.Button("Apply Query with Threshold")
+
+                with gr.Row():
+                    description = gr.Label("Extract data from the processed embeddings.")
+                with gr.Row():
+                    extract_to_excel = gr.Button("Extract to Excel")
+                    num_topics = gr.Textbox("5", label="No. of topics")
+                    generate_LDA = gr.Button("Generate LDA")
+
                     
                 clustering_method.change(fn=update_textbox, inputs=clustering_method, outputs=cluster_property)
                 
@@ -545,9 +628,25 @@ def run_gradio(df, df_umpa):
                     outputs=[plot_output, dataframe]
                 )
                 apply_query_button.click(
-                    get_query_embedding,
+                    get_query_embedding_and_similarity,
                     inputs=[query, dataframe, method],
                     outputs=[plot_output, dataframe]
+                )
+
+                apply_query_threshold_button.click(
+                    apply_query_threshold,
+                    inputs=[query_threshold, dataframe],
+                    outputs=[plot_output, dataframe]
+                )
+
+                extract_to_excel.click(
+                    write_df_to_excel,
+                    inputs=dataframe
+                )
+
+                generate_LDA.click(
+                    generate_and_visualize_lda,
+                    inputs=[dataframe, num_topics]
                 )
 
     
@@ -594,7 +693,7 @@ def run_gradio(df, df_umpa):
                 )
 
     # launch
-    demo.launch(share=True)
+    demo.launch(share=False)
 
 # entry point for the gradio interface
 if __name__ == "__main__":
@@ -607,5 +706,9 @@ if __name__ == "__main__":
     # create umap embeddings
     df_umpa, umpa_embedding = create_umap_embeddings(df, embeddings)
     print("Finished loading the data")
+
+    # create output folder if not exists
+    if not os.path.exists('output'):
+        os.makedirs('output')
     run_gradio(df, df_umpa)
     

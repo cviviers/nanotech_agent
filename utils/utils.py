@@ -19,6 +19,7 @@ import string
 import nltk
 import json
 
+
 # Download NLTK data files (only need to run once)
 nltk.download('stopwords')
 nltk.download('wordnet')
@@ -26,6 +27,10 @@ nltk.download('omw-1.4')
 
 from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
+
+###########################################
+API_URL =  "131.155.34.228:8000" # "http://localhost:8000" #
+###########################################
 
 class ScholarlyPublication:
     def __init__(self, container_type=None, source=None, bib=None, filled=None, gsrank=None, pub_url=None, 
@@ -208,11 +213,11 @@ def get_embedding_from_api(text, query_type="document"):
     headers = {"Content-Type": "application/json"}
     
     if query_type == "document":
-        url="http://localhost:8000/embed"
+        url=API_URL+"/embed"
     elif query_type == "s2s":
-        url="http://localhost:8000/embed_queries_s2s"
+        url=API_URL+"/embed_queries_s2s"
     elif query_type == "s2p":
-        url="http://localhost:8000/embed_queries_s2p"
+        url=API_URL+"/embed_queries_s2p"
     
     response = requests.post(url, data=json.dumps(payload), headers=headers)
     
@@ -272,3 +277,12 @@ def preprocess_text(text, custom_terms=None):
     processed_text = ' '.join(tokens)
     
     return processed_text
+
+# write dataframe to excel
+def write_df_to_excel(df, output_dir='output'):
+    writer = pd.ExcelWriter
+    temp_time = time.strftime("%Y%m%d-%H%M%S")
+    filename = f"output_{temp_time}.xlsx"
+    file_path = os.path.join(output_dir, filename)
+    df.to_excel(file_path, index=False)
+    print(f"Dataframe saved to {file_path}")
