@@ -29,7 +29,7 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 
 ###########################################
-API_URL =  "131.155.34.228:8000" # "http://localhost:8000" #
+API_URL =  "http://131.155.34.228:8000" # "http://localhost:8000" #
 ###########################################
 
 class ScholarlyPublication:
