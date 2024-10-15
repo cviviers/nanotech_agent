@@ -6,6 +6,7 @@ import altair as alt
 
 import pandas as pd
 from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
 import umap
 import numpy as np
 from ast import literal_eval
@@ -548,6 +549,57 @@ def generate_and_visualize_lda(df, num_topics):
 
     raise gr.Info("LDA saved! 🎉", duration=30)
 
+# Compute the first principle component of the embeddings, plot it on an axis with the component on the y-axis and the simlarities to the query on the x-axis 
+def create_principle_component_plot(df, query):
+    # get the embeddings from the dataframe
+    embeddings = df['embedding'].apply(lambda x: np.array(x))
+    embeddings = np.stack(embeddings)
+
+    # get the embedding from the api
+    try:
+        embedding, num_tokens = get_embedding_from_api(query, query_type="s2s")
+        if embedding is None:
+            raise gr.Error("No embedding returned. The embeddng server could be down", duration=30)
+    except:
+        raise gr.Error("Please enter a valid query", duration=30)
+    
+    # calculate the dot product of the embeddings with the query embedding
+    similarities = np.dot(embeddings, embedding)
+    sorted_indices = np.argsort(similarities)[::-1]
+    
+    # create a dataframe with the most similar embeddings
+    similar_df = df.copy()
+    similar_df['similarity'] = similarities
+    
+    # sort df by similarity
+    # Sort DataFrame by similarity scores
+    similar_df = similar_df.iloc[sorted_indices].reset_index(drop=True)
+    similar_df['current_index'] = similar_df.index
+    similar_df['size'] = 10
+    similar_df['color'] = 'red'
+
+    # compute the first principle component of the embeddings
+    pca = PCA(n_components=1)
+    pca_embeddings = pca.fit_transform(embeddings)
+    similar_df['pca'] = pca_embeddings
+
+
+    # create scatter plot with the similarity 
+
+    plot = scatter_plot.ScatterPlot(
+            value=similar_df,
+            x="similarity",
+            y="pca",
+            title="Semantic similarity",
+            color='color',
+            size= 'size',
+            # tooltip displays the title of the article
+            tooltip=['title', 'abstract', 'similarity'],
+            width=1200,
+            height=1200
+        )
+    return plot, similar_df
+
 
 def update_textbox(selected_option):
     if selected_option == "k-Means":
@@ -594,6 +646,7 @@ def run_gradio(df, df_umpa):
                     apply_query_button = gr.Button("Apply Query")
                     query_threshold = gr.Textbox("0.65", label="Threshold")
                     apply_query_threshold_button = gr.Button("Apply Query with Threshold")
+                    apply_pca_button = gr.Button("Apply PCA")
 
                 with gr.Row():
                     description = gr.Label("Extract data from the processed embeddings.")
@@ -647,6 +700,12 @@ def run_gradio(df, df_umpa):
                 generate_LDA.click(
                     generate_and_visualize_lda,
                     inputs=[dataframe, num_topics]
+                )
+
+                apply_pca_button.click(
+                    create_principle_component_plot,
+                    inputs=[dataframe, query],
+                    outputs=[plot_output, dataframe]
                 )
 
     
