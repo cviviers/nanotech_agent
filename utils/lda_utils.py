@@ -79,11 +79,13 @@ def create_lda_from_df(temp_cluster_df, num_topics=5):
 def visualize_lda(lda_model, corpus_data, output_path):
 
     # Create directories to save models and visualizations
-    os.makedirs('lda_models', exist_ok=True)
-    os.makedirs('lda_visualizations', exist_ok=True)
+    lda_models_path = os.path.join(output_path, 'lda_models')
+    lda_visualizations_path = os.path.join(output_path, 'lda_visualizations')
+    os.makedirs(lda_models_path, exist_ok=True)
+    os.makedirs(lda_visualizations_path, exist_ok=True)
     
     # save file as lda_model_{data_time}.model
-    model_save_path = os.path.join(output_path, 'lda_model_' + time.strftime("%Y%m%d-%H%M%S") + '.model')
+    model_save_path = os.path.join(lda_models_path, 'lda_model_' + time.strftime("%Y%m%d-%H%M%S") + '.model')
     lda_model.save(model_save_path)
         
     dictionary = corpus_data['dictionary']
@@ -91,4 +93,4 @@ def visualize_lda(lda_model, corpus_data, output_path):
     
     vis_data = gensimvis.prepare(lda_model, corpus, dictionary)
     filename = f"lda_visualization_{time.strftime('%Y%m%d-%H%M%S')}.html"
-    pyLDAvis.save_html(vis_data, os.path.join(output_path, filename))
+    pyLDAvis.save_html(vis_data, os.path.join(lda_visualizations_path, filename))
