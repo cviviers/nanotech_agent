@@ -25,10 +25,9 @@ def run_gradio(df):
 
                     # create a list to store the history of dataframes
                     df_history_list = []
-                    df_history_list.append((scatter_plot.ScatterPlot(value=dataframe,x="low_x", y="low_y",title="UMAP embeddings",color='color',size= 'size',width=1200, height=1200), df.copy()))
+                    df_history_list.append((plot_output, df.copy()))
                     return df_history_list
 
-                demo.load(setup, inputs=[], outputs=[df_history_list])
 
                 # Add dataframes to the list
                 # df_history_list = add_to_state_list(df_history_list, dataframe)
@@ -45,6 +44,9 @@ def run_gradio(df):
                     apply_property_button = gr.Button("Apply Property")
                 
                 plot_output = scatter_plot.ScatterPlot()
+                demo.load(setup, inputs=[], outputs=[df_history_list])
+
+
                 with gr.Row():
                     start_x = gr.Number(value=0, label="Start x")
                     end_x = gr.Number(value=1, label="End x")
