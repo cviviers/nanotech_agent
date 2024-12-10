@@ -7,46 +7,24 @@ from gensim.utils import simple_preprocess
 import spacy
 from spacy.lang.en.stop_words import STOP_WORDS
 
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-
 import pyLDAvis
 import pyLDAvis.gensim_models as gensimvis
 import matplotlib.pyplot as plt
 import os
 import time
+import streamlit as st
 
-
-# nlp = spacy.load('en_core_web_sm', disable=['parser', 'ner'])
-nlp = spacy.load('en_core_web_sm')
-# nlp = en_core_web_sm.load()
-# Stop words
-stop_words = stopwords.words('english')
-stop_words.extend(STOP_WORDS)
-
-# Lemmatizer
-lemmatizer = WordNetLemmatizer()
-
-def preprocess_text(text):
-    # Tokenize and clean-up text
-    result = []
-    for token in gensim.utils.simple_preprocess(text, deacc=True):
-        if token not in stop_words and len(token) > 3:
-            # Lemmatize the token
-            lemma = lemmatizer.lemmatize(token)
-            result.append(lemma)
-    return result
 
 def create_lda_from_df(temp_cluster_df, num_topics=5):
       
     # Preprocess the abstracts
-    processed_docs = temp_cluster_df['abstract'].map(preprocess_text)
+    processed_docs = temp_cluster_df['cleaned_text']
     
     # Create a dictionary and corpus needed for LDA
     dictionary = corpora.Dictionary(processed_docs)
     
     # Filter out extremes to remove noise in the data
-    dictionary.filter_extremes(no_below=5, no_above=0.5)
+    # dictionary.filter_extremes(no_below=5, no_above=0.5)
     
     corpus = [dictionary.doc2bow(doc) for doc in processed_docs]
     
@@ -94,3 +72,60 @@ def visualize_lda(lda_model, corpus_data, output_path):
     vis_data = gensimvis.prepare(lda_model, corpus, dictionary)
     filename = f"lda_visualization_{time.strftime('%Y%m%d-%H%M%S')}.html"
     pyLDAvis.save_html(vis_data, os.path.join(lda_visualizations_path, filename))
+
+
+
+def generate_and_visualize_lda(df, num_topics, time=None, cluster_name=None):
+
+    try:
+        num_topics = int(num_topics)
+    except:
+        raise st.error("Please enter a valid number of topics")
+    try:
+        lda_model, corpus_data = create_lda_from_df(df, num_topics)
+    except:
+        raise st.error("An error occurred while generating the LDA model")
+    
+    if cluster_name:
+        cluster_path = f'output_{cluster_name}'
+        if time:
+            output_path = os.path.join('output',"lda_"+time , cluster_path)
+        else:
+            output_path = os.path.join('output', cluster_path, cluster_name)
+        os.makedirs(output_path, exist_ok=True)
+    else:
+        output_path = 'output'
+    visualize_lda(lda_model, corpus_data, output_path)
+
+    return output_path
+
+def generate_and_visualize_lda_all_clusters(df, num_topics):
+
+    try:
+        num_topics = int(num_topics)
+    except:
+        raise st.error("Please enter a valid number of topics")
+
+    # get number of clusters, set == 1 if not defined
+    if 'cluster_label' in df.columns:
+        clusters = df['cluster_label'].unique()
+        print(f"Number of clusters: {len(clusters)}")
+    else:
+        clusters = [0]
+
+    # get time
+    time = pd.Timestamp.now().strftime("%Y_%m_%d_%H_%M-_%S")
+
+    for cluster in clusters:
+        df_cluster = df[df['cluster_label'] == cluster]
+        output_path = generate_and_visualize_lda(df_cluster, num_topics, time, str(cluster))
+        try:
+            lda_model, corpus_data = create_lda_from_df(df, num_topics)
+        except:
+            st.error("An error occurred while generating the LDA model")
+        
+        visualize_lda(lda_model, corpus_data, output_path)
+        message = f"LDA saved for cluster {cluster}! 🎉"
+        st.info(message, duration=30)
+
+    st.info("ALL LDA saved! 🎉")
