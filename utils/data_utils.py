@@ -38,3 +38,4 @@ def write_df_to_excel(df, output_dir='output'):
     file_path = os.path.join(output_dir, filename)
     df.to_excel(file_path, index=False)
     print(f"Dataframe saved to {file_path}")
+    st.success(f"Dataframe saved to {file_path}!")

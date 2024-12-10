@@ -9,6 +9,23 @@ import altair as alt
 # entry point for the streamlit app
 def main():
 
+
+    def init_session_variables():
+        if 'kmeans' not in st.session_state:
+            st.session_state['kmeans'] = 3
+        if 'lda' not in st.session_state:
+            st.session_state['lda'] = 5
+        if 'x1' not in st.session_state:
+            st.session_state['x1'] = 0
+        if 'x2' not in st.session_state:
+            st.session_state['x2'] = 1
+        if 'y1' not in st.session_state:
+            st.session_state['y1'] = 0
+        if 'y2' not in st.session_state:
+            st.session_state['y2'] = 1
+
+        
+
     dafaframe = st.session_state['df']
     dataframe_history = st.session_state['df_history']
     
@@ -25,7 +42,7 @@ def main():
     if 'plot' not in st.session_state:
         st.session_state['plot'] = plot
 
-    if 'plot' in st.session_state:
+    with st.spinner('Wait for it...'):
         col1_empty.altair_chart(plot, use_container_width=True)
 
 
@@ -37,19 +54,19 @@ def main():
 
 
     col2.title("Settings")
-    k = col2.number_input("Number of k-mean clusters", min_value=1, max_value=100, value=3)
+    k = col2.number_input("Number of k-mean clusters", min_value=1, max_value=100, value=3, key='kmeans')
     run_k_means_button = col2.button("Run K-means")
 
-    lda_topics = col2.number_input("Number of LDA topics", min_value=1, max_value=100, value=5)
+    lda_topics = col2.number_input("Number of LDA topics", min_value=1, max_value=100, value=5, key='lda')
     run_lda_button = col2.button("Run LDA")
 
     # bounding box selection
     col2.title("Bounding Box Selection")
     sub_col1, sub_col2 = col2.columns([0.5, 0.5], vertical_alignment="top")
-    x1 = sub_col1.text_input("x1",  value=0)
-    x2 = sub_col2.text_input("x2",  value=1)
-    y1 = sub_col1.text_input("y1",  value=0)
-    y2 = sub_col2.text_input("y2",  value=1)
+    x1 = sub_col1.text_input("x1",  value=0, key='x1')
+    x2 = sub_col2.text_input("x2",  value=1, key='x2')
+    y1 = sub_col1.text_input("y1",  value=0, key='y1')
+    y2 = sub_col2.text_input("y2",  value=1, key='y2')
 
     run_bounding_box_button = col2.button("Select Area")
 
@@ -68,10 +85,12 @@ def main():
     if run_k_means_button:
         dafaframe = kmeans_cluster(dafaframe, num_clusters=k)
         plot = draw_plot(dafaframe)
-        col1_empty.altair_chart(plot, use_container_width=True)
+        with st.spinner('Wait for it...'):
+            col1_empty.altair_chart(plot, use_container_width=True)
         dataframe_history.append(dafaframe.copy())
         st.session_state['df'] = dafaframe
         st.session_state['df_history'] = dataframe_history
+        st.session_state['plot'] = plot
 
     if run_lda_button:
         dafaframe = generate_and_visualize_lda_all_clusters(dafaframe, lda_topics)
@@ -79,29 +98,35 @@ def main():
     if run_bounding_box_button:
         dafaframe = dafaframe[(dafaframe['low_x'] >= float(x1)) & (dafaframe['low_x'] <= float(x2)) & (dafaframe['low_y'] >= float(y1)) & (dafaframe['low_y'] <= float(y2))]
         plot = draw_plot(dafaframe)
-        col1_empty.altair_chart(plot, use_container_width=True)
+        with st.spinner('Wait for it...'):
+            col1_empty.altair_chart(plot, use_container_width=True)
         dataframe_history.append(dafaframe.copy())
 
         st.session_state['df'] = dafaframe
         st.session_state['df_history'] = dataframe_history
+        st.session_state['plot'] = plot
 
     if run_cluster_filter_button:
         dafaframe = dafaframe[dafaframe['cluster_label'].isin(cluster_numbers)]
         plot = draw_plot(dafaframe)
-        col1_empty.altair_chart(plot, use_container_width=True)
+        with st.spinner('Wait for it...'):
+            col1_empty.altair_chart(plot, use_container_width=True)
         dataframe_history.append(dafaframe.copy())
 
         st.session_state['df'] = dafaframe
         st.session_state['df_history'] = dataframe_history
+        st.session_state['plot'] = plot
 
     if undo_button:
         if len(dataframe_history) > 1:
             dataframe_history.pop()
             dafaframe = dataframe_history[-1]
             plot = draw_plot(dafaframe)
-            col1_empty.altair_chart(plot, use_container_width=True)
+            with st.spinner('Wait for it...'):
+                col1_empty.altair_chart(plot, use_container_width=True)
             st.session_state['df'] = dafaframe
             st.session_state['df_history'] = dataframe_history
+            st.session_state['plot'] = plot
         else:
             st.warning("Cannot undo further")
 
@@ -110,17 +135,23 @@ def main():
         dafaframe = assign_class_to_embeddings(filter_by_text, assigned_class_intput, dafaframe)
         plot = draw_plot(dafaframe)
         dataframe_history.append(dafaframe.copy())
+        with st.spinner('Wait for it...'):
+            col1_empty.altair_chart(plot, use_container_width=True)
         st.session_state['df'] = dafaframe
         st.session_state['df_history'] = dataframe_history
+        st.session_state['plot'] = plot
     
     if run_filter_by_text_button:
+        assigned_class_intput = assigned_class_intput.split(',')
         dafaframe = dafaframe[dafaframe['cluster_label'].isin(assigned_class_intput)]
         plot = draw_plot(dafaframe)
-        col1_empty.altair_chart(plot, use_container_width=True)
+        with st.spinner('Wait for it...'):
+            col1_empty.altair_chart(plot, use_container_width=True)
         dataframe_history.append(dafaframe.copy())
 
         st.session_state['df'] = dafaframe
         st.session_state['df_history'] = dataframe_history
+        st.session_state['plot'] = plot
 
     if excel_button:
         write_df_to_excel(dafaframe)
@@ -129,6 +160,7 @@ def main():
     if refresh_button:
         st.session_state['df'] = dafaframe
         st.session_state['df_history'] = dataframe_history
+        st.session_state['plot'] = plot
 
 @st.cache_data(show_spinner="Compiling figure...")
 def draw_plot(df):
