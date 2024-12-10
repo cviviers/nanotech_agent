@@ -23,7 +23,8 @@ def create_umap_embeddings(df):
 
 def kmeans_cluster(df, num_clusters=3):
     kmeans = KMeans(n_clusters=num_clusters, random_state=42).fit(df['embedding'].map(lambda x: np.array(x)).tolist())
-    df['cluster_label'] = kmeans.labels_
+    labels_as_strings = [str(label) for label in kmeans.labels_]
+    df['cluster_label'] = labels_as_strings
 
     return df
 
@@ -34,6 +35,9 @@ def assign_class_to_embeddings(property, classes, dataframe):
     classes = classes.split(',')
 
     print(properties, classes)
+
+    # set all cluster labels to Not Assigned
+    dataframe['cluster_label'] = 'Not Assigned'
 
     if len(properties) > 1 and len(classes) == 1:
         # apply the same color to all the properties

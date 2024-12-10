@@ -20,13 +20,16 @@ def create_lda_from_df(temp_cluster_df, num_topics=5):
     # Preprocess the abstracts
     processed_docs = temp_cluster_df['cleaned_text']
     
+    # be sure to split sentence before feed into Dictionary
+    dataset = [d.split() for d in processed_docs]
+
     # Create a dictionary and corpus needed for LDA
-    dictionary = corpora.Dictionary(processed_docs)
+    dictionary = corpora.Dictionary(dataset)
     
     # Filter out extremes to remove noise in the data
-    # dictionary.filter_extremes(no_below=5, no_above=0.5)
+    dictionary.filter_extremes(no_below=5, no_above=1.0)
     
-    corpus = [dictionary.doc2bow(doc) for doc in processed_docs]
+    corpus = [dictionary.doc2bow(doc) for doc in dataset]
     
     # Store corpus data for visualization later
     corpus_data = {'dictionary': dictionary, 'corpus': corpus,'processed_docs': processed_docs}
@@ -47,6 +50,7 @@ def create_lda_from_df(temp_cluster_df, num_topics=5):
     # Print the topics
     print(f"Top topics in Cluster:")
     topics = lda_model.print_topics(num_words=5)
+
     for topic in topics:
         print(topic)
     print("\n")
@@ -80,11 +84,12 @@ def generate_and_visualize_lda(df, num_topics, time=None, cluster_name=None):
     try:
         num_topics = int(num_topics)
     except:
-        raise st.error("Please enter a valid number of topics")
+        st.error("Please enter a valid number of topics")
+
     try:
         lda_model, corpus_data = create_lda_from_df(df, num_topics)
-    except:
-        raise st.error("An error occurred while generating the LDA model")
+    except Exception as err:
+        st.error(f"An error occurred while generating the LDA model. {err}")
     
     if cluster_name:
         cluster_path = f'output_{cluster_name}'
@@ -104,7 +109,7 @@ def generate_and_visualize_lda_all_clusters(df, num_topics):
     try:
         num_topics = int(num_topics)
     except:
-        raise st.error("Please enter a valid number of topics")
+        st.error("Please enter a valid number of topics")
 
     # get number of clusters, set == 1 if not defined
     if 'cluster_label' in df.columns:
@@ -126,6 +131,6 @@ def generate_and_visualize_lda_all_clusters(df, num_topics):
         
         visualize_lda(lda_model, corpus_data, output_path)
         message = f"LDA saved for cluster {cluster}! 🎉"
-        st.info(message, duration=30)
+        st.info(message)
 
     st.info("ALL LDA saved! 🎉")
