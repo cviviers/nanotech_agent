@@ -52,14 +52,35 @@ def load_temp_data(folder_path):
         df['size'] = 10
         df['color'] = 'red'
 
-        # replace abstracts with the first abstract in the list if it is a list
-        df['abstract'] = df['abstract'].apply(lambda x: x[0] if isinstance(x, list) else x)
+        # replace Abstracts with the first Abstract in the list if it is a list
+        df['Abstract'] = df['Abstract'].apply(lambda x: x[0] if isinstance(x, list) else x)
 
         # store the embeddings in a numpy array
         embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
         embeddings = np.stack(embeddings)
 
         return df, embeddings
+    
+def load_data(json_path):
+    if os.path.exists(json_path):
+        # read df with embeddings
+        # load json file to pandas df
+        with open(json_path, 'r') as f:
+            data = json.load(f)
+
+        # data to dataframe
+        df = pd.DataFrame(data).T
+        df['size'] = 10
+        df['color'] = 'red'
+
+        # rename the 'Article Title' column to 'title'
+        df.rename(columns={'Article Title': 'title'}, inplace=True)
+
+        # only keep the following columns: 'title', 'Abstract', 'embedding'
+        df = df[['title', 'Abstract', 'embedding', 'size', 'color']]
+
+
+        return df
     
 
 def create_tsne_embeddings(df, embeddings):
@@ -82,8 +103,10 @@ def create_tsne_embeddings(df, embeddings):
 
     return df_tsne, tsne_embeddings
 
-def create_umap_embeddings(df, embeddings):
+def create_umap_embeddings(df):
     reducer = umap.UMAP(random_state=42)
+    embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
+    embeddings = np.stack(embeddings)
     umpa_embedding = reducer.fit_transform(embeddings)
     df_umpa = df.copy()
     df_umpa['low_x'] = umpa_embedding[:, 0]
@@ -91,7 +114,23 @@ def create_umap_embeddings(df, embeddings):
     df_umpa['size'] = 10
     df_umpa['color'] = 'red'
 
-    return df_umpa, umpa_embedding
+    return df_umpa
+
+def create_umap_scatter_plot(df_umpa):
+
+    df_umpa_temp = df_umpa.copy()
+    plot = scatter_plot.ScatterPlot(
+            value=df_umpa_temp,
+            x="low_x",
+            y="low_y",
+            title="UMAP",
+            color='color',
+            size= 'size',
+            tooltip=['title', 'Abstract'],
+            width=1200,
+            height=1200
+        )
+    return plot
 
 
 def get_semantic_similar_embeddings(query, df,  num_cases=10):
@@ -140,7 +179,7 @@ def get_semantic_similar_embeddings(query, df,  num_cases=10):
             color='color',
             size= 'size',
             # tooltip displays the title of the article
-            tooltip=['title', 'abstract'],
+            tooltip=['title', 'Abstract'],
             width=1200,
             height=400
         )
@@ -191,7 +230,7 @@ def get_retrieval_embeddings(query, df,  num_cases=10):
             color='color',
             size= 'size',
             # tooltip displays the title of the article
-            tooltip=['title', 'abstract'],
+            tooltip=['title', 'Abstract'],
             width=1200,
             height=400
         )
@@ -223,8 +262,8 @@ def get_query_embedding_and_similarity(query, df, df_history_list, dim_reduction
 
     df_query['similarity'] = similarities
 
-    # add the query embedding to the dataframe with the title "Query" and abstract the value of the query, all other fields 'Not Available'
-    new_entry = {'title': 'Query', 'abstract': query, 'embedding': embedding,  'color': 'black', 'size': 200, 'similarity': 1}
+    # add the query embedding to the dataframe with the title "Query" and Abstract the value of the query, all other fields 'Not Available'
+    new_entry = {'title': 'Query', 'Abstract': query, 'embedding': embedding,  'color': 'black', 'size': 200, 'similarity': 1}
     for column in df.columns:
         if column not in new_entry:
             new_entry[column] = 'Not Available'
@@ -256,7 +295,7 @@ def get_query_embedding_and_similarity(query, df, df_history_list, dim_reduction
             color='color',
             size= 'size',
             # tooltip displays the title of the article
-            tooltip=['title', 'abstract', 'similarity'],
+            tooltip=['title', 'Abstract', 'similarity'],
             width=1200,
             height=1200
         )
@@ -287,7 +326,7 @@ def color_embeddings(property, color, dataframe, df_history_list):
 
     # color the embeddings according to the property, replace the color of the embeddings that contain the property with the color
     for prop, col in zip(properties, colors):
-        mask = df_color['abstract'].fillna('Not Available').str.contains(prop, case=False, na=False)
+        mask = df_color['Abstract'].fillna('Not Available').str.contains(prop, case=False, na=False)
         # replace the color of the embeddings that contain the property with the color
         # print number of embeddings that contain the property
         print(f"Number of embeddings that contain the property '{prop}': {mask.sum()}")
@@ -306,7 +345,7 @@ def color_embeddings(property, color, dataframe, df_history_list):
             title="Color embeddings",
             color='color',
             size= 'size',
-            tooltip=['title', 'abstract'],
+            tooltip=['title', 'Abstract'],
             width=1200,
             height=1200
             )
@@ -330,7 +369,7 @@ def umap_embedding(df, embeddings):
             title="UMAP",
             color='color',
             size= 'size',
-            tooltip=['title', 'abstract'],
+            tooltip=['title', 'Abstract'],
             width=1200,
             height=1200
             )
@@ -340,7 +379,6 @@ def umap_embedding(df, embeddings):
 # convert RGB to HEX
 def rgb_to_hex(rgb):
     return '#%02x%02x%02x' % rgb
-
 
 
 def cluster_embeddings(cluster_property, dataframe, df_history_list, dim_reduction='UMAP', cluster_method='k-Means'):
@@ -411,7 +449,7 @@ def cluster_embeddings(cluster_property, dataframe, df_history_list, dim_reducti
     
 
     
-    # make a copy of the df and add the kmeans.labels_ to the df as a new entry with the title the cluster center and the abstract the cluster center and the color a unique color from the color palette
+    # make a copy of the df and add the kmeans.labels_ to the df as a new entry with the title the cluster center and the Abstract the cluster center and the color a unique color from the color palette
 
     
 
@@ -428,9 +466,15 @@ def cluster_embeddings(cluster_property, dataframe, df_history_list, dim_reducti
         df_cluster['low_y'] = tsne_embedding[:, 1]
 
     if cluster_method == 'k-Means':
-       custom_tooltip = ['title', 'abstract', 'cluster_label']
+       custom_tooltip = ['title', 'Abstract', 'cluster_label']
     else:
-        custom_tooltip = ['title', 'abstract', 'cluster_label', 'probabilities', 'color']
+        custom_tooltip = ['title', 'Abstract', 'cluster_label', 'probabilities', 'color']
+
+    # save matplotlib plot
+    fig = plt.figure(figsize=(30, 30))
+    plt.scatter(umpa_embedding[:, 0], umpa_embedding[:, 1], c=kmeans_labels, s=50, cmap='viridis')
+    # set high dpi
+    plt.savefig('output/cluster_plot.png', dpi=300)
 
     plot = scatter_plot.ScatterPlot(
             value=df_cluster,
@@ -442,10 +486,6 @@ def cluster_embeddings(cluster_property, dataframe, df_history_list, dim_reducti
             tooltip=custom_tooltip,
             width=1200,
             height=1200,
-
-            # add custom css for tooltip hovering, classes .custom-tooltip .tooltip-text .custom-tooltip .tooltip-text::after .custom-tooltip:hover .tooltip-text exist
-
-    
             )  
 
 
@@ -460,7 +500,7 @@ def select_cluster(df, selected_value, df_history_list):
     df_filtered = df[df["cluster_label"] == selected_value]    
     df_filtered.loc[:, 'size'] = 10
 
-    tool_tip_list = ['title', 'abstract', 'color', 'cluster_label']
+    tool_tip_list = ['title', 'Abstract', 'color', 'cluster_label']
     # print number of elements in the filtered dataframe
     print(f"Number of elements in the filtered dataframe: {len(df_filtered)}")
     
@@ -492,7 +532,7 @@ def select_color(df, selected_value, df_history_list):
     df_filtered.loc[:, 'size'] = 10
 
     
-    tool_tip_list = ['title', 'abstract', 'color']
+    tool_tip_list = ['title', 'Abstract', 'color']
 
     # print number of elements in the filtered dataframe
     print(f"Number of elements in the filtered dataframe: {len(df_filtered)}")
@@ -528,7 +568,7 @@ def apply_query_threshold(query_threshold, df, df_history_list):
     df_filtered.loc[:, 'size'] = 10
 
 
-    tool_tip_list = ['title', 'abstract', 'color', 'cluster_label', 'similarity']
+    tool_tip_list = ['title', 'Abstract', 'color', 'cluster_label', 'similarity']
     # check if the dataframe contains all the tooltip columns, use the subset that is available
     for column in tool_tip_list:
         if column not in df_filtered.columns:
@@ -661,7 +701,7 @@ def create_principle_component_plot(df, query, df_history_list):
             color='color',
             size= 'size',
             # tooltip displays the title of the article
-            tooltip=['title', 'abstract', 'similarity'],
+            tooltip=['title', 'Abstract', 'similarity'],
             width=1200,
             height=1200
         )
@@ -705,7 +745,7 @@ def crop_plot(start_x, end_x, start_y, end_y, dataframe, df_history_list):
     df_filtered.loc[:, 'size'] = 10
 
     # display all the elements in the filtered dataframe
-    tool_tip_list = ['title', 'abstract', 'color', 'cluster_label', 'similarity']
+    tool_tip_list = ['title', 'Abstract', 'color', 'cluster_label', 'similarity']
     # check if the dataframe contains all the tooltip columns, use the subset that is available
     for column in tool_tip_list:
         if column not in df_filtered.columns:

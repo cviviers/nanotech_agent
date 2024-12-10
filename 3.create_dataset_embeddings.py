@@ -12,7 +12,7 @@ import json
 
 
 
-def get_embedding_from_api(text, url="http://localhost:8000/embed"):
+def get_embedding_from_api(text, url="http://131.155.34.228:8000/embed"):
     payload = {"text": text}
     headers = {"Content-Type": "application/json"}
     
@@ -40,35 +40,29 @@ def create_text_splits(data, skip=False):
 
 
 def main():
-    folder_path = 'processed_papers'
-    json_files = [f for f in os.listdir(folder_path) if f.endswith('.json')]
-
-    files_with_errors = []
-
     if not os.path.exists('embeddings'):
         os.makedirs('embeddings')
 
-    for file in json_files:
+    dataset = json.load(open('cleaned_dataset.json', 'r'))
+    files_with_errors = []
 
-        if os.path.exists(os.path.join('embeddings', file)):
-            print(f"Skipping {file}")
+    for key, data in dataset.items():
+
+
+        text_splits = create_text_splits(data['cleaned_text'], skip=True)
+        try:
+            embeddings, num_tokens = get_embedding_from_api(text_splits)
+        except:
+            print(f"Error with {key}")
+            files_with_errors.append(key)
             continue
-        with open(os.path.join(folder_path, file), 'r') as f:
-            data = json.load(f)
+        print(f"Number of tokens: {num_tokens}")
+        data['embedding'] = embeddings
+        data['num_tokens'] = num_tokens
 
-            text_splits = create_text_splits(data['cleaned_text'], skip=True)
-            try:
-                embeddings, num_tokens = get_embedding_from_api(text_splits)
-            except:
-                print(f"Error with {file}")
-                files_with_errors.append(file)
-                continue
-            print(f"Number of tokens: {num_tokens}")
-            data['embedding'] = embeddings
-            data['num_tokens'] = num_tokens
+    with open(os.path.join('embeddings', 'data_embeddings.json'), 'w') as f:
+        json.dump(dataset, f, indent=4)
 
-            with open(os.path.join('embeddings', file), 'w') as f:
-                json.dump(data, f, indent=4)
     print("The following files had errors:")
     print(files_with_errors)
 if __name__ == "__main__":

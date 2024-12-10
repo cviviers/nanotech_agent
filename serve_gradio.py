@@ -6,9 +6,8 @@ import gradio as gr
 from gradio.components import scatter_plot
 from utils.utils import get_embedding_from_api, write_df_to_excel
 from utils.lda_utils import create_lda_from_df, visualize_lda
-
-from data_functions import load_temp_data, create_umap_embeddings, create_tsne_embeddings, cluster_embeddings, color_embeddings, select_cluster, select_color, get_query_embedding_and_similarity, apply_query_threshold, get_semantic_similar_embeddings, get_retrieval_embeddings, create_principle_component_plot, update_textbox, generate_and_visualize_lda, undo, crop_plot, generate_and_visualize_lda_all_clusters
-
+import uvicorn
+from data_functions import load_data, create_umap_embeddings, create_umap_scatter_plot, create_tsne_embeddings, cluster_embeddings, color_embeddings, select_cluster, select_color, get_query_embedding_and_similarity, apply_query_threshold, get_semantic_similar_embeddings, get_retrieval_embeddings, create_principle_component_plot, update_textbox, generate_and_visualize_lda, undo, crop_plot, generate_and_visualize_lda_all_clusters
     
 def run_gradio(df):
     # create interactive gr.ScatterPlot
@@ -192,35 +191,28 @@ def run_gradio(df):
                 )
 
     # launch
-    demo.launch(share=False)
-    
-
-
+    demo.queue().launch(share=True, debug=True, show_error=True, ssr_mode=True)
 
 # entry point for the gradio interface
 if __name__ == "__main__":
+
+    # Set environment variables
+    # os.environ['GRADIO_ANALYTICS_ENABLED'] = 'False'
+    # os.environ['COMMANDLINE_ARGS']="--no-gradio-queue"
     # load the data
     print("Starting the gradio interface")
-    folder_path = 'embeddings_subset'
-    df, embeddings = load_temp_data(folder_path)
+    file_path = r'embeddings/data_embeddings.json'
+    df = load_data(file_path)
+    # select first 10000 rows
+    # df = df.head(30000)
+
     print("Finished loading the data")
 
-    
-
-    
-
-    # create tsne embeddings
-    # df_tsne, tsne_embeddings = create_tsne_embeddings(df, embeddings)
     # create umap embeddings
-    df_umpa, umpa_embedding = create_umap_embeddings(df, embeddings)
-
-    # add color to the df
-    df_umpa['color'] = 'blue'
-    df_umpa['size'] = 10
- 
+    df_umpa = create_umap_embeddings(df)
 
     # create output folder if not exists
     if not os.path.exists('output'):
         os.makedirs('output')
     run_gradio(df_umpa)
-    
+
