@@ -2,9 +2,7 @@ import os
 import json
 import pandas as pd
 import time
-import streamlit as st
 
-@st.cache_resource(show_spinner="loading data...")
 def load_data(json_path, subset=None):
     if os.path.exists(json_path):
         # read df with embeddings
@@ -19,10 +17,13 @@ def load_data(json_path, subset=None):
         df['cluster_label'] = 0
 
         # rename the 'Article Title' column to 'title'
-        df.rename(columns={'Article Title': 'title'}, inplace=True)
+        df.rename(columns={'Article Title': 'Title'}, inplace=True)
+
+        df['Title'] = df['Title'].astype(str)
+        df['Abstract'] = df['Abstract'].astype(str)
 
         # only keep the following columns: 'title', 'Abstract', 'embedding'
-        df = df[['title', 'Abstract', 'embedding', 'cleaned_text', 'size', 'color', 'cluster_label']]
+        df = df[['Title', 'Abstract', 'embedding', 'cleaned_text', 'size', 'color', 'cluster_label']]
 
         if subset:
             df = df.head(subset)
@@ -38,4 +39,5 @@ def write_df_to_excel(df, output_dir='output'):
     file_path = os.path.join(output_dir, filename)
     df.to_excel(file_path, index=False)
     print(f"Dataframe saved to {file_path}")
-    st.success(f"Dataframe saved to {file_path}!")
+
+

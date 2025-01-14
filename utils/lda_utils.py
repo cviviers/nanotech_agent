@@ -12,7 +12,6 @@ import pyLDAvis.gensim_models as gensimvis
 import matplotlib.pyplot as plt
 import os
 import time
-import streamlit as st
 
 
 def create_lda_from_df(temp_cluster_df, num_topics=5):
@@ -27,7 +26,7 @@ def create_lda_from_df(temp_cluster_df, num_topics=5):
     dictionary = corpora.Dictionary(dataset)
     
     # Filter out extremes to remove noise in the data
-    dictionary.filter_extremes(no_below=5, no_above=1.0)
+    dictionary.filter_extremes(no_below=1, no_above=1.0)
     
     corpus = [dictionary.doc2bow(doc) for doc in dataset]
     
@@ -84,12 +83,12 @@ def generate_and_visualize_lda(df, num_topics, time=None, cluster_name=None):
     try:
         num_topics = int(num_topics)
     except:
-        st.error("Please enter a valid number of topics")
+        print("Please enter a valid number of topics")
 
     try:
         lda_model, corpus_data = create_lda_from_df(df, num_topics)
     except Exception as err:
-        st.error(f"An error occurred while generating the LDA model. {err}")
+        print(f"An error occurred while generating the LDA model. {err}")
     
     if cluster_name:
         cluster_path = f'output_{cluster_name}'
@@ -109,7 +108,7 @@ def generate_and_visualize_lda_all_clusters(df, num_topics):
     try:
         num_topics = int(num_topics)
     except:
-        st.error("Please enter a valid number of topics")
+        print("Please enter a valid number of topics")
 
     # get number of clusters, set == 1 if not defined
     if 'cluster_label' in df.columns:
@@ -127,10 +126,10 @@ def generate_and_visualize_lda_all_clusters(df, num_topics):
         try:
             lda_model, corpus_data = create_lda_from_df(df, num_topics)
         except:
-            st.error("An error occurred while generating the LDA model")
+           print("An error occurred while generating the LDA model")
         
         visualize_lda(lda_model, corpus_data, output_path)
         message = f"LDA saved for cluster {cluster}! 🎉"
-        st.info(message)
+        print(message)
 
-    st.info("ALL LDA saved! 🎉")
+    print("ALL LDA saved! 🎉")
