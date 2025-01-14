@@ -44,3 +44,5 @@ def count_word_frequency(database, output_dir='output', remove_single_char=True)
         for key in list(sortedDict.keys()):
             f.write(f"{key}: {sortedDict[key]}\n")
             print(f"{key}: {sortedDict[key]}")
+
+    return sortedDict
