@@ -1,7 +1,7 @@
 import pandas as pd
 import time
 
-def count_word_frequency(database, output_dir='output', remove_single_char=True):
+def count_word_frequency(database, output_dir='output', remove_single_char=True, words_to_exclude=[]):
 
     subset = database['cleaned_text']
     text = subset.values.tolist()
@@ -22,7 +22,7 @@ def count_word_frequency(database, output_dir='output', remove_single_char=True)
                             
         # Iterate over each word in line
         for word in words:
-            if word == "":
+            if word == "" or word in words_to_exclude:
                 continue
             if remove_single_char and len(word) == 1:
                 continue
