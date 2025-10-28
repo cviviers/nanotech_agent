@@ -9,8 +9,8 @@ import streamlit as st
 import matplotlib.pyplot as plt
 
 
-def create_umap_embeddings(df):
-    reducer = umap.UMAP(random_state=42)
+def create_umap_embeddings(df, num_components=2):
+    reducer = umap.UMAP(random_state=42, n_components=num_components)
     embeddings = np.array(df['embedding'].map(lambda x: np.array(x)))
     embeddings = np.stack(embeddings)
     umpa_embedding = reducer.fit_transform(embeddings)
