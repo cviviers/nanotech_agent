@@ -1,0 +1,4 @@
+fastapi
+uvicorn[standard]
+torch
+transformers>=4.51.0

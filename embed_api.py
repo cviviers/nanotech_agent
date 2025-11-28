@@ -9,11 +9,12 @@ os.environ.setdefault("HF_HOME", os.environ.get("HF_HOME", os.path.expanduser("~
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"))
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from transformers import AutoModel, AutoTokenizer
-
+from torch import Tensor
 # ---------------------------- Config -----------------------------------------
 # Choose at startup via env vars:
 #   MODEL_CHOICE ∈ {"stella", "bioclinical-modernbert", "qwen3-embedding"}
@@ -22,7 +23,7 @@ from transformers import AutoModel, AutoTokenizer
 #   MAX_LENGTH   model max tokens per chunk
 #   CHUNK_STRATEGY ∈ {"truncate", "mean_over_chunks"}
 #   DTYPE ∈ {"auto","float16","bfloat16","float32"}
-MODEL_CHOICE = os.getenv("MODEL_CHOICE", "bioclinical-modernbert").lower().strip()
+MODEL_CHOICE = os.getenv("MODEL_CHOICE", "qwen3-embedding").lower().strip()
 MODEL_ID_OVERRIDE = os.getenv("MODEL_ID", "").strip() or None
 VECTOR_DIM = int(os.getenv("VECTOR_DIM", "1024"))
 MAX_LENGTH = int(os.getenv("MAX_LENGTH", "8192"))  # long context models can use big values
@@ -117,6 +118,21 @@ def detect_stella_projection_path(hf_home: str, repo_id: str, vector_dim: int) -
             return p
     return None
 
+def last_token_pool(last_hidden_states: Tensor,
+                 attention_mask: Tensor) -> Tensor:
+    left_padding = (attention_mask[:, -1].sum() == attention_mask.shape[0])
+    if left_padding:
+        return last_hidden_states[:, -1]
+    else:
+        sequence_lengths = attention_mask.sum(dim=1) - 1
+        batch_size = last_hidden_states.shape[0]
+        return last_hidden_states[torch.arange(batch_size, device=last_hidden_states.device), sequence_lengths]
+
+def get_detailed_instruct(task_description: str, query: str) -> str:
+    return f'Instruct: {task_description}\nQuery:{query}'
+
+
+
 # ------------------------- Backend -------------------------------------------
 class EncoderBackend(nn.Module):
     def __init__(self, model_id: str, pooling: Literal["mean","cls"]="mean",
@@ -125,8 +141,13 @@ class EncoderBackend(nn.Module):
         self.model_id = model_id
         self.pooling = pooling
         self.vector_dim = vector_dim
+        self.is_qwen = "qwen" in MODEL_CHOICE.lower()
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        # For Qwen models, use left padding
+        if self.is_qwen:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id, padding_side='left', trust_remote_code=True)
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
         self.model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
         self.model.to(DEVICE)
         self.model.eval()
@@ -173,12 +194,11 @@ class EncoderBackend(nn.Module):
 
         # task-specific prompts (use only when asked)
         self.task_prompts = {
-            "s2s": "Instruct: Retrieve semantically similar text.\nQuery: ",
-            "s2p": "Instruct: Given a web search query, retrieve relevant passages that answer the query.\nQuery: ",
+            "s2s": "Instruct: Retrieve semantically similar text.\nQuery:",
+            "s2p": "Instruct: Given a web search query, retrieve relevant passages that answer the query.\nQuery:",
             "default": "",
-            "qwen": 'Given a web search query, retrieve relevant passages that answer the query'
-
         }
+        
 
     @torch.inference_mode()
     def encode_texts(
@@ -197,8 +217,13 @@ class EncoderBackend(nn.Module):
 
         # Apply task prompts if requested
         if task in self.task_prompts:
-            prefix = self.task_prompts[task]
-            texts = [prefix + t for t in texts]
+            if self.is_qwen and task != "default":
+                # Qwen uses get_detailed_instruct format
+                task_description = self.task_prompts[task]
+                texts = [get_detailed_instruct(task_description, t) for t in texts]
+            elif task in self.task_prompts:
+                prefix = self.task_prompts[task]
+                texts = [prefix + t for t in texts]
 
         all_vecs: List[torch.Tensor] = []
         all_token_counts: List[int] = []
@@ -223,14 +248,20 @@ class EncoderBackend(nn.Module):
                     outputs = self.model(**inputs)
                     last_hidden = outputs[0] if isinstance(outputs, (tuple, list)) else outputs.last_hidden_state
 
-                    if self.pooling == "mean":
+                    if self.is_qwen:
+                        # Qwen uses last token pooling
+                        vec = last_token_pool(last_hidden, inputs["attention_mask"])
+                    elif self.pooling == "mean":
                         vec = _mean_pool(last_hidden, inputs["attention_mask"])
                     else:
                         vec = _cls_pool(last_hidden)
 
                     vec = self.projector(vec)
                     if normalize:
-                        vec = l2_normalize(vec)
+                        if self.is_qwen:
+                            vec = F.normalize(vec, p=2, dim=1)
+                        else:
+                            vec = l2_normalize(vec)
                 all_vecs.append(vec.squeeze(0).to("cpu"))
             else:
                 # mean over chunks
@@ -247,7 +278,9 @@ class EncoderBackend(nn.Module):
                         mask = attn_mask[start:end].unsqueeze(0).to(DEVICE)
                         chunk_outputs = self.model(input_ids=ids, attention_mask=mask)
                         chunk_last = chunk_outputs[0] if isinstance(chunk_outputs, (tuple, list)) else chunk_outputs.last_hidden_state
-                        if self.pooling == "mean":
+                        if self.is_qwen:
+                            chunk_vec = last_token_pool(chunk_last, mask)
+                        elif self.pooling == "mean":
                             chunk_vec = _mean_pool(chunk_last, mask)
                         else:
                             chunk_vec = _cls_pool(chunk_last)
@@ -257,7 +290,10 @@ class EncoderBackend(nn.Module):
                     chunk_stack = torch.cat(chunk_vecs, dim=0)  # [C, D]
                     vec = chunk_stack.mean(dim=0, keepdim=True)  # [1, D]
                     if normalize:
-                        vec = l2_normalize(vec)
+                        if self.is_qwen:
+                            vec = F.normalize(vec, p=2, dim=1)
+                        else:
+                            vec = l2_normalize(vec)
                 all_vecs.append(vec.squeeze(0).to("cpu"))
 
         # Return as plain lists for JSON
