@@ -1675,8 +1675,11 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
             evidence_pack = []
             for idx in top_A_idx:
                 row = st.session_state.df_valid.iloc[idx]
+                # Try to get paper ID from common column names
+                paper_id = row.get('pmid', row.get('id', row.get('paper_id', row.get('doi', idx))))
                 evidence_pack.append({
                     "doc_id": f"A_{idx}",
+                    "paper_id": str(paper_id),
                     "title": str(row.get('title', '')),
                     "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
                     "abstract": str(row.get('abstract', row.get('processed_content', '')))[:500],
@@ -1685,8 +1688,11 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
             
             for idx in top_B_idx:
                 row = st.session_state.df_valid.iloc[idx]
+                # Try to get paper ID from common column names
+                paper_id = row.get('pmid', row.get('id', row.get('paper_id', row.get('doi', idx))))
                 evidence_pack.append({
                     "doc_id": f"B_{idx}",
+                    "paper_id": str(paper_id),
                     "title": str(row.get('title', '')),
                     "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
                     "abstract": str(row.get('abstract', row.get('processed_content', '')))[:500],
@@ -1695,20 +1701,20 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
             
             # Enhanced prompt with domain-specific axes
             system_prompt = """You are a nanomedicine domain expert. Only use the EVIDENCE PACK provided.
-Never invent facts or cite outside sources. If evidence is insufficient for any claim,
-state 'unknown'. Cite by doc_id for every claim. Output exactly the JSON schema."""
-            
+            Never invent facts or cite outside sources. If evidence is insufficient for any claim,
+            state 'unknown'. Cite by doc_id for every claim. Output exactly the JSON schema."""
+                        
             # Build additional guidance sections
             custom_question_section = ""
             if custom_question:
                 custom_question_section = f"""
 
-SPECIFIC QUESTION TO ADDRESS:
-{custom_question}
+            SPECIFIC QUESTION TO ADDRESS:
+            {custom_question}
 
-Please include your answer to this question in a dedicated field called "custom_question_answer" in the JSON output.
-Base your answer strictly on the evidence provided. If the evidence is insufficient, state this clearly.
-"""
+            Please include your answer to this question in a dedicated field called "custom_question_answer" in the JSON output.
+            Base your answer strictly on the evidence provided. If the evidence is insufficient, state this clearly.
+            """
             
             keywords_guidance_section = ""
             if guidance_keywords:
@@ -1716,70 +1722,70 @@ Base your answer strictly on the evidence provided. If the evidence is insuffici
                 if keywords_list:
                     keywords_guidance_section = f"""
 
-KEYWORDS FOR BRIDGE OPPORTUNITIES:
-When identifying bridge opportunities, pay special attention to these keywords and concepts: {', '.join(keywords_list)}
-Consider how these keywords might relate to potential connections between the two clusters.
-"""
+            KEYWORDS FOR BRIDGE OPPORTUNITIES:
+            When identifying bridge opportunities, pay special attention to these keywords and concepts: {', '.join(keywords_list)}
+            Consider how these keywords might relate to potential connections between the two clusters.
+            """
             
             # Build output schema with optional custom question field
             output_schema = """{
-  "cluster_A_summary": {
-    "one_line": "string",
-    "bullets": ["string"],
-    "salient_entities": {"materials":[], "ligands":[], "diseases":[], "delivery":[], "models":[]},
-    "citations": ["doc_id"]
-  },
-  "cluster_B_summary": {
-    "one_line": "string",
-    "bullets": ["string"],
-    "salient_entities": {"materials":[], "ligands":[], "diseases":[], "delivery":[], "models":[]},
-    "citations": ["doc_id"]
-  },
-  "axes_of_separation": [{
-      "axis": "materials|ligands|disease|model|delivery|toxicity|methods|other",
-      "what_differs": "short explanation (evidence-grounded)",
-      "evidence_A": ["doc_id"],
-      "evidence_B": ["doc_id"],
-      "confidence": 0.0-1.0
-  }],
-  "bridge_seeds": [{
-      "idea": "short description of a possible bridge",
-      "why_plausible": "mechanistic rationale, grounded in docs",
-      "support": ["doc_id"],
-      "risks": ["toxicity","aggregation","RES","immunogenicity","scaleup","IP","assay_limitations"]
-  }],"""
-            
+            "cluster_A_summary": {
+                "one_line": "string",
+                "bullets": ["string"],
+                "salient_entities": {"materials":[], "ligands":[], "diseases":[], "delivery":[], "models":[]},
+                "citations": ["doc_id"]
+            },
+            "cluster_B_summary": {
+                "one_line": "string",
+                "bullets": ["string"],
+                "salient_entities": {"materials":[], "ligands":[], "diseases":[], "delivery":[], "models":[]},
+                "citations": ["doc_id"]
+            },
+            "axes_of_separation": [{
+                "axis": "materials|ligands|disease|model|delivery|toxicity|methods|other",
+                "what_differs": "short explanation (evidence-grounded)",
+                "evidence_A": ["doc_id"],
+                "evidence_B": ["doc_id"],
+                "confidence": 0.0-1.0
+            }],
+            "bridge_seeds": [{
+                "idea": "short description of a possible bridge",
+                "why_plausible": "mechanistic rationale, grounded in docs",
+                "support": ["doc_id"],
+                "risks": ["toxicity","aggregation","RES","immunogenicity","scaleup","IP","assay_limitations"]
+            }],"""
+                        
             if custom_question:
                 output_schema += """
-  "custom_question_answer": {
-    "answer": "string",
-    "supporting_evidence": ["doc_id"],
-    "confidence": 0.0-1.0,
-    "limitations": "string"
-  },"""
-            
-            output_schema += """
-  "insufficient_evidence": false
-}"""
-            
-            user_prompt = f"""TASK: Contrast Cluster A vs Cluster B to explain why they are separated in embedding space.
-Focus on: materials, surface chemistry/coatings, size/shape, targeting ligands, disease areas,
-models (in vitro/in vivo/clinical), delivery routes, pharmacokinetics/biodistribution,
-toxicity/regulatory language, endpoints/outcomes.
+            "custom_question_answer": {
+                "answer": "string",
+                "supporting_evidence": ["doc_id"],
+                "confidence": 0.0-1.0,
+                "limitations": "string"
+            },"""
+                        
+                output_schema += """
+            "insufficient_evidence": false
+            }"""
+                        
+                user_prompt = f"""TASK: Contrast Cluster A vs Cluster B to explain why they are separated in embedding space.
+            Focus on: materials, surface chemistry/coatings, size/shape, targeting ligands, disease areas,
+            models (in vitro/in vivo/clinical), delivery routes, pharmacokinetics/biodistribution,
+            toxicity/regulatory language, endpoints/outcomes.
 
-CONTEXT:
-- cluster_A_meta: {{"id": {cluster_A}, "n_docs": {cluster_counts[cluster_A]}}}
-- cluster_B_meta: {{"id": {cluster_B}, "n_docs": {cluster_counts[cluster_B]}}}
-- Gap region: {len(region_indices)} papers spanning both clusters{custom_question_section}{keywords_guidance_section}
+            CONTEXT:
+            - cluster_A_meta: {{"id": {cluster_A}, "n_docs": {cluster_counts[cluster_A]}}}
+            - cluster_B_meta: {{"id": {cluster_B}, "n_docs": {cluster_counts[cluster_B]}}}
+            - Gap region: {len(region_indices)} papers spanning both clusters{custom_question_section}{keywords_guidance_section}
 
-EVIDENCE PACK (JSONL; each line is one doc):
-```jsonl
-{chr(10).join(json.dumps(d, ensure_ascii=False) for d in evidence_pack)}
-```
+            EVIDENCE PACK (JSONL; each line is one doc):
+            ```jsonl
+            {chr(10).join(json.dumps(d, ensure_ascii=False) for d in evidence_pack)}
+            ```
 
-OUTPUT JSON SCHEMA:
-{output_schema}
-"""
+            OUTPUT JSON SCHEMA:
+            {output_schema}
+            """
             
             # Show prompt editor if requested
             if show_prompt_editor:
