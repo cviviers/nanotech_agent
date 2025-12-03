@@ -390,3 +390,8 @@ def rank_documents(payload: RankRequest):
         model_embedding=EMBED_MODEL_NAME if payload.return_embedding_similarity else None,
         results=results_sorted,
     )
+
+# example usage:
+
+# start the server:
+# uvicorn qwen:app --host 0.0.0.0 --port 8000

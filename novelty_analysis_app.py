@@ -113,26 +113,63 @@ def parse_embedding(value: Any) -> Optional[np.ndarray]:
     return None
 
 
-def extract_embeddings(df: pd.DataFrame, embed_cols: List[str]) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
-    """Extract embeddings from dataframe columns."""
-    present_cols = [c for c in embed_cols if c in df.columns]
-    if not present_cols:
-        raise ValueError(f"None of the embedding columns found: {embed_cols}")
+def extract_embeddings(df: pd.DataFrame, embed_names: List[str], data_dir: Path) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
+    """Load embeddings from .npy files in data directory."""
+    if not embed_names:
+        raise ValueError(f"No embedding names provided")
     
-    arrays_by_col = {}
+    result = {}
     valid_mask = None
     
-    for col in present_cols:
-        col_arrays = [parse_embedding(v) for v in df[col].tolist()]
-        arrays_by_col[col] = col_arrays
-        col_mask = np.array([a is not None for a in col_arrays])
-        valid_mask = col_mask if valid_mask is None else (valid_mask & col_mask)
+    for embed_name in embed_names:
+        # Construct paths
+        npy_path = data_dir / f"{embed_name}_embeddings.npy"
+        metadata_path = data_dir / f"{embed_name}_embeddings_metadata.json"
+        
+        if not npy_path.exists():
+            st.warning(f"Embedding file not found: {npy_path}")
+            continue
+        
+        try:
+            # Load embeddings
+            embeddings = np.load(npy_path)
+            
+            # Load metadata
+            if metadata_path.exists():
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                st.info(f"Loaded {embed_name}: {embeddings.shape}, model: {metadata.get('model', 'unknown')}")
+            else:
+                st.info(f"Loaded {embed_name}: {embeddings.shape}")
+            
+            # Check if number of embeddings matches dataframe
+            if len(embeddings) != len(df):
+                st.warning(f"Embedding count mismatch for {embed_name}: {len(embeddings)} embeddings vs {len(df)} papers")
+                # Use minimum length
+                min_len = min(len(embeddings), len(df))
+                embeddings = embeddings[:min_len]
+                if valid_mask is None:
+                    valid_mask = np.ones(min_len, dtype=bool)
+                else:
+                    valid_mask = valid_mask[:min_len]
+            else:
+                if valid_mask is None:
+                    valid_mask = np.ones(len(embeddings), dtype=bool)
+            
+            result[embed_name] = embeddings.astype(np.float32)
+            
+        except Exception as e:
+            st.error(f"Error loading {embed_name} embeddings: {str(e)}")
+            continue
+    
+    if not result:
+        raise ValueError(f"No embeddings could be loaded from: {embed_names}")
     
     valid_idx = np.where(valid_mask)[0]
-    result = {}
-    for col in present_cols:
-        embeddings = [arrays_by_col[col][i] for i in valid_idx]
-        result[col] = np.vstack(embeddings).astype(np.float32)
+    
+    # Trim all embeddings to valid indices
+    for key in result:
+        result[key] = result[key][valid_idx]
     
     return result, valid_idx
 
@@ -264,7 +301,9 @@ def save_state_for_undo(action_name: str):
         'X_primary': st.session_state.X_primary.copy() if st.session_state.X_primary is not None else None,
         'X_umap_2d': st.session_state.X_umap_2d.copy() if st.session_state.X_umap_2d is not None else None,
         'kmeans_applied': st.session_state.kmeans_applied,
-        'similarity_applied': st.session_state.similarity_applied
+        'similarity_applied': st.session_state.similarity_applied,
+        'G': st.session_state.G,  # Graph is immutable, can reference directly
+        'clustering_done': st.session_state.clustering_done
     }
     st.session_state.undo_history.append(state_snapshot)
     
@@ -287,6 +326,8 @@ def undo_last_action():
     st.session_state.X_umap_2d = snapshot['X_umap_2d']
     st.session_state.kmeans_applied = snapshot['kmeans_applied']
     st.session_state.similarity_applied = snapshot['similarity_applied']
+    st.session_state.G = snapshot.get('G', None)
+    st.session_state.clustering_done = snapshot.get('clustering_done', False)
     
     # Update UMAP coordinates in dataframe if available
     if st.session_state.df_valid is not None and st.session_state.X_umap_2d is not None:
@@ -340,6 +381,12 @@ def init_session_state():
         st.session_state.kmeans_applied = False
     if 'similarity_applied' not in st.session_state:
         st.session_state.similarity_applied = False
+    if 'qa_retrieval_applied' not in st.session_state:
+        st.session_state.qa_retrieval_applied = False
+    
+    # Clustering selection
+    if 'selected_clustering' not in st.session_state:
+        st.session_state.selected_clustering = None
     
     # Undo history
     if 'undo_history' not in st.session_state:
@@ -366,8 +413,8 @@ def page_data_loading():
         
         data_path = st.text_input(
             "Data File Path",
-            value=r"C:\Users\20195435\OneDrive - TU Eindhoven\TUe\Playground\Nanotechnology\papers_dataframe_full_processed_with_processed_embeddings.csv",
-            help="Path to your CSV or Parquet file"
+            value=r"C:\Users\20195435\OneDrive - TU Eindhoven\TUe\Playground\Nanotechnology\data\cleaned_dataset.json",
+            help="Path to your JSON dataset file"
         )
         
         sample_n = st.number_input(
@@ -382,10 +429,10 @@ def page_data_loading():
         st.subheader("🎯 Embedding Configuration")
         
         available_embeddings = st.multiselect(
-            "Available Embedding Columns",
-            ["qwen_content_embedding", "bert_content_embedding", 
-             "qwen_processed_content_embedding", "bert_processed_content_embedding"],
-            default=["qwen_content_embedding", "bert_content_embedding"]
+            "Available Embedding Files",
+            ["qwen", "bert"],
+            default=["qwen", "bert"],
+            help="Select which embedding files to load from /data/ folder"
         )
         
         primary_embedding = st.selectbox(
@@ -443,37 +490,44 @@ def page_data_loading():
                         else st.session_state.df_original.head(10))
 
 
-def load_data(config,  keywords_title_exclusion, keywords_abstract_exclusion):
-    """Load and filter dataset"""
+def load_data(config, keywords_title_exclusion, keywords_abstract_exclusion):
+    """Load and filter dataset from JSON file"""
     data_path = Path(config['data_path'])
     
     if not data_path.exists():
         st.error(f"File not found: {data_path}")
         return
     
-    with st.spinner("Loading dataset..."):
-        # Load file
-        if data_path.suffix.lower() in {'.parquet', '.pq'}:
-            df = pd.read_parquet(data_path)
-        else:
-            df = pd.read_csv(data_path)
-        
-        st.session_state.df_original = df.copy()
-        
-        # Apply filters
-        for keyword in keywords_title_exclusion:
-            if 'title' in df.columns:
-                df = df[~df['title'].str.lower().str.contains(keyword, na=False)]
-        for keyword in keywords_abstract_exclusion:        
-            if 'abstract' in df.columns:
-                df = df[~df['abstract'].str.lower().str.contains(keyword, na=False)]
-        
-        # Sample if needed
-        if config['sample_n'] is not None and len(df) > config['sample_n']:
-            df = df.sample(config['sample_n'], random_state=42)
-        
-        df = df.reset_index(drop=True)
-        st.session_state.df_filtered = df
+    with st.spinner("Loading dataset from JSON..."):
+        # Load JSON file
+        try:
+            with open(data_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(data)
+            
+            st.session_state.df_original = df.copy()
+            
+            # Apply filters
+            for keyword in keywords_title_exclusion:
+                if 'title' in df.columns:
+                    df = df[~df['title'].str.lower().str.contains(keyword, na=False)]
+            for keyword in keywords_abstract_exclusion:
+                if 'abstract' in df.columns:
+                    df = df[~df['abstract'].str.lower().str.contains(keyword, na=False)]
+            
+            # Sample if needed
+            if config['sample_n'] is not None and len(df) > config['sample_n']:
+                df = df.sample(config['sample_n'], random_state=42)
+            
+            df = df.reset_index(drop=True)
+            st.session_state.df_filtered = df
+            
+        except Exception as e:
+            st.error(f"Error loading JSON file: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
 
 
 # ============================================================================
@@ -498,12 +552,16 @@ def page_embedding_processing():
     
     # Extract embeddings
     if not st.session_state.embeddings_extracted:
-        if st.button("🔍 Extract Embeddings", type="primary"):
-            with st.spinner("Extracting embeddings..."):
+        if st.button("🔍 Load Embeddings", type="primary"):
+            with st.spinner("Loading embeddings from .npy files..."):
                 try:
+                    # Get data directory from config path
+                    data_dir = Path(config['data_path']).parent
+                    
                     embeddings_dict, valid_idx = extract_embeddings(
                         st.session_state.df_filtered,
-                        config['embedding_cols']
+                        config['embedding_cols'],
+                        data_dir
                     )
                     
                     st.session_state.embeddings_dict = embeddings_dict
@@ -511,11 +569,13 @@ def page_embedding_processing():
                     st.session_state.X_primary = embeddings_dict[config['primary_embedding']]
                     st.session_state.embeddings_extracted = True
                     
-                    st.success(f"✅ Extracted embeddings: {len(valid_idx)} valid rows")
+                    st.success(f"✅ Loaded embeddings: {len(valid_idx)} valid rows")
                     st.rerun()
                     
                 except Exception as e:
-                    st.error(f"Error extracting embeddings: {str(e)}")
+                    st.error(f"Error loading embeddings: {str(e)}")
+                    import traceback
+                    st.code(traceback.format_exc())
         return
     
     st.success(f"✅ Embeddings extracted: {st.session_state.X_primary.shape}")
@@ -527,7 +587,7 @@ def page_embedding_processing():
     
     col1, col2, col3 = st.columns(3)
     with col1:
-        pca_components = st.number_input("PCA Components", min_value=10, max_value=1024, value=50)
+        pca_components = st.number_input("PCA Components", min_value=10, max_value=1024, value=102)
     with col2:
         st.write("")
         st.write("")
@@ -594,6 +654,7 @@ def page_embedding_processing():
             hover_data={'umap_x': False, 'umap_y': False, 'hover_title': True, 'hover_abstract': True}
         )
         fig.update_traces(marker=dict(size=5))
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
         st.plotly_chart(fig, use_container_width=True)
 
 
@@ -663,6 +724,7 @@ def page_filters():
             hover_data={'umap_x': False, 'umap_y': False, 'kmeans_cluster': True, 'hover_title': True, 'hover_abstract': True}
         )
         fig.update_traces(marker=dict(size=6))
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
         st.plotly_chart(fig, use_container_width=True)
         
         with st.expander("📊 Cluster Distribution"):
@@ -671,54 +733,150 @@ def page_filters():
     st.divider()
     
     # Semantic similarity filter
-    st.subheader("2️⃣ Semantic Similarity Filter")
+    st.subheader("2️⃣ Semantic Retrieval")
     
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        query_text = st.text_area(
-            "Search Query",
-            value="Brain delivery for treatment of neurodegenerative diseases",
-            height=100
-        )
-        similarity_threshold = st.slider("Similarity Threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.01)
-    with col2:
-        st.write("")
-        st.write("")
-        if st.button("🔍 Compute Similarities"):
-            compute_semantic_similarity(query_text, similarity_threshold)
+    retrieval_mode = st.radio(
+        "Retrieval Mode",
+        ["Semantic Similarity", "Question Answering (Reranker)"],
+        help="Semantic Similarity: Find papers similar to a topic. Q&A: Find papers that answer a question."
+    )
     
-    if st.session_state.similarity_applied:
-        similarities = st.session_state.df_valid['similarity_score'].values
+    if retrieval_mode == "Semantic Similarity":
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            query_text = st.text_area(
+                "Search Query (Topic/Description)",
+                value="Brain delivery for treatment of neurodegenerative diseases",
+                height=100
+            )
+            similarity_threshold = st.slider("Similarity Threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.01)
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("🔍 Compute Similarities"):
+                compute_semantic_similarity(query_text, similarity_threshold)
         
-        st.success(f"✅ Similarity computed. {(similarities >= similarity_threshold).sum()} papers above threshold")
+        if st.session_state.similarity_applied:
+            similarities = st.session_state.df_valid['similarity_score'].values
+            
+            st.success(f"✅ Similarity computed. {(similarities >= similarity_threshold).sum()} papers above threshold")
+            
+            if st.button("✂️ Apply Similarity Filter"):
+                apply_similarity_filter(similarity_threshold)
+            
+            # Visualize similarities
+            df_plot = st.session_state.df_valid.copy()
+            df_plot['hover_title'] = df_plot['title'].fillna('N/A')
+            df_plot['hover_abstract'] = df_plot.get('abstract', df_plot.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
+            
+            fig = px.scatter(
+                df_plot,
+                x='umap_x',
+                y='umap_y',
+                color='similarity_score',
+                title="Semantic Similarity to Query",
+                opacity=0.7,
+                height=1000,
+                color_continuous_scale='Viridis',
+                hover_data={'umap_x': False, 'umap_y': False, 'similarity_score': ':.3f', 'hover_title': True, 'hover_abstract': True}
+            )
+            fig.update_traces(marker=dict(size=6))
+            fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Show top matches
+            with st.expander("📄 Top 10 Most Similar Papers"):
+                top_papers = st.session_state.df_valid.nlargest(10, 'similarity_score')
+                for idx, row in top_papers.iterrows():
+                    st.write(f"**[{row['similarity_score']:.3f}]** {row.get('title', 'N/A')}")
+    
+    else:  # Question Answering mode
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            question_text = st.text_area(
+                "Research Question",
+                value="What are the most effective nanoparticle delivery systems for crossing the blood-brain barrier?",
+                height=100,
+                help="Ask a specific research question. The system will find papers that best answer it."
+            )
+            qa_threshold = st.slider("Relevance Threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.01,
+                                    help="Papers with embedding similarity above this threshold will be reranked")
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("🔍 Retrieve Answers"):
+                compute_question_answering_retrieval(question_text, qa_threshold)
         
-        if st.button("✂️ Apply Similarity Filter"):
-            apply_similarity_filter(similarity_threshold)
-        
-        # Visualize similarities
-        df_plot = st.session_state.df_valid.copy()
-        df_plot['hover_title'] = df_plot['title'].fillna('N/A')
-        df_plot['hover_abstract'] = df_plot.get('abstract', df_plot.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
-        
-        fig = px.scatter(
-            df_plot,
-            x='umap_x',
-            y='umap_y',
-            color='similarity_score',
-            title="Semantic Similarity to Query",
-            opacity=0.7,
-            height=1000,
-            color_continuous_scale='Viridis',
-            hover_data={'umap_x': False, 'umap_y': False, 'similarity_score': ':.3f', 'hover_title': True, 'hover_abstract': True}
-        )
-        fig.update_traces(marker=dict(size=6))
-        st.plotly_chart(fig, use_container_width=True)
-        
-        # Show top matches
-        with st.expander("📄 Top 10 Most Similar Papers"):
-            top_papers = st.session_state.df_valid.nlargest(10, 'similarity_score')
-            for idx, row in top_papers.iterrows():
-                st.write(f"**[{row['similarity_score']:.3f}]** {row.get('title', 'N/A')}")
+        if st.session_state.qa_retrieval_applied:
+            st.success("✅ Q&A retrieval complete")
+            
+            # Filters based on Q&A scores
+            col1, col2 = st.columns(2)
+            with col1:
+                qa_filter_threshold = st.slider("Combined Score Threshold", min_value=0.0, max_value=1.0, value=0.5, step=0.01,
+                                               help="Filter to keep only papers above this combined score")
+            with col2:
+                if st.button("✂️ Apply Q&A Filter"):
+                    apply_qa_filter(qa_filter_threshold)
+            
+            # Visualize Q&A scores
+            df_plot = st.session_state.df_valid.copy()
+            df_plot['hover_title'] = df_plot['title'].fillna('N/A')
+            df_plot['hover_abstract'] = df_plot.get('abstract', df_plot.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
+            
+            tab1, tab2, tab3 = st.tabs(["Combined Score", "Reranker Score", "Embedding Score"])
+            
+            with tab1:
+                fig = px.scatter(
+                    df_plot,
+                    x='umap_x',
+                    y='umap_y',
+                    color='qa_combined_score',
+                    title="Q&A Combined Score",
+                    opacity=0.7,
+                    height=800,
+                    color_continuous_scale='Viridis',
+                    hover_data={'umap_x': False, 'umap_y': False, 'qa_combined_score': ':.3f', 
+                               'qa_reranker_score': ':.3f', 'qa_embedding_score': ':.3f',
+                               'hover_title': True, 'hover_abstract': True}
+                )
+                fig.update_traces(marker=dict(size=6))
+                fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with tab2:
+                fig = px.scatter(
+                    df_plot,
+                    x='umap_x',
+                    y='umap_y',
+                    color='qa_reranker_score',
+                    title="Reranker Score (Qwen3-Reranker)",
+                    opacity=0.7,
+                    height=800,
+                    color_continuous_scale='Reds',
+                    hover_data={'umap_x': False, 'umap_y': False, 'qa_reranker_score': ':.3f', 
+                               'hover_title': True, 'hover_abstract': True}
+                )
+                fig.update_traces(marker=dict(size=6))
+                fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with tab3:
+                fig = px.scatter(
+                    df_plot,
+                    x='umap_x',
+                    y='umap_y',
+                    color='qa_embedding_score',
+                    title="Embedding Score (Qwen3-Embedding)",
+                    opacity=0.7,
+                    height=800,
+                    color_continuous_scale='Blues',
+                    hover_data={'umap_x': False, 'umap_y': False, 'qa_embedding_score': ':.3f', 
+                               'hover_title': True, 'hover_abstract': True}
+                )
+                fig.update_traces(marker=dict(size=6))
+                fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+                st.plotly_chart(fig, use_container_width=True)
     
     st.divider()
     
@@ -789,27 +947,183 @@ def apply_cluster_filter(selected_clusters):
 
 
 def compute_semantic_similarity(query_text, threshold):
-    """Compute semantic similarity to query"""
+    """Compute semantic similarity to query using preloaded embeddings"""
     try:
-        # Try to use embed_api
-        from embed_api import embed_single, TextInput
+        import requests
+        
+        # API endpoint for Qwen embedding service
+        QWEN_API_URL = "http://localhost:8000"
         
         with st.spinner("Generating query embedding..."):
-            query_input = TextInput(text=query_text, task='s2p')
-            query_embedding = np.array(embed_single(query_input)['embedding'])
+            # Generate query embedding with instruction for better retrieval
+            query_payload = {
+                "texts": [query_text],
+                "instruction": "Represent this query for retrieving relevant biomedical research papers",
+                "normalize": True
+            }
+            
+            query_response = requests.post(
+                f"{QWEN_API_URL}/embed",
+                json=query_payload,
+                timeout=60
+            )
+            
+            if query_response.status_code != 200:
+                st.error(f"❌ Query embedding failed: {query_response.text}")
+                return
+            
+            query_embedding = np.array(query_response.json()['embeddings'][0])
         
-        with st.spinner("Computing similarities..."):
-            X_norm = st.session_state.X_primary / np.linalg.norm(st.session_state.X_primary, axis=1, keepdims=True)
-            query_norm = query_embedding / np.linalg.norm(query_embedding)
-            similarities = X_norm @ query_norm
+        with st.spinner("Computing similarities with preloaded paper embeddings..."):
+            # Use the already-loaded embeddings from session state
+            paper_embeddings = st.session_state.X_primary
+            
+            # Normalize embeddings for cosine similarity
+            paper_embeddings_norm = paper_embeddings / np.linalg.norm(paper_embeddings, axis=1, keepdims=True)
+            query_embedding_norm = query_embedding / np.linalg.norm(query_embedding)
+            
+            # Compute cosine similarity: normalized dot product
+            similarities = paper_embeddings_norm @ query_embedding_norm
             
             st.session_state.df_valid['similarity_score'] = similarities
             st.session_state.similarity_applied = True
+            
+            st.success(f"✅ Computed similarities: {(similarities >= threshold).sum()} papers above threshold {threshold:.2f}")
     
-    except ImportError:
-        st.error("❌ embed_api not available. Cannot compute query embedding.")
+    except requests.exceptions.ConnectionError:
+        st.error("❌ Cannot connect to Qwen API. Make sure the service is running at http://localhost:8000")
+        st.info("Start the service with: `uvicorn qwen:app --host 0.0.0.0 --port 8000` in the embedding_models directory")
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
+
+
+def compute_question_answering_retrieval(question, threshold=0.3):
+    """
+    Compute question-answering style retrieval using Qwen reranker.
+    Uses both embedding similarity and reranker scores for better results.
+    """
+    try:
+        import requests
+        
+        # API endpoint for Qwen service
+        QWEN_API_URL = "http://localhost:8000"
+        
+        # Get paper texts
+        text_col = 'processed_content' if 'processed_content' in st.session_state.df_valid.columns else 'abstract'
+        paper_texts = st.session_state.df_valid[text_col].fillna('').astype(str).tolist()
+        
+        # First pass: Get candidates above threshold using embedding similarity with preloaded embeddings
+        with st.spinner("Phase 1/2: Computing embedding similarities with preloaded embeddings..."):
+            # Get question embedding from API
+            query_payload = {
+                "texts": [question],
+                "instruction": "Represent this question for retrieving relevant research papers that answer it",
+                "normalize": True
+            }
+            
+            query_response = requests.post(
+                f"{QWEN_API_URL}/embed",
+                json=query_payload,
+                timeout=60
+            )
+            
+            if query_response.status_code != 200:
+                st.error(f"❌ Query embedding failed: {query_response.text}")
+                return
+            
+            question_embedding = np.array(query_response.json()['embeddings'][0])
+            
+            # Use preloaded paper embeddings
+            paper_embeddings = st.session_state.X_primary
+            
+            # Normalize and compute similarities
+            paper_embeddings_norm = paper_embeddings / np.linalg.norm(paper_embeddings, axis=1, keepdims=True)
+            question_embedding_norm = question_embedding / np.linalg.norm(question_embedding)
+            embedding_scores = paper_embeddings_norm @ question_embedding_norm
+            
+            # Get candidates above threshold
+            above_threshold = embedding_scores >= threshold
+            top_candidate_indices = np.where(above_threshold)[0]
+            
+            # Sort by score descending
+            sorted_order = np.argsort(embedding_scores[top_candidate_indices])[::-1]
+            top_candidate_indices = top_candidate_indices[sorted_order]
+            top_candidate_texts = [paper_texts[i] for i in top_candidate_indices]
+            
+            st.info(f"Found {len(top_candidate_indices)} papers above threshold {threshold:.2f}")
+        
+        if len(top_candidate_indices) == 0:
+            st.warning(f"❌ No papers found above threshold {threshold:.2f}. Try lowering the threshold.")
+            return
+        
+        # Second pass: Rerank candidates
+        with st.spinner(f"Phase 2/2: Reranking {len(top_candidate_texts)} candidates..."):
+            rank_payload = {
+                "query": question,
+                "documents": top_candidate_texts,
+                "instruction": "Given a research question, determine if this research paper provides relevant information to answer it",
+                "top_k": None,  # Return all
+                "return_embedding_similarity": True,
+                "normalize_embeddings": True
+            }
+            
+            rank_response = requests.post(
+                f"{QWEN_API_URL}/rank",
+                json=rank_payload,
+                timeout=180
+            )
+            
+            if rank_response.status_code != 200:
+                st.error(f"❌ Reranking failed: {rank_response.text}")
+                return
+            
+            rank_results = rank_response.json()['results']
+        
+        # Map results back to original indices and store scores
+        reranker_scores = np.zeros(len(paper_texts))
+        combined_scores = np.zeros(len(paper_texts))
+        
+        for result in rank_results:
+            original_idx = top_candidate_indices[result['index']]
+            reranker_scores[original_idx] = result['reranker_score']
+            # Combine reranker and embedding scores (weighted average)
+            if result['embedding_score'] is not None:
+                combined_scores[original_idx] = 0.7 * result['reranker_score'] + 0.3 * result['embedding_score']
+            else:
+                combined_scores[original_idx] = result['reranker_score']
+        
+        # Store all scores
+        st.session_state.df_valid['qa_reranker_score'] = reranker_scores
+        st.session_state.df_valid['qa_embedding_score'] = embedding_scores
+        st.session_state.df_valid['qa_combined_score'] = combined_scores
+        st.session_state.qa_retrieval_applied = True
+        
+        n_reranked = len(top_candidate_indices)
+        n_with_scores = (combined_scores > 0).sum()
+        st.success(f"✅ Q&A retrieval complete. Reranked {n_reranked} papers above threshold.")
+        
+        # Show top results
+        with st.expander("📄 Top 10 Results", expanded=True):
+            top_papers = st.session_state.df_valid.nlargest(10, 'qa_combined_score')
+            for idx, (_, row) in enumerate(top_papers.iterrows(), 1):
+                st.write(f"**{idx}. [{row['qa_combined_score']:.3f}]** {row.get('title', 'N/A')}")
+                col1, col2, col3 = st.columns(3)
+                col1.caption(f"Reranker: {row['qa_reranker_score']:.3f}")
+                col2.caption(f"Embedding: {row['qa_embedding_score']:.3f}")
+                col3.caption(f"Year: {row.get('publication_year', 'N/A')}")
+                if idx < 5:  # Show abstract for top 5
+                    st.caption(str(row.get('abstract', row.get('processed_content', '')))[:300] + '...')
+                st.divider()
+    
+    except requests.exceptions.ConnectionError:
+        st.error("❌ Cannot connect to Qwen API. Make sure the service is running at http://localhost:8000")
+        st.info("Start the service with: `uvicorn qwen:app --host 0.0.0.0 --port 8000` in the embedding_models directory")
+    except Exception as e:
+        st.error(f"❌ Error: {str(e)}")
+        import traceback
+        st.code(traceback.format_exc())
 
 
 def apply_similarity_filter(threshold):
@@ -817,6 +1131,22 @@ def apply_similarity_filter(threshold):
     save_state_for_undo(f"Similarity filter (threshold={threshold:.2f})")
     
     mask = st.session_state.df_valid['similarity_score'] >= threshold
+    n_before = len(st.session_state.df_valid)
+    
+    st.session_state.df_valid = st.session_state.df_valid[mask].reset_index(drop=True)
+    st.session_state.X_pca = st.session_state.X_pca[mask]
+    st.session_state.X_primary = st.session_state.X_primary[mask]
+    st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask]
+    
+    st.success(f"✅ Filtered: {n_before} → {len(st.session_state.df_valid)} papers")
+    st.rerun()
+
+
+def apply_qa_filter(threshold):
+    """Filter by Q&A combined score threshold"""
+    save_state_for_undo(f"Q&A filter (threshold={threshold:.2f})")
+    
+    mask = st.session_state.df_valid['qa_combined_score'] >= threshold
     n_before = len(st.session_state.df_valid)
     
     st.session_state.df_valid = st.session_state.df_valid[mask].reset_index(drop=True)
@@ -871,6 +1201,19 @@ def page_gap_analysis():
         st.warning("⚠️ Please complete clustering first")
         return
     
+    if st.session_state.selected_clustering is None:
+        st.warning("⚠️ Please select a clustering method to continue (HDBSCAN or Community Detection)")
+        return
+    
+    # Display selected clustering method
+    clustering_method_map = {
+        'kmeans': 'K-means',
+        'hdbscan': 'HDBSCAN',
+        'leiden': 'Community Detection (Leiden/Louvain)'
+    }
+    clustering_method_display = clustering_method_map.get(st.session_state.selected_clustering, 'Unknown')
+    st.info(f"📌 Using clustering method: **{clustering_method_display}**")
+    
     st.markdown(f"""
     **Working Dataset**: {len(st.session_state.df_valid)} papers  
     Configure density and gap detection parameters.
@@ -879,23 +1222,31 @@ def page_gap_analysis():
     # Analysis Parameters Configuration
     st.subheader("🔧 Analysis Parameters")
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
+        knn_graph_k = st.number_input(
+            "k-NN Graph K", 
+            min_value=5, 
+            max_value=50, 
+            value=21,
+            help="Number of neighbors for k-NN graph construction"
+        )
+        
         k_neighbors = st.multiselect(
             "K-Neighbors for Density",
             [5, 10, 15, 20, 30, 40, 50],
             default=[10, 20, 30, 50],
             help="Multiple k values for robust density estimation"
         )
-        
+    
+    with col2:
         density_metric = st.selectbox(
             "Density Metric",
             ["cosine", "euclidean", "manhattan"],
             index=0,
             help="Distance metric for density computation"
         )
-    
-    with col2:
+        
         gap_quantile = st.slider(
             "Gap Quantile (top %)", 
             min_value=0.90, 
@@ -904,7 +1255,8 @@ def page_gap_analysis():
             step=0.001,
             help="Percentile threshold for gap candidates"
         )
-        
+    
+    with col3:
         min_gap_region_size = st.number_input(
             "Min Gap Region Size", 
             min_value=2, 
@@ -915,6 +1267,7 @@ def page_gap_analysis():
     
     # Store gap analysis config
     gap_config = {
+        'knn_graph_k': knn_graph_k,
         'k_neighbors': sorted(k_neighbors),
         'density_metric': density_metric,
         'gap_quantile': gap_quantile,
@@ -923,6 +1276,95 @@ def page_gap_analysis():
     
     # Store in session state for use in later pages
     st.session_state.gap_config = gap_config
+    
+    st.divider()
+    
+    # Build k-NN graph
+    if st.session_state.G is None:
+        if st.button("🕸️ Build k-NN Graph", type="primary"):
+            with st.spinner("Building k-NN graph..."):
+                G = build_knn_graph(st.session_state.X_pca, gap_config['knn_graph_k'], 'cosine')
+                st.session_state.G = G
+                st.success(f"✅ Graph built: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+                st.rerun()
+        return
+    
+    st.success(f"✅ k-NN graph built: {st.session_state.G.number_of_nodes()} nodes, {st.session_state.G.number_of_edges()} edges")
+    
+    # Visualize k-NN graph
+    with st.expander("📊 k-NN Graph Visualization", expanded=False):
+        st.markdown("""
+        Visualizing the k-NN graph structure overlaid on the UMAP projection.
+        Each point represents a paper, and edges connect k-nearest neighbors.
+        """)
+        
+        # Prepare plot data
+        df_plot = st.session_state.df_valid.copy()
+        df_plot['hover_title'] = df_plot['title'].fillna('N/A')
+        df_plot['hover_abstract'] = df_plot.get('abstract', df_plot.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
+        
+        # Create figure with nodes
+        fig = px.scatter(
+            df_plot,
+            x='umap_x',
+            y='umap_y',
+            title=f"k-NN Graph (k={gap_config['knn_graph_k']})",
+            opacity=0.6,
+            height=1000,
+            hover_data={'umap_x': False, 'umap_y': False, 'hover_title': True, 'hover_abstract': True}
+        )
+        fig.update_traces(marker=dict(size=5, color='lightblue'))
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+        
+        # Add edges (sample for performance if too many)
+        G = st.session_state.G
+        edges = list(G.edges())
+        max_edges_to_plot = 5000
+        
+        if len(edges) > max_edges_to_plot:
+            st.info(f"Sampling {max_edges_to_plot} edges out of {len(edges)} for visualization performance")
+            edge_indices = np.random.choice(len(edges), max_edges_to_plot, replace=False)
+            edges_to_plot = [edges[i] for i in edge_indices]
+        else:
+            edges_to_plot = edges
+        
+        # Draw edges
+        edge_x = []
+        edge_y = []
+        for u, v in edges_to_plot:
+            edge_x.extend([df_plot.iloc[u]['umap_x'], df_plot.iloc[v]['umap_x'], None])
+            edge_y.extend([df_plot.iloc[u]['umap_y'], df_plot.iloc[v]['umap_y'], None])
+        
+        fig.add_trace(go.Scatter(
+            x=edge_x,
+            y=edge_y,
+            mode='lines',
+            line=dict(width=0.5, color='rgba(125, 125, 125, 0.2)'),
+            hoverinfo='none',
+            showlegend=False
+        ))
+        
+        # Re-add nodes on top
+        fig.add_trace(go.Scatter(
+            x=df_plot['umap_x'],
+            y=df_plot['umap_y'],
+            mode='markers',
+            marker=dict(size=5, color='lightblue'),
+            text=[f"<b>{row['hover_title']}</b><br>{row['hover_abstract']}" for _, row in df_plot.iterrows()],
+            hovertemplate='%{text}<extra></extra>',
+            showlegend=False
+        ))
+        
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Graph statistics
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Nodes", G.number_of_nodes())
+        col2.metric("Edges", G.number_of_edges())
+        avg_degree = 2 * G.number_of_edges() / G.number_of_nodes()
+        col3.metric("Avg Degree", f"{avg_degree:.1f}")
+        col4.metric("Components", nx.number_connected_components(G))
     
     st.divider()
     
@@ -988,6 +1430,7 @@ def page_gap_analysis():
             hover_data={'umap_x': False, 'umap_y': False, 'gap_score': ':.3f', 'hover_title': True, 'hover_abstract': True}
         )
         fig.update_traces(marker=dict(size=6))
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
         st.plotly_chart(fig, use_container_width=True)
     
     # Binary gap view
@@ -1011,6 +1454,7 @@ def page_gap_analysis():
     )
     fig.update_traces(marker=dict(size=8), selector=dict(name='True'))
     fig.update_traces(marker=dict(size=4), selector=dict(name='False'))
+    fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
     st.plotly_chart(fig, use_container_width=True)
 
 
@@ -1026,31 +1470,33 @@ def page_clustering():
         st.warning("⚠️ Please complete embedding processing first")
         return
     
+    if st.session_state.G is None:
+        st.warning("⚠️ Please complete gap analysis (k-NN graph construction) first")
+        return
+    
     st.markdown(f"""
     **Working Dataset**: {len(st.session_state.df_valid)} papers  
+    **Graph**: {st.session_state.G.number_of_nodes()} nodes, {st.session_state.G.number_of_edges()} edges
+    
     Configure and run clustering algorithms to identify research communities.
     """)
     
     # Clustering configuration
     st.subheader("🔧 Clustering Parameters")
     
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     with col1:
-        knn_graph_k = st.number_input("k-NN Graph K", min_value=5, max_value=50, value=21, 
-                                     help="Number of neighbors for k-NN graph construction")
-    with col2:
-        hdbscan_min_cluster = st.number_input("HDBSCAN Min Cluster Size", min_value=5, max_value=100, value=10,
+        hdbscan_min_cluster = st.number_input("HDBSCAN Min Cluster Size", min_value=5, max_value=100, value=5,
                                              help="Minimum number of papers per cluster")
-    with col3:
-        hdbscan_min_samples = st.number_input("HDBSCAN Min Samples", min_value=1, max_value=50, value=5,
+        hdbscan_min_samples = st.number_input("HDBSCAN Min Samples", min_value=1, max_value=50, value=10,
                                              help="Minimum samples in neighborhood")
     
-    leiden_resolution = st.slider("Leiden Resolution", min_value=0.1, max_value=5.0, value=1.0, step=0.01,
-                                 help="Higher values create more communities")
+    with col2:
+        leiden_resolution = st.slider("Leiden Resolution", min_value=0.1, max_value=5.0, value=1.0, step=0.01,
+                                     help="Higher values create more communities")
     
     # Store clustering config in session state
     st.session_state.clustering_config = {
-        'knn_graph_k': knn_graph_k,
         'hdbscan_min_cluster_size': hdbscan_min_cluster,
         'hdbscan_min_samples': hdbscan_min_samples,
         'leiden_resolution': leiden_resolution
@@ -1060,17 +1506,63 @@ def page_clustering():
     
     st.divider()
     
-    # Build k-NN graph
-    if st.session_state.G is None:
-        if st.button("🕸️ Build k-NN Graph", type="primary"):
-            with st.spinner("Building k-NN graph..."):
-                G = build_knn_graph(st.session_state.X_pca, clustering_config['knn_graph_k'], 'cosine')
-                st.session_state.G = G
-                st.success(f"✅ Graph built: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
-                st.rerun()
-        return
+    # K-means clustering
+    st.subheader("🔹 K-means Clustering")
     
-    st.success(f"✅ k-NN graph built: {st.session_state.G.number_of_nodes()} nodes, {st.session_state.G.number_of_edges()} edges")
+    if 'cluster_kmeans' not in st.session_state.df_valid.columns:
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            kmeans_n_clusters_main = st.number_input("Number of Clusters", min_value=5, max_value=100, value=20, key="kmeans_main")
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("▶️ Run K-means"):
+                save_state_for_undo("K-means Clustering")
+                with st.spinner(f"Running K-means with {kmeans_n_clusters_main} clusters..."):
+                    kmeans = KMeans(n_clusters=kmeans_n_clusters_main, random_state=42, n_init=10)
+                    labels = kmeans.fit_predict(st.session_state.X_pca)
+                    st.session_state.df_valid['cluster_kmeans'] = labels
+                    st.success(f"✅ K-means: {kmeans_n_clusters_main} clusters")
+                    st.rerun()
+    else:
+        labels = st.session_state.df_valid['cluster_kmeans'].values
+        n_clusters = len(set(labels))
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Clusters", n_clusters)
+        with col2:
+            if st.button("↩️ Undo K-means"):
+                if undo_last_action():
+                    st.success("✅ Undone!")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ No actions to undo")
+        
+        fig = px.scatter(
+            st.session_state.df_valid,
+            x='umap_x',
+            y='umap_y',
+            color='cluster_kmeans',
+            title=f"K-means Clusters (n={n_clusters})",
+            color_continuous_scale='rainbow',
+            opacity=0.7,
+            height=1000,
+            hover_data={'title': True, 'abstract': True, 'cluster_kmeans': True}
+        )
+        fig.update_traces(marker=dict(size=6))
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # Selection button
+        if st.session_state.selected_clustering == 'kmeans':
+            st.success("✅ K-means selected for gap analysis")
+        else:
+            if st.button("✔️ Use K-means for Gap Analysis", type="primary"):
+                st.session_state.selected_clustering = 'kmeans'
+                st.session_state.df_valid['cluster_selected'] = st.session_state.df_valid['cluster_kmeans']
+                st.success("✅ K-means clustering selected!")
+                st.rerun()
     
     st.divider()
     
@@ -1079,6 +1571,7 @@ def page_clustering():
     
     if 'cluster_hdbscan' not in st.session_state.df_valid.columns:
         if st.button("▶️ Run HDBSCAN"):
+            save_state_for_undo("HDBSCAN Clustering")
             with st.spinner("Running HDBSCAN..."):
                 clusterer = hdbscan.HDBSCAN(
                     min_cluster_size=clustering_config['hdbscan_min_cluster_size'],
@@ -1098,10 +1591,19 @@ def page_clustering():
         n_clusters = len(set(labels)) - (1 if -1 in labels else 0)
         n_noise = np.sum(labels == -1)
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         col1.metric("Clusters", n_clusters)
         col2.metric("Noise Points", n_noise)
         col3.metric("Noise %", f"{100*n_noise/len(labels):.1f}%")
+        
+        # Undo button
+        with col4:
+            if st.button("↩️ Undo HDBSCAN"):
+                if undo_last_action():
+                    st.success("✅ Undone!")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ No actions to undo")
         
         fig = px.scatter(
             st.session_state.df_valid,
@@ -1111,22 +1613,52 @@ def page_clustering():
             title=f"HDBSCAN Clusters (n={n_clusters})",
             color_continuous_scale='rainbow',
             opacity=0.7,
-            height=1000
+            height=1000,
+            hover_data={'title': True, 'abstract': True, 'cluster_hdbscan': True}
         )
         fig.update_traces(marker=dict(size=6))
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
         st.plotly_chart(fig, use_container_width=True)
+        
+        # Selection button
+        if st.session_state.selected_clustering == 'hdbscan':
+            st.success("✅ HDBSCAN selected for gap analysis")
+        else:
+            if st.button("✔️ Use HDBSCAN for Gap Analysis", type="primary"):
+                st.session_state.selected_clustering = 'hdbscan'
+                st.session_state.df_valid['cluster_selected'] = st.session_state.df_valid['cluster_hdbscan']
+                st.success("✅ HDBSCAN clustering selected!")
+                st.rerun()
     
     st.divider()
     
     # Leiden/Louvain
     st.subheader("🔹 Community Detection")
     
+    st.markdown("""
+    Community detection algorithms require a k-NN graph to identify clusters based on network structure.
+    The graph will be built first, then communities will be detected.
+    """)
+    
+    # Build k-NN graph for community detection
+    if st.session_state.G is None:
+        if st.button("🕸️ Build k-NN Graph for Community Detection", type="primary"):
+            with st.spinner("Building k-NN graph..."):
+                G = build_knn_graph(st.session_state.X_pca, clustering_config['knn_graph_k'], 'cosine')
+                st.session_state.G = G
+                st.success(f"✅ Graph built: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
+                st.rerun()
+        return
+    
+    st.success(f"✅ k-NN graph built: {st.session_state.G.number_of_nodes()} nodes, {st.session_state.G.number_of_edges()} edges")
+    
+    # Run community detection
     if 'cluster_leiden' not in st.session_state.df_valid.columns:
         if LEIDEN_AVAILABLE:
-            if st.button("▶️ Run Leiden"):
+            if st.button("▶️ Run Leiden Community Detection"):
                 run_leiden_clustering(clustering_config)
         elif LOUVAIN_AVAILABLE:
-            if st.button("▶️ Run Louvain"):
+            if st.button("▶️ Run Louvain Community Detection"):
                 run_louvain_clustering()
         else:
             st.warning("⚠️ No community detection algorithm available")
@@ -1134,27 +1666,128 @@ def page_clustering():
         labels = st.session_state.df_valid['cluster_leiden'].values
         n_communities = len(set(labels))
         
-        st.metric("Communities", n_communities)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("Communities", n_communities)
+        with col2:
+            if st.button("↩️ Undo Community Detection"):
+                if undo_last_action():
+                    st.success("✅ Undone!")
+                    st.rerun()
+                else:
+                    st.warning("⚠️ No actions to undo")
         
-        fig = px.scatter(
-            st.session_state.df_valid,
-            x='umap_x',
-            y='umap_y',
-            color='cluster_leiden',
-            title=f"Community Detection (n={n_communities})",
-            color_continuous_scale='rainbow',
-            opacity=0.7,
-            height=1000
-        )
-        fig.update_traces(marker=dict(size=6))
-        st.plotly_chart(fig, use_container_width=True)
+        # Two-column layout: k-NN graph + communities
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**k-NN Graph Structure**")
+            
+            # Prepare plot data
+            df_plot = st.session_state.df_valid.copy()
+            df_plot['hover_title'] = df_plot['title'].fillna('N/A')
+            df_plot['hover_abstract'] = df_plot.get('abstract', df_plot.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
+            
+            # Create figure with nodes
+            fig_graph = px.scatter(
+                df_plot,
+                x='umap_x',
+                y='umap_y',
+                title=f"k-NN Graph (k={clustering_config['knn_graph_k']})",
+                opacity=0.6,
+                height=500,
+                hover_data={'umap_x': False, 'umap_y': False, 'hover_title': True, 'hover_abstract': True}
+            )
+            fig_graph.update_traces(marker=dict(size=5, color='lightblue'))
+            fig_graph.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+            
+            # Add edges (sample for performance if too many)
+            G = st.session_state.G
+            edges = list(G.edges())
+            max_edges_to_plot = 3000
+            
+            if len(edges) > max_edges_to_plot:
+                edge_indices = np.random.choice(len(edges), max_edges_to_plot, replace=False)
+                edges_to_plot = [edges[i] for i in edge_indices]
+            else:
+                edges_to_plot = edges
+            
+            # Draw edges
+            edge_x = []
+            edge_y = []
+            for u, v in edges_to_plot:
+                edge_x.extend([df_plot.iloc[u]['umap_x'], df_plot.iloc[v]['umap_x'], None])
+                edge_y.extend([df_plot.iloc[u]['umap_y'], df_plot.iloc[v]['umap_y'], None])
+            
+            fig_graph.add_trace(go.Scatter(
+                x=edge_x,
+                y=edge_y,
+                mode='lines',
+                line=dict(width=0.5, color='rgba(125, 125, 125, 0.2)'),
+                hoverinfo='none',
+                showlegend=False
+            ))
+            
+            # Re-add nodes on top
+            fig_graph.add_trace(go.Scatter(
+                x=df_plot['umap_x'],
+                y=df_plot['umap_y'],
+                mode='markers',
+                marker=dict(size=5, color='lightblue'),
+                text=[f"<b>{row['hover_title']}</b><br>{row['hover_abstract']}" for _, row in df_plot.iterrows()],
+                hovertemplate='%{text}<extra></extra>',
+                showlegend=False
+            ))
+            
+            fig_graph.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+            st.plotly_chart(fig_graph, use_container_width=True)
+            
+            # Graph statistics
+            subcol1, subcol2 = st.columns(2)
+            subcol1.metric("Nodes", G.number_of_nodes())
+            subcol2.metric("Edges", G.number_of_edges())
+            avg_degree = 2 * G.number_of_edges() / G.number_of_nodes()
+            subcol1.metric("Avg Degree", f"{avg_degree:.1f}")
+            subcol2.metric("Components", nx.number_connected_components(G))
+        
+        with col2:
+            st.markdown("**Detected Communities**")
+            
+            fig = px.scatter(
+                st.session_state.df_valid,
+                x='umap_x',
+                y='umap_y',
+                color='cluster_leiden',
+                title=f"Community Detection (n={n_communities})",
+                color_continuous_scale='rainbow',
+                opacity=0.7,
+                height=500
+            )
+            fig.update_traces(marker=dict(size=6))
+            fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Community size distribution
+            unique, counts = np.unique(labels, return_counts=True)
+            st.bar_chart({f"C{c}": cnt for c, cnt in zip(unique[:10], counts[:10])})
+        
+        # Selection button
+        if st.session_state.selected_clustering == 'leiden':
+            st.success("✅ Community Detection selected for gap analysis")
+        else:
+            if st.button("✔️ Use Community Detection for Gap Analysis", type="primary"):
+                st.session_state.selected_clustering = 'leiden'
+                st.session_state.df_valid['cluster_selected'] = st.session_state.df_valid['cluster_leiden']
+                st.success("✅ Community Detection clustering selected!")
+                st.rerun()
     
-    if 'cluster_hdbscan' in st.session_state.df_valid.columns:
+    if 'cluster_kmeans' in st.session_state.df_valid.columns or 'cluster_hdbscan' in st.session_state.df_valid.columns or 'cluster_leiden' in st.session_state.df_valid.columns:
         st.session_state.clustering_done = True
 
 
 def run_leiden_clustering(clustering_config):
     """Run Leiden algorithm"""
+    save_state_for_undo("Leiden Clustering")
     with st.spinner("Running Leiden algorithm..."):
         G = st.session_state.G
         mapping = {n: i for i, n in enumerate(G.nodes())}
@@ -1183,6 +1816,7 @@ def run_leiden_clustering(clustering_config):
 
 def run_louvain_clustering():
     """Run Louvain algorithm"""
+    save_state_for_undo("Louvain Clustering")
     with st.spinner("Running Louvain algorithm..."):
         G = st.session_state.G
         partition = community_louvain.best_partition(G, weight='weight', random_state=42)
@@ -1260,6 +1894,7 @@ def page_gap_regions():
         )
         fig.update_traces(marker=dict(size=10), selector=dict(name='True'))
         fig.update_traces(marker=dict(size=4), selector=dict(name='False'))
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
         st.plotly_chart(fig, use_container_width=True)
     
     with tab2:
@@ -1282,6 +1917,7 @@ def page_gap_regions():
                 hover_data={'umap_x': False, 'umap_y': False, 'gap_score': ':.3f', 'gap_region': True, 'hover_title': True, 'hover_abstract': True}
             )
             fig.update_traces(marker=dict(size=10))
+            fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
             st.plotly_chart(fig, use_container_width=True)
     
     with tab3:
@@ -1289,16 +1925,26 @@ def page_gap_regions():
         df_plot['hover_title'] = df_plot['title'].fillna('N/A')
         df_plot['hover_abstract'] = df_plot.get('abstract', df_plot.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
         
+        # Determine which clustering to display based on selected method
+        selected_method = st.session_state.get('selected_clustering', 'hdbscan')
+        clustering_method_map = {
+            'kmeans': ('cluster_kmeans', 'K-means'),
+            'hdbscan': ('cluster_hdbscan', 'HDBSCAN'),
+            'leiden': ('cluster_leiden', 'Community Detection')
+        }
+        
+        cluster_col, method_name = clustering_method_map.get(selected_method, ('cluster_hdbscan', 'HDBSCAN'))
+        
         fig = px.scatter(
             df_plot,
             x='umap_x',
             y='umap_y',
-            color='cluster_hdbscan',
-            title="Gap Regions over HDBSCAN Clusters",
+            color=cluster_col,
+            title=f"Gap Regions over {method_name} Clusters",
             color_continuous_scale='rainbow',
             opacity=0.3,
             height=1000,
-            hover_data={'umap_x': False, 'umap_y': False, 'cluster_hdbscan': True, 'gap_region': True, 'hover_title': True, 'hover_abstract': True}
+            hover_data={'umap_x': False, 'umap_y': False, cluster_col: True, 'gap_region': True, 'hover_title': True, 'hover_abstract': True}
         )
         
         df_gap = st.session_state.df_valid[st.session_state.df_valid['gap_region'] >= 0]
@@ -1321,6 +1967,7 @@ def page_gap_regions():
                 hovertemplate='%{text}<extra></extra>'
             ))
         
+        fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
         st.plotly_chart(fig, use_container_width=True)
     
     st.divider()
@@ -1530,6 +2177,42 @@ def page_llm_analysis():
     if 'cluster_hdbscan' in region_df.columns:
         col3.metric("Clusters Spanned", region_df['cluster_hdbscan'].nunique())
     
+    # Cluster selection if region spans multiple clusters
+    cluster_A_selected = None
+    cluster_B_selected = None
+    
+    if 'cluster_hdbscan' in region_df.columns:
+        cluster_counts = Counter(region_df['cluster_hdbscan'].tolist())
+        unique_clusters = [c for c, _ in cluster_counts.most_common()]
+        
+        if len(unique_clusters) >= 2:
+            st.markdown("---")
+            st.subheader("🎯 Select Clusters to Contrast")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                cluster_A_selected = st.selectbox(
+                    "Cluster A",
+                    unique_clusters,
+                    index=0,
+                    format_func=lambda x: f"Cluster {x} (n={cluster_counts[x]} papers)",
+                    key="cluster_a_select"
+                )
+            with col2:
+                # Filter out Cluster A from options for Cluster B
+                cluster_b_options = [c for c in unique_clusters if c != cluster_A_selected]
+                cluster_B_selected = st.selectbox(
+                    "Cluster B",
+                    cluster_b_options,
+                    index=0,
+                    format_func=lambda x: f"Cluster {x} (n={cluster_counts[x]} papers)",
+                    key="cluster_b_select"
+                )
+            
+            st.info(f"Will compare Cluster {cluster_A_selected} ({cluster_counts[cluster_A_selected]} papers) vs Cluster {cluster_B_selected} ({cluster_counts[cluster_B_selected]} papers)")
+        elif len(unique_clusters) == 1:
+            st.warning("⚠️ This region only spans one cluster - contrastive analysis requires at least 2 clusters")
+    
     if st.button("🚀 Generate Contrastive Explanation", type="primary"):
         if not openai_api_key:
             st.error("Please provide OpenAI API key")
@@ -1543,23 +2226,29 @@ def page_llm_analysis():
             True, 
             show_prompt_editor,
             custom_question.strip() if custom_question.strip() else None,
-            guidance_keywords.strip() if guidance_keywords.strip() else None
+            guidance_keywords.strip() if guidance_keywords.strip() else None,
+            cluster_A_selected,
+            cluster_B_selected
         )
 
 
-def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show_prompt_editor, custom_question=None, guidance_keywords=None):
+def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show_prompt_editor, custom_question=None, guidance_keywords=None, cluster_A_override=None, cluster_B_override=None):
     """Generate evidence-grounded LLM explanation for gap region using contrastive analysis"""
     gap_regions = st.session_state.gap_regions
     region_indices = gap_regions[region_id]
     region_df = st.session_state.df_valid.loc[region_indices]
     
-    # Find two most common clusters
+    # Determine clusters to compare
     cluster_counts = Counter(region_df['cluster_hdbscan'].tolist())
     if len(cluster_counts) < 2:
         st.warning("⚠️ Region doesn't span multiple clusters - need at least 2 clusters for contrastive analysis")
         return
     
-    cluster_A, cluster_B = [c for c, _ in cluster_counts.most_common(2)]
+    # Use override clusters if provided, otherwise use two most common
+    if cluster_A_override is not None and cluster_B_override is not None:
+        cluster_A, cluster_B = cluster_A_override, cluster_B_override
+    else:
+        cluster_A, cluster_B = [c for c, _ in cluster_counts.most_common(2)]
     
     st.markdown(f"### 🔍 Analyzing Region {region_id}")
     st.markdown(f"**Cluster A**: {cluster_A} (n={cluster_counts[cluster_A]}) | **Cluster B**: {cluster_B} (n={cluster_counts[cluster_B]})")
@@ -1645,7 +2334,8 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
             xaxis_title='UMAP 1',
             yaxis_title='UMAP 2',
             height=500,
-            hovermode='closest'
+            hovermode='closest',
+            hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1)
         )
         
         st.plotly_chart(fig, use_container_width=True)
@@ -2084,7 +2774,7 @@ def main():
                 "📊 Data & Config",
                 "🧬 Embeddings",
                 "🎯 Filters",
-                "🎯 Clustering",
+                "🔬 Clustering",
                 "🔍 Gap Analysis",
                 "🌉 Gap Regions",
                 "🤖 LLM Analysis",
@@ -2128,7 +2818,7 @@ def main():
         page_embedding_processing()
     elif page == "🎯 Filters":
         page_filters()
-    elif page == "🎯 Clustering":
+    elif page == "🔬 Clustering":
         page_clustering()
     elif page == "🔍 Gap Analysis":
         page_gap_analysis()

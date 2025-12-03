@@ -159,7 +159,8 @@ def fetch_pubmed_data_per_id(pubmed_id):
 def fetch_pubmed_data_given_ids(id_list):
     Entrez.email = "c.g.a.viviers@tue.nl"
     ids = ','.join(id_list)
-    handle = Entrez.efetch(db='pubmed', retmode='xml', id=ids)
+    # Use rettype='full' to get complete records including all metadata
+    handle = Entrez.efetch(db='pubmed', retmode='xml', rettype='full', id=ids)
     results = Entrez.read(handle)
     return results
 
@@ -175,10 +176,11 @@ class Paper:
     publication_date: str
     doi: str
     keywords: list
+    mesh: list
     language_list: list
     embedding: np.array
 
-    def __init__(self, id, title, abstract, authors, journal, publication_year, publication_month, publication_day, doi, keywords, language_list, embedding= None):
+    def __init__(self, id, title, abstract, authors, journal, publication_year, publication_month, publication_day, doi, keywords, mesh, language_list, embedding= None):
         self.id = id
         self.title = title
         self.abstract = abstract
@@ -189,14 +191,15 @@ class Paper:
         self.publication_day = publication_day
         self.doi = doi
         self.keywords = keywords
+        self.mesh = mesh
         self.language_list = language_list
         self.embedding = embedding
 
     def __str__(self):
-        return f"Paper(id={self.id}, title={self.title}, abstract={self.abstract}, authors={self.authors}, journal={self.journal}, publication_year={self.publication_year}, publication_month={self.publication_month}, publication_day={self.publication_day}, doi={self.doi}, keywords={self.keywords}, language_list={self.language_list}, embedding={self.embedding})"
+        return f"Paper(id={self.id}, title={self.title}, abstract={self.abstract}, authors={self.authors}, journal={self.journal}, publication_year={self.publication_year}, publication_month={self.publication_month}, publication_day={self.publication_day}, doi={self.doi}, keywords={self.keywords}, mesh={self.mesh}, language_list={self.language_list}, embedding={self.embedding})"
     
     def __repr__(self):
-        return f"Paper(id={self.id}, title={self.title}, abstract={self.abstract}, authors={self.authors}, journal={self.journal}, publication_year={self.publication_year}, publication_month={self.publication_month}, publication_day={self.publication_day}, doi={self.doi}, keywords={self.keywords}, language_list={self.language_list}, embedding={self.embedding})"
+        return f"Paper(id={self.id}, title={self.title}, abstract={self.abstract}, authors={self.authors}, journal={self.journal}, publication_year={self.publication_year}, publication_month={self.publication_month}, publication_day={self.publication_day}, doi={self.doi}, keywords={self.keywords}, mesh={self.mesh}, language_list={self.language_list}, embedding={self.embedding})"
     
     def save_to_json(self, filename):
         # save the paper to a json file in a nice format

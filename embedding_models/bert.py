@@ -1,5 +1,7 @@
 # app/main.py
 import os
+import sys
+import traceback
 from typing import List, Optional
 
 import torch
@@ -37,13 +39,12 @@ tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
 mlm_model = AutoModelForMaskedLM.from_pretrained(MODEL_ID)
 mlm_model.to(DEVICE).eval()
 
-# Use the base encoder inside the MLM model for embeddings
-encoder = mlm_model.base_model
-EMBED_DIM = encoder.config.hidden_size
+# Use the MLM model directly for embeddings
+EMBED_DIM = mlm_model.config.hidden_size
 
 # Max sequence length (long-context encoder, default 8192). :contentReference[oaicite:2]{index=2}
 DEFAULT_MAX_LENGTH = int(
-    os.getenv("BIOCLINICAL_MAX_LENGTH", str(getattr(encoder.config, "max_position_embeddings", 8192)))
+    os.getenv("BIOCLINICAL_MAX_LENGTH", str(getattr(mlm_model.config, "max_position_embeddings", 8192)))
 )
 
 # Optional: fill-mask pipeline using the same model
@@ -87,6 +88,8 @@ def embed_texts(
         raise ValueError("texts must be a non-empty list")
 
     max_len = max_length or DEFAULT_MAX_LENGTH
+    
+    # print(f"[DEBUG] embed_texts called with {len(texts)} texts, max_length={max_len}, normalize={normalize}", file=sys.stderr, flush=True)
 
     batch = tokenizer(
         texts,
@@ -96,13 +99,60 @@ def embed_texts(
         return_tensors="pt",
     )
     batch = {k: v.to(DEVICE) for k, v in batch.items()}
+    
+    # print(f"[DEBUG] Tokenized batch: input_ids shape={batch['input_ids'].shape}", file=sys.stderr, flush=True)
 
     with torch.no_grad():
-        outputs = encoder(**batch)
-        embeddings = mean_pool(outputs.last_hidden_state, batch["attention_mask"])
+        outputs = mlm_model(**batch, output_hidden_states=True)
+        
+        # print(f"[DEBUG] Model output shape: {outputs.hidden_states[-1].shape}", file=sys.stderr, flush=True)
+        
+        # Debug: Check model outputs
+        last_hidden_state = outputs.hidden_states[-1]
+        if torch.isnan(last_hidden_state).any():
+            error_msg = f"Model output contains NaN values! Text lengths: {[len(t) for t in texts]}"
+            # print(f"[ERROR] {error_msg}", file=sys.stderr, flush=True)
+            raise ValueError(error_msg)
+        if torch.isinf(last_hidden_state).any():
+            error_msg = f"Model output contains Inf values! Text lengths: {[len(t) for t in texts]}"
+            # print(f"[ERROR] {error_msg}", file=sys.stderr, flush=True)
+            raise ValueError(error_msg)
+        
+        # print("[DEBUG] Model output validation passed", file=sys.stderr, flush=True)
+        
+        embeddings = mean_pool(last_hidden_state, batch["attention_mask"])
+        
+        # print(f"[DEBUG] After pooling shape: {embeddings.shape}", file=sys.stderr, flush=True)
+        
+        # Debug: Check after pooling
+        if torch.isnan(embeddings).any():
+            error_msg = f"Embeddings contain NaN after pooling! Text lengths: {[len(t) for t in texts]}"
+            # print(f"[ERROR] {error_msg}", file=sys.stderr, flush=True)
+            raise ValueError(error_msg)
+        if torch.isinf(embeddings).any():
+            error_msg = f"Embeddings contain Inf after pooling! Text lengths: {[len(t) for t in texts]}"
+            # print(f"[ERROR] {error_msg}", file=sys.stderr, flush=True)
+            raise ValueError(error_msg)
+        
+        # print("[DEBUG] Pooling validation passed", file=sys.stderr, flush=True)
+        
         if normalize:
+            # print("[DEBUG] Normalizing embeddings...", file=sys.stderr, flush=True)
             embeddings = F.normalize(embeddings, p=2, dim=1)
-
+            
+            # Debug: Check after normalization
+            if torch.isnan(embeddings).any():
+                error_msg = f"Embeddings contain NaN after normalization! Text lengths: {[len(t) for t in texts]}"
+                # print(f"[ERROR] {error_msg}", file=sys.stderr, flush=True)
+                raise ValueError(error_msg)
+            if torch.isinf(embeddings).any():
+                error_msg = f"Embeddings contain Inf after normalization! Text lengths: {[len(t) for t in texts]}"
+                # print(f"[ERROR] {error_msg}", file=sys.stderr, flush=True)
+                raise ValueError(error_msg)
+            
+            # print("[DEBUG] Normalization validation passed", file=sys.stderr, flush=True)
+    
+    # print(f"[DEBUG] Returning embeddings with shape: {embeddings.shape}", file=sys.stderr, flush=True)
     return embeddings
 
 
@@ -227,19 +277,48 @@ def create_embeddings(payload: EmbedRequest):
     if not payload.texts:
         raise HTTPException(status_code=400, detail="texts must be a non-empty list")
 
+    # print(f"[/embed] Received request for {len(payload.texts)} texts, normalize={payload.normalize}", file=sys.stderr, flush=True)
+    
     try:
         embeddings = embed_texts(
             texts=payload.texts,
             max_length=payload.max_length,
             normalize=payload.normalize,
         )
+        
+        # print(f"[/embed] Got embeddings with shape: {embeddings.shape}", file=sys.stderr, flush=True)
+        
+        # Final validation before JSON serialization
+        embeddings_cpu = embeddings.cpu()
+        if torch.isnan(embeddings_cpu).any():
+            nan_indices = torch.where(torch.isnan(embeddings_cpu))[0].tolist()
+            error_msg = f"Final embeddings contain NaN at indices: {nan_indices[:10]}"
+            # print(f"[/embed ERROR] {error_msg}", file=sys.stderr, flush=True)
+            raise ValueError(error_msg)
+        if torch.isinf(embeddings_cpu).any():
+            inf_indices = torch.where(torch.isinf(embeddings_cpu))[0].tolist()
+            error_msg = f"Final embeddings contain Inf at indices: {inf_indices[:10]}"
+            # print(f"[/embed ERROR] {error_msg}", file=sys.stderr, flush=True)
+            raise ValueError(error_msg)
+        
+        # print(f"[/embed] Final validation passed, converting to list", file=sys.stderr, flush=True)
+        embeddings_list = embeddings_cpu.tolist()
+        # print(f"[/embed] Successfully converted to list with {len(embeddings_list)} embeddings", file=sys.stderr, flush=True)
+        
+    except ValueError as e:
+        # Provide detailed error message for debugging
+        # print(f"[/embed EXCEPTION] ValueError: {str(e)}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        raise HTTPException(status_code=500, detail=f"Embedding validation error: {str(e)}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # print(f"[/embed EXCEPTION] Unexpected error: {str(e)}", file=sys.stderr, flush=True)
+        traceback.print_exc(file=sys.stderr)
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
 
     max_len = payload.max_length or DEFAULT_MAX_LENGTH
 
     return EmbedResponse(
-        embeddings=embeddings.cpu().tolist(),
+        embeddings=embeddings_list,
         dimension=embeddings.shape[1],
         model=MODEL_ID,
         normalize=payload.normalize,
