@@ -413,7 +413,7 @@ def page_data_loading():
         
         data_path = st.text_input(
             "Data File Path",
-            value=r"C:\Users\20195435\OneDrive - TU Eindhoven\TUe\Playground\Nanotechnology\data\cleaned_dataset.json",
+            value=r"./data/cleaned_dataset.json",
             help="Path to your JSON dataset file"
         )
         
