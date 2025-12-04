@@ -1388,7 +1388,7 @@ def page_gap_analysis():
     st.divider()
     
     # Compute density
-    if not st.session_state.density_computed:
+    if not st.session_state.density_computed or 'gap_score' not in st.session_state.df_valid.columns:
         if st.button("📊 Compute Density Features", type="primary"):
             with st.spinner("Computing density features..."):
                 density_df = compute_density_features(
@@ -1858,7 +1858,7 @@ def page_gap_regions():
     """Identify and explore gap regions"""
     st.title("🌉 Gap Regions")
     
-    if not st.session_state.density_computed:
+    if not st.session_state.density_computed or 'gap_score' not in st.session_state.df_valid.columns:
         st.warning("⚠️ Please complete gap analysis first")
         return
     
