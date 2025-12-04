@@ -2509,7 +2509,7 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
                 # Try to get paper ID from common column names
                 paper_id = row.get('pmid', row.get('id', row.get('paper_id', row.get('doi', idx))))
                 evidence_pack.append({
-                    "doc_id": f"A_{idx}",
+                    "doc_id": f"A_{paper_id}",
                     "paper_id": str(paper_id),
                     "title": str(row.get('title', '')),
                     "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
@@ -2522,7 +2522,7 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
                 # Try to get paper ID from common column names
                 paper_id = row.get('pmid', row.get('id', row.get('paper_id', row.get('doi', idx))))
                 evidence_pack.append({
-                    "doc_id": f"B_{idx}",
+                    "doc_id": f"B_{paper_id}",
                     "paper_id": str(paper_id),
                     "title": str(row.get('title', '')),
                     "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
@@ -2545,7 +2545,7 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
                 # Determine which cluster this gap paper belongs to (if any)
                 gap_cluster = row.get(cluster_col, -1)
                 evidence_pack.append({
-                    "doc_id": f"GAP_{idx}",
+                    "doc_id": f"GAP_{paper_id}",
                     "paper_id": str(paper_id),
                     "title": str(row.get('title', '')),
                     "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
@@ -2862,7 +2862,8 @@ def display_llm_results(result, region_id, cluster_A, cluster_B, region_size):
         label="📥 Download Full Analysis (JSON)",
         data=result_json,
         file_name=f"gap_region_{region_id}_analysis.json",
-        mime="application/json"
+        mime="application/json",
+        key=f"download_llm_analysis_{region_id}"
     )
 
 
@@ -2974,7 +2975,8 @@ def page_database_explorer():
                 label="📥 Export Full Dataset (CSV)",
                 data=csv,
                 file_name=f"database_export_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="download_db_full"
             )
         
         with col2:
@@ -2984,7 +2986,8 @@ def page_database_explorer():
                     label="📥 Export Selected Columns (CSV)",
                     data=csv,
                     file_name=f"database_export_selected_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
+                    mime="text/csv",
+                    key="download_db_selected"
                 )
     
     with tab2:
@@ -3219,7 +3222,8 @@ def page_export():
                 label="📄 Download CSV",
                 data=csv,
                 file_name=f"novelty_analysis_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="download_export_full"
             )
     
     with col2:
@@ -3232,7 +3236,8 @@ def page_export():
                 label="📄 Download Gap Summary",
                 data=csv,
                 file_name=f"gap_regions_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="download_gap_summary"
             )
     
     # Preview
