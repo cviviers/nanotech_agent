@@ -2352,10 +2352,10 @@ def page_llm_analysis():
         
         col1, col2 = st.columns([3, 1])
         with col1:
-            st.subheader("📊 Previous Analysis Results")
+            st.subheader("📊 Analysis Results")
             st.caption(f"Generated: {llm_data.get('timestamp', 'Unknown')} | Model: {llm_data.get('model', 'Unknown')}")
         with col2:
-            if st.button("🗑️ Clear Results"):
+            if st.button("🗑️ Clear", key="clear_llm_results"):
                 st.session_state.llm_results = None
                 st.rerun()
         
@@ -2367,7 +2367,7 @@ def page_llm_analysis():
             llm_data['region_size']
         )
     else:
-        st.info("💡 No previous analysis results. Generate a new analysis above to see results here.")
+        st.info("💡 Generate an analysis above to see results here.")
 
 
 def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, show_viz, show_prompt_editor, custom_question=None, guidance_keywords=None, cluster_A=None, cluster_B=None):
@@ -2732,8 +2732,8 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
                 'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
             }
             
-            # Display comprehensive results
-            display_llm_results(result, region_id, cluster_A, cluster_B, len(region_indices))
+            st.success("✅ Analysis complete! Results are displayed below.")
+            st.rerun()
             
         except Exception as e:
             st.error(f"❌ Error generating explanation: {str(e)}")
