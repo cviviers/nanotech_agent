@@ -3,6 +3,7 @@
 *.pdf
 *.zip
 *.pptx
+*.npy
 
 old/*
 lda_visualizations/*
