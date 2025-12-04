@@ -2279,6 +2279,65 @@ def page_llm_analysis():
     
     st.info("Select any two clusters from your dataset. The gap region above will be used as contextual evidence.")
     
+    # Visualization to help choose clusters
+    if st.session_state.selected_clustering and st.session_state.X_umap_2d is not None:
+        cluster_col = f'cluster_{st.session_state.selected_clustering}'
+        if cluster_col in st.session_state.df_valid.columns:
+            st.markdown("#### 📊 Cluster Overview with Gap Region")
+            
+            fig = go.Figure()
+            
+            # Plot all clusters
+            df_plot = st.session_state.df_valid.copy()
+            df_plot['umap_x'] = st.session_state.X_umap_2d[:, 0]
+            df_plot['umap_y'] = st.session_state.X_umap_2d[:, 1]
+            
+            # Color by cluster
+            unique_clusters = sorted(df_plot[cluster_col].unique())
+            colors_palette = px.colors.qualitative.Plotly + px.colors.qualitative.Set3
+            
+            for cluster_id in unique_clusters:
+                if cluster_id == -1:  # Skip noise cluster
+                    continue
+                    
+                cluster_data = df_plot[df_plot[cluster_col] == cluster_id]
+                color_idx = cluster_id % len(colors_palette)
+                
+                fig.add_trace(go.Scatter(
+                    x=cluster_data['umap_x'],
+                    y=cluster_data['umap_y'],
+                    mode='markers',
+                    marker=dict(size=6, color=colors_palette[color_idx], opacity=0.6),
+                    name=f'Cluster {cluster_id} (n={len(cluster_data)})',
+                    showlegend=True,
+                    hovertemplate=f'Cluster {cluster_id}<extra></extra>'
+                ))
+            
+            # Overlay gap region as red stars
+            gap_data = df_plot.loc[region_indices]
+            fig.add_trace(go.Scatter(
+                x=gap_data['umap_x'],
+                y=gap_data['umap_y'],
+                mode='markers',
+                marker=dict(size=12, color='red', symbol='star', 
+                           line=dict(color='darkred', width=1)),
+                name=f'Gap Region {region_id} (n={len(region_indices)})',
+                showlegend=True,
+                hovertemplate=f'Gap Region {region_id}<extra></extra>'
+            ))
+            
+            fig.update_layout(
+                title=f'Clusters with Gap Region {region_id} Highlighted',
+                xaxis_title='UMAP 1',
+                yaxis_title='UMAP 2',
+                height=600,
+                hovermode='closest',
+                hoverlabel=dict(bgcolor="white", font_size=12, font_family="Arial")
+            )
+            
+            st.plotly_chart(fig, use_container_width=True)
+            st.caption("💡 Select two clusters from the legend above to contrast in the analysis")
+    
     # Get all available clusters from the selected clustering method
     if st.session_state.selected_clustering:
         cluster_col = f'cluster_{st.session_state.selected_clustering}'
