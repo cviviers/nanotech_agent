@@ -391,6 +391,14 @@ def init_session_state():
     # Undo history
     if 'undo_history' not in st.session_state:
         st.session_state.undo_history = []
+    
+    # Random seed for reproducibility
+    if 'random_seed' not in st.session_state:
+        st.session_state.random_seed = 42
+    
+    # LLM analysis results
+    if 'llm_results' not in st.session_state:
+        st.session_state.llm_results = None
 
 
 # ============================================================================
@@ -424,6 +432,14 @@ def page_data_loading():
             value=0,
             help="Limit dataset size for faster processing"
         )
+        
+        random_seed = st.number_input(
+            "Random Seed",
+            min_value=0,
+            max_value=999999,
+            value=42,
+            help="Seed for reproducible results across all random operations"
+        )
     
     with col2:
         st.subheader("🎯 Embedding Configuration")
@@ -447,8 +463,10 @@ def page_data_loading():
             'data_path': data_path,
             'sample_n': sample_n if sample_n > 0 else None,
             'embedding_cols': available_embeddings,
-            'primary_embedding': primary_embedding
+            'primary_embedding': primary_embedding,
+            'random_seed': random_seed
         }
+        st.session_state.random_seed = random_seed
         st.success("✅ Configuration saved!")
     
     st.divider()
@@ -519,7 +537,7 @@ def load_data(config, keywords_title_exclusion, keywords_abstract_exclusion):
             
             # Sample if needed
             if config['sample_n'] is not None and len(df) > config['sample_n']:
-                df = df.sample(config['sample_n'], random_state=42)
+                df = df.sample(config['sample_n'], random_state=config.get('random_seed', 42))
             
             df = df.reset_index(drop=True)
             st.session_state.df_filtered = df
@@ -737,7 +755,7 @@ def page_filters():
     
     retrieval_mode = st.radio(
         "Retrieval Mode",
-        ["Semantic Similarity", "Question Answering (Reranker)"],
+        ["Semantic Similarity", ], # "Question Answering (Reranker)"
         help="Semantic Similarity: Find papers similar to a topic. Q&A: Find papers that answer a question."
     )
     
@@ -924,7 +942,7 @@ def page_filters():
 def run_kmeans_filter(n_clusters):
     """Run K-means clustering"""
     with st.spinner(f"Running K-means with {n_clusters} clusters..."):
-        kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+        kmeans = KMeans(n_clusters=n_clusters, random_state=st.session_state.random_seed, n_init=10)
         labels = kmeans.fit_predict(st.session_state.X_pca)
         st.session_state.df_valid['kmeans_cluster'] = labels
         st.session_state.kmeans_applied = True
@@ -1323,6 +1341,7 @@ def page_gap_analysis():
         
         if len(edges) > max_edges_to_plot:
             st.info(f"Sampling {max_edges_to_plot} edges out of {len(edges)} for visualization performance")
+            np.random.seed(st.session_state.random_seed)
             edge_indices = np.random.choice(len(edges), max_edges_to_plot, replace=False)
             edges_to_plot = [edges[i] for i in edge_indices]
         else:
@@ -1470,13 +1489,13 @@ def page_clustering():
         st.warning("⚠️ Please complete embedding processing first")
         return
     
-    if st.session_state.G is None:
-        st.warning("⚠️ Please complete gap analysis (k-NN graph construction) first")
-        return
+    # if st.session_state.G is None:
+    #     st.warning("⚠️ Please complete gap analysis (k-NN graph construction) first")
+    #     return
+    # **Graph**: {st.session_state.G.number_of_nodes()} nodes, {st.session_state.G.number_of_edges()} edges
     
     st.markdown(f"""
     **Working Dataset**: {len(st.session_state.df_valid)} papers  
-    **Graph**: {st.session_state.G.number_of_nodes()} nodes, {st.session_state.G.number_of_edges()} edges
     
     Configure and run clustering algorithms to identify research communities.
     """)
@@ -1492,12 +1511,15 @@ def page_clustering():
                                              help="Minimum samples in neighborhood")
     
     with col2:
+        knn_graph_k = st.number_input("k-NN Graph k", min_value=5, max_value=100, value=21,
+                                     help="Number of neighbors for k-NN graph (used in Community Detection)")
         leiden_resolution = st.slider("Leiden Resolution", min_value=0.1, max_value=5.0, value=1.0, step=0.01,
                                      help="Higher values create more communities")
     
     # Store clustering config in session state
     st.session_state.clustering_config = {
         'hdbscan_min_cluster_size': hdbscan_min_cluster,
+        'knn_graph_k': knn_graph_k,
         'hdbscan_min_samples': hdbscan_min_samples,
         'leiden_resolution': leiden_resolution
     }
@@ -1519,7 +1541,7 @@ def page_clustering():
             if st.button("▶️ Run K-means"):
                 save_state_for_undo("K-means Clustering")
                 with st.spinner(f"Running K-means with {kmeans_n_clusters_main} clusters..."):
-                    kmeans = KMeans(n_clusters=kmeans_n_clusters_main, random_state=42, n_init=10)
+                    kmeans = KMeans(n_clusters=kmeans_n_clusters_main, random_state=st.session_state.random_seed, n_init=10)
                     labels = kmeans.fit_predict(st.session_state.X_pca)
                     st.session_state.df_valid['cluster_kmeans'] = labels
                     st.success(f"✅ K-means: {kmeans_n_clusters_main} clusters")
@@ -1707,6 +1729,7 @@ def page_clustering():
             max_edges_to_plot = 3000
             
             if len(edges) > max_edges_to_plot:
+                np.random.seed(st.session_state.random_seed)
                 edge_indices = np.random.choice(len(edges), max_edges_to_plot, replace=False)
                 edges_to_plot = [edges[i] for i in edge_indices]
             else:
@@ -1802,7 +1825,7 @@ def run_leiden_clustering(clustering_config):
             la.RBConfigurationVertexPartition,
             weights='weight',
             resolution_parameter=clustering_config['leiden_resolution'],
-            seed=42
+            seed=st.session_state.random_seed
         )
         
         labels = np.zeros(len(G), dtype=int)
@@ -1819,7 +1842,7 @@ def run_louvain_clustering():
     save_state_for_undo("Louvain Clustering")
     with st.spinner("Running Louvain algorithm..."):
         G = st.session_state.G
-        partition = community_louvain.best_partition(G, weight='weight', random_state=42)
+        partition = community_louvain.best_partition(G, weight='weight', random_state=st.session_state.random_seed)
         labels = np.array([partition[i] for i in range(len(G))], dtype=int)
         
         st.session_state.df_valid['cluster_leiden'] = labels
@@ -1872,7 +1895,7 @@ def page_gap_regions():
     st.session_state.df_valid['gap_region'] = region_labels
     
     # Multi-panel visualization
-    tab1, tab2, tab3 = st.tabs(["📍 All Regions", "📊 By Score", "🔄 Over Clusters"])
+    tab1, tab2, tab3, tab4 = st.tabs(["📍 All Regions", "🎨 By Region ID", "📊 By Score", "🔄 Over Clusters"])
     
     with tab1:
         df_plot = st.session_state.df_valid.copy()
@@ -1898,6 +1921,70 @@ def page_gap_regions():
         st.plotly_chart(fig, use_container_width=True)
     
     with tab2:
+        # Color by region ID with background showing all papers
+        df_plot = st.session_state.df_valid.copy()
+        df_plot['hover_title'] = df_plot['title'].fillna('N/A')
+        df_plot['hover_abstract'] = df_plot.get('abstract', df_plot.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
+        
+        # Create base figure with all papers in light gray
+        fig = go.Figure()
+        
+        # Add all papers as background
+        background = df_plot[df_plot['gap_region'] == -1]
+        if len(background) > 0:
+            fig.add_trace(go.Scatter(
+                x=background['umap_x'],
+                y=background['umap_y'],
+                mode='markers',
+                marker=dict(size=4, color='lightgray', opacity=0.3),
+                name='Other Papers',
+                text=[f"<b>{row['hover_title']}</b><br>{row['hover_abstract']}" for _, row in background.iterrows()],
+                hovertemplate='%{text}<extra></extra>',
+                showlegend=True
+            ))
+        
+        # Add each gap region with unique color
+        df_gap = df_plot[df_plot['gap_region'] >= 0]
+        if len(df_gap) > 0:
+            # Use a color palette for different regions
+            import plotly.colors as colors
+            color_palette = colors.qualitative.Plotly + colors.qualitative.Set3
+            
+            for region_id in sorted(df_gap['gap_region'].unique()):
+                region_data = df_gap[df_gap['gap_region'] == region_id]
+                color_idx = region_id % len(color_palette)
+                
+                hover_text = [
+                    f"<b>{row['hover_title']}</b><br>" +
+                    f"Gap Region: {region_id}<br>" +
+                    f"Gap Score: {row.get('gap_score', 0):.3f}<br>" +
+                    f"{row['hover_abstract']}"
+                    for _, row in region_data.iterrows()
+                ]
+                
+                fig.add_trace(go.Scatter(
+                    x=region_data['umap_x'],
+                    y=region_data['umap_y'],
+                    mode='markers',
+                    marker=dict(size=10, color=color_palette[color_idx], opacity=0.8,
+                               line=dict(color='white', width=1)),
+                    name=f'Region {region_id} (n={len(region_data)})',
+                    text=hover_text,
+                    hovertemplate='%{text}<extra></extra>',
+                    showlegend=True
+                ))
+        
+        fig.update_layout(
+            title=f"Gap Regions Colored by ID (n={len(gap_regions)})",
+            xaxis_title='UMAP 1',
+            yaxis_title='UMAP 2',
+            height=1000,
+            hovermode='closest',
+            hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1)
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    
+    with tab3:
         df_gap = st.session_state.df_valid[st.session_state.df_valid['gap_region'] >= 0]
         
         if len(df_gap) > 0:
@@ -1920,7 +2007,7 @@ def page_gap_regions():
             fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
             st.plotly_chart(fig, use_container_width=True)
     
-    with tab3:
+    with tab4:
         df_plot = st.session_state.df_valid.copy()
         df_plot['hover_title'] = df_plot['title'].fillna('N/A')
         df_plot['hover_abstract'] = df_plot.get('abstract', df_plot.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
@@ -2017,7 +2104,13 @@ def display_gap_region_details(region_id, gap_regions):
     col2.metric("Avg Gap Score", f"{region_df['gap_score'].mean():.3f}")
     col3.metric("Max Gap Score", f"{region_df['gap_score'].max():.3f}")
     
-    if 'cluster_hdbscan' in region_df.columns:
+    # Use selected clustering method for "Clusters Spanned" metric
+    if st.session_state.selected_clustering:
+        cluster_col = f'cluster_{st.session_state.selected_clustering}'
+        if cluster_col in region_df.columns:
+            col4.metric("Clusters Spanned", region_df[cluster_col].nunique())
+    elif 'cluster_hdbscan' in region_df.columns:
+        # Fallback to HDBSCAN if no clustering method selected
         col4.metric("Clusters Spanned", region_df['cluster_hdbscan'].nunique())
     
     # Entity Analysis
@@ -2141,8 +2234,10 @@ def page_llm_analysis():
         openai_model = st.selectbox("Model", ["gpt-5-mini", "gpt-5", "gpt-5-nano"], index=0)
     with col2:
         region_id = st.selectbox("Select Gap Region", range(len(gap_regions)))
-        n_papers_per_cluster = st.number_input("Papers per Cluster", min_value=5, max_value=30, value=15)
+        n_papers_per_cluster = st.number_input("Papers per Cluster", min_value=5, max_value=100, value=15)
     with col3:
+        n_gap_papers = st.number_input("Gap Papers to Include", min_value=5, max_value=100, value=5,
+                                       help="Number of gap region papers to include in evidence pack (sorted by gap score)")
         show_prompt_editor = st.checkbox("Show/Edit Prompt", value=False, 
                                          help="Display and edit the full prompt before sending")
     
@@ -2171,58 +2266,77 @@ def page_llm_analysis():
     region_df = st.session_state.df_valid.loc[region_indices]
     
     col1, col2, col3 = st.columns(3)
-    col1.metric("Region Papers", len(region_indices))
+    col1.metric("Gap Region Papers", len(region_indices))
     if 'gap_score' in region_df.columns:
         col2.metric("Avg Gap Score", f"{region_df['gap_score'].mean():.3f}")
-    if 'cluster_hdbscan' in region_df.columns:
-        col3.metric("Clusters Spanned", region_df['cluster_hdbscan'].nunique())
+    if st.session_state.selected_clustering and f'cluster_{st.session_state.selected_clustering}' in st.session_state.df_valid.columns:
+        cluster_col = f'cluster_{st.session_state.selected_clustering}'
+        col3.metric("Clusters Touched", region_df[cluster_col].nunique())
     
-    # Cluster selection if region spans multiple clusters
-    cluster_A_selected = None
-    cluster_B_selected = None
+    # Cluster selection - allow ANY clusters to be compared, not just those in gap region
+    st.markdown("---")
+    st.subheader("🎯 Select Clusters to Contrast")
     
-    if 'cluster_hdbscan' in region_df.columns:
-        cluster_counts = Counter(region_df['cluster_hdbscan'].tolist())
-        unique_clusters = [c for c, _ in cluster_counts.most_common()]
-        
-        if len(unique_clusters) >= 2:
-            st.markdown("---")
-            st.subheader("🎯 Select Clusters to Contrast")
+    st.info("Select any two clusters from your dataset. The gap region above will be used as contextual evidence.")
+    
+    # Get all available clusters from the selected clustering method
+    if st.session_state.selected_clustering:
+        cluster_col = f'cluster_{st.session_state.selected_clustering}'
+        if cluster_col in st.session_state.df_valid.columns:
+            all_cluster_ids = sorted(st.session_state.df_valid[cluster_col].unique())
+            all_cluster_ids = [c for c in all_cluster_ids if c != -1]  # Remove noise cluster if present
+            
+            # Count papers in each cluster
+            cluster_sizes = st.session_state.df_valid[cluster_col].value_counts().to_dict()
             
             col1, col2 = st.columns(2)
             with col1:
                 cluster_A_selected = st.selectbox(
                     "Cluster A",
-                    unique_clusters,
-                    index=0,
-                    format_func=lambda x: f"Cluster {x} (n={cluster_counts[x]} papers)",
+                    all_cluster_ids,
+                    index=0 if all_cluster_ids else None,
+                    format_func=lambda x: f"Cluster {x} (n={cluster_sizes.get(x, 0)} papers)",
                     key="cluster_a_select"
                 )
             with col2:
                 # Filter out Cluster A from options for Cluster B
-                cluster_b_options = [c for c in unique_clusters if c != cluster_A_selected]
+                cluster_b_options = [c for c in all_cluster_ids if c != cluster_A_selected]
                 cluster_B_selected = st.selectbox(
                     "Cluster B",
                     cluster_b_options,
-                    index=0,
-                    format_func=lambda x: f"Cluster {x} (n={cluster_counts[x]} papers)",
+                    index=0 if cluster_b_options else None,
+                    format_func=lambda x: f"Cluster {x} (n={cluster_sizes.get(x, 0)} papers)",
                     key="cluster_b_select"
                 )
             
-            st.info(f"Will compare Cluster {cluster_A_selected} ({cluster_counts[cluster_A_selected]} papers) vs Cluster {cluster_B_selected} ({cluster_counts[cluster_B_selected]} papers)")
-        elif len(unique_clusters) == 1:
-            st.warning("⚠️ This region only spans one cluster - contrastive analysis requires at least 2 clusters")
+            if cluster_A_selected is not None and cluster_B_selected is not None:
+                st.success(f"✅ Ready to compare Cluster {cluster_A_selected} ({cluster_sizes.get(cluster_A_selected, 0)} papers) vs Cluster {cluster_B_selected} ({cluster_sizes.get(cluster_B_selected, 0)} papers)")
+                st.caption(f"Using Gap Region {region_id} ({len(region_indices)} papers) as contextual evidence")
+        else:
+            st.error(f"❌ Clustering column '{cluster_col}' not found")
+            cluster_A_selected = None
+            cluster_B_selected = None
+    else:
+        st.error("❌ No clustering method selected. Please complete clustering first.")
+        cluster_A_selected = None
+        cluster_B_selected = None
+    
     
     if st.button("🚀 Generate Contrastive Explanation", type="primary"):
         if not openai_api_key:
             st.error("Please provide OpenAI API key")
             return
         
+        if cluster_A_selected is None or cluster_B_selected is None:
+            st.error("Please select two clusters to compare")
+            return
+        
         generate_llm_explanation(
             region_id, 
             openai_api_key, 
             openai_model, 
-            n_papers_per_cluster, 
+            n_papers_per_cluster,
+            n_gap_papers,
             True, 
             show_prompt_editor,
             custom_question.strip() if custom_question.strip() else None,
@@ -2230,28 +2344,52 @@ def page_llm_analysis():
             cluster_A_selected,
             cluster_B_selected
         )
+    
+    # Display previously generated results if available
+    st.markdown("---")
+    if st.session_state.llm_results is not None:
+        llm_data = st.session_state.llm_results
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.subheader("📊 Previous Analysis Results")
+            st.caption(f"Generated: {llm_data.get('timestamp', 'Unknown')} | Model: {llm_data.get('model', 'Unknown')}")
+        with col2:
+            if st.button("🗑️ Clear Results"):
+                st.session_state.llm_results = None
+                st.rerun()
+        
+        display_llm_results(
+            llm_data['result'],
+            llm_data['region_id'],
+            llm_data['cluster_A'],
+            llm_data['cluster_B'],
+            llm_data['region_size']
+        )
+    else:
+        st.info("💡 No previous analysis results. Generate a new analysis above to see results here.")
 
 
-def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show_prompt_editor, custom_question=None, guidance_keywords=None, cluster_A_override=None, cluster_B_override=None):
-    """Generate evidence-grounded LLM explanation for gap region using contrastive analysis"""
+def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, show_viz, show_prompt_editor, custom_question=None, guidance_keywords=None, cluster_A=None, cluster_B=None):
+    """Generate evidence-grounded LLM explanation using gap region as context and contrasting any two clusters"""
     gap_regions = st.session_state.gap_regions
     region_indices = gap_regions[region_id]
     region_df = st.session_state.df_valid.loc[region_indices]
     
-    # Determine clusters to compare
-    cluster_counts = Counter(region_df['cluster_hdbscan'].tolist())
-    if len(cluster_counts) < 2:
-        st.warning("⚠️ Region doesn't span multiple clusters - need at least 2 clusters for contrastive analysis")
+    # Validate cluster selection
+    if cluster_A is None or cluster_B is None:
+        st.error("❌ Both clusters must be selected")
         return
     
-    # Use override clusters if provided, otherwise use two most common
-    if cluster_A_override is not None and cluster_B_override is not None:
-        cluster_A, cluster_B = cluster_A_override, cluster_B_override
-    else:
-        cluster_A, cluster_B = [c for c, _ in cluster_counts.most_common(2)]
+    # Get cluster column based on selected clustering method
+    cluster_col = f'cluster_{st.session_state.selected_clustering}'
+    if cluster_col not in st.session_state.df_valid.columns:
+        st.error(f"❌ Clustering column '{cluster_col}' not found")
+        return
     
-    st.markdown(f"### 🔍 Analyzing Region {region_id}")
-    st.markdown(f"**Cluster A**: {cluster_A} (n={cluster_counts[cluster_A]}) | **Cluster B**: {cluster_B} (n={cluster_counts[cluster_B]})")
+    st.markdown(f"### 🔍 Analyzing Gap Region {region_id}")
+    st.markdown(f"**Contrasting**: Cluster {cluster_A} vs Cluster {cluster_B}")
+    st.markdown(f"**Evidence Source**: Gap Region {region_id} ({len(region_indices)} papers)")
     
     # Visualization of clusters and gap region
     if show_viz and st.session_state.X_umap_2d is not None:
@@ -2264,11 +2402,11 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
         df_plot['umap_x'] = st.session_state.X_umap_2d[:, 0]
         df_plot['umap_y'] = st.session_state.X_umap_2d[:, 1]
         
-        # Plot all clusters in background
-        for cluster_id in df_plot['cluster_hdbscan'].unique():
+        # Plot all clusters in background using the selected clustering method
+        for cluster_id in df_plot[cluster_col].unique():
             if cluster_id == -1:
                 continue
-            cluster_mask = df_plot['cluster_hdbscan'] == cluster_id
+            cluster_mask = df_plot[cluster_col] == cluster_id
             cluster_data = df_plot[cluster_mask]
             
             # Highlight the two clusters being compared
@@ -2345,8 +2483,11 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
             # Get representative papers from each cluster (closest to centroid)
             X_primary = st.session_state.X_primary
             
+            # Get cluster sizes for the two selected clusters
+            cluster_counts = st.session_state.df_valid[cluster_col].value_counts().to_dict()
+            
             # Cluster A papers
-            idx_A = np.where(st.session_state.df_valid['cluster_hdbscan'] == cluster_A)[0]
+            idx_A = np.where(st.session_state.df_valid[cluster_col] == cluster_A)[0]
             X_A = X_primary[idx_A]
             centroid_A = X_A.mean(axis=0, keepdims=True)
             dists_A = pairwise.cosine_distances(X_A, centroid_A).ravel()
@@ -2354,7 +2495,7 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
             top_A_idx = idx_A[top_A_local]
             
             # Cluster B papers
-            idx_B = np.where(st.session_state.df_valid['cluster_hdbscan'] == cluster_B)[0]
+            idx_B = np.where(st.session_state.df_valid[cluster_col] == cluster_B)[0]
             X_B = X_primary[idx_B]
             centroid_B = X_B.mean(axis=0, keepdims=True)
             dists_B = pairwise.cosine_distances(X_B, centroid_B).ravel()
@@ -2387,6 +2528,31 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
                     "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
                     "abstract": str(row.get('abstract', row.get('processed_content', '')))[:500],
                     "cluster": "B"
+                })
+            
+            # Gap region papers - top N papers sorted by gap_score (highest first)
+            region_df = st.session_state.df_valid.loc[region_indices].copy()
+            region_df_sorted = region_df.sort_values('gap_score', ascending=False) if 'gap_score' in region_df.columns else region_df
+            
+            # Limit to n_gap_papers
+            n_gap_to_include = min(n_gap_papers, len(region_df_sorted))
+            
+            for i, (idx, row) in enumerate(region_df_sorted.iterrows()):
+                if i >= n_gap_to_include:
+                    break
+                # Try to get paper ID from common column names
+                paper_id = row.get('pmid', row.get('id', row.get('paper_id', row.get('doi', idx))))
+                # Determine which cluster this gap paper belongs to (if any)
+                gap_cluster = row.get(cluster_col, -1)
+                evidence_pack.append({
+                    "doc_id": f"GAP_{idx}",
+                    "paper_id": str(paper_id),
+                    "title": str(row.get('title', '')),
+                    "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
+                    "abstract": str(row.get('abstract', row.get('processed_content', '')))[:500],
+                    "cluster": "GAP",
+                    "gap_score": float(row.get('gap_score', 0)),
+                    "assigned_cluster": int(gap_cluster) if gap_cluster != -1 else None
                 })
             
             # Enhanced prompt with domain-specific axes
@@ -2453,12 +2619,12 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
                 "confidence": 0.0-1.0,
                 "limitations": "string"
             },"""
-                        
-                output_schema += """
+            
+            output_schema += """
             "insufficient_evidence": false
             }"""
-                        
-                user_prompt = f"""TASK: Contrast Cluster A vs Cluster B to explain why they are separated in embedding space.
+            
+            user_prompt = f"""TASK: Contrast Cluster A vs Cluster B to explain why they are separated in embedding space.
             Focus on: materials, surface chemistry/coatings, size/shape, targeting ligands, disease areas,
             models (in vitro/in vivo/clinical), delivery routes, pharmacokinetics/biodistribution,
             toxicity/regulatory language, endpoints/outcomes.
@@ -2466,9 +2632,18 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
             CONTEXT:
             - cluster_A_meta: {{"id": {cluster_A}, "n_docs": {cluster_counts[cluster_A]}}}
             - cluster_B_meta: {{"id": {cluster_B}, "n_docs": {cluster_counts[cluster_B]}}}
-            - Gap region: {len(region_indices)} papers spanning both clusters{custom_question_section}{keywords_guidance_section}
+            - Gap region {region_id}: {len(region_indices)} total papers with low density (potential research opportunities)
+            
+            The gap papers are included in the evidence pack below. Use them to understand what research lies
+            between the two clusters and identify bridge opportunities.
+            
+            {custom_question_section}{keywords_guidance_section}
 
             EVIDENCE PACK (JSONL; each line is one doc):
+            - Papers with cluster="A": Top {n_papers} representative papers from Cluster A (closest to centroid)
+            - Papers with cluster="B": Top {n_papers} representative papers from Cluster B (closest to centroid)
+            - Papers with cluster="GAP": Top {n_gap_to_include} gap papers from Region {region_id} (sorted by gap_score, highest first)
+            
             ```jsonl
             {chr(10).join(json.dumps(d, ensure_ascii=False) for d in evidence_pack)}
             ```
@@ -2483,33 +2658,55 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
                 st.markdown("### 📝 Prompt Editor")
                 st.markdown("Edit the system and user prompts below before sending to the LLM:")
                 
+                # Initialize prompt storage in session state if needed
+                if 'edited_system_prompt' not in st.session_state:
+                    st.session_state.edited_system_prompt = system_prompt
+                if 'edited_user_prompt' not in st.session_state:
+                    st.session_state.edited_user_prompt = user_prompt
+                
                 with st.expander("🔧 System Prompt", expanded=True):
                     edited_system_prompt = st.text_area(
                         "System Prompt",
-                        value=system_prompt,
+                        value=st.session_state.edited_system_prompt,
                         height=150,
                         key="system_prompt_editor",
-                        label_visibility="collapsed"
+                        label_visibility="collapsed",
+                        on_change=lambda: setattr(st.session_state, 'edited_system_prompt', st.session_state.system_prompt_editor)
                     )
                 
                 with st.expander("📋 User Prompt", expanded=True):
                     edited_user_prompt = st.text_area(
                         "User Prompt",
-                        value=user_prompt,
+                        value=st.session_state.edited_user_prompt,
                         height=400,
                         key="user_prompt_editor",
-                        label_visibility="collapsed"
+                        label_visibility="collapsed",
+                        on_change=lambda: setattr(st.session_state, 'edited_user_prompt', st.session_state.user_prompt_editor)
                     )
                 
-                st.info("💡 You can modify the prompts above. Click the button below to send the edited prompts to the LLM.")
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.info("💡 You can modify the prompts above. Click the button to send the edited prompts to the LLM.")
+                with col2:
+                    if st.button("🔄 Reset Prompts", help="Reset to original prompts"):
+                        st.session_state.edited_system_prompt = system_prompt
+                        st.session_state.edited_user_prompt = user_prompt
+                        st.rerun()
                 
-                if not st.button("✅ Send Edited Prompts to LLM", type="primary"):
+                send_edited = st.button("✅ Send Edited Prompts to LLM", type="primary", key="send_edited_prompts")
+                
+                if not send_edited:
                     st.warning("⚠️ Click 'Send Edited Prompts to LLM' above to proceed with the analysis.")
                     return
                 
-                # Use edited prompts
-                system_prompt = edited_system_prompt
-                user_prompt = edited_user_prompt
+                # Use edited prompts from session state
+                system_prompt = st.session_state.edited_system_prompt
+                user_prompt = st.session_state.edited_user_prompt
+                
+                # Clear the stored prompts after sending
+                del st.session_state['edited_system_prompt']
+                del st.session_state['edited_user_prompt']
+                
                 st.markdown("---")
             
             client = OpenAI(api_key=api_key)
@@ -2523,6 +2720,17 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, show_viz, show
             )
             
             result = json.loads(response.choices[0].message.content)
+            
+            # Store results in session state for persistence
+            st.session_state.llm_results = {
+                'result': result,
+                'region_id': region_id,
+                'cluster_A': cluster_A,
+                'cluster_B': cluster_B,
+                'region_size': len(region_indices),
+                'model': model,
+                'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
             
             # Display comprehensive results
             display_llm_results(result, region_id, cluster_A, cluster_B, len(region_indices))
@@ -2659,6 +2867,318 @@ def display_llm_results(result, region_id, cluster_A, cluster_B, region_size):
 
 
 # ============================================================================
+# PAGE: DATABASE EXPLORER
+# ============================================================================
+
+def page_database_explorer():
+    """Database explorer - browse, search, and filter papers"""
+    st.title("📚 Database Explorer")
+    
+    if st.session_state.df_valid is None:
+        st.warning("⚠️ Please load data first")
+        return
+    
+    # Use df_valid as the current dataset
+    df = st.session_state.df_valid.copy()
+    
+    st.markdown(f"""
+    **Current Dataset**: {len(df):,} papers
+    
+    Browse and search the paper database with advanced filtering options.
+    """)
+    
+    # Tab layout
+    tab1, tab2, tab3 = st.tabs(["📋 Data View", "🔍 Search & Filter", "📊 Column Stats"])
+    
+    with tab1:
+        st.subheader("Data Table")
+        
+        # Column selector
+        all_columns = df.columns.tolist()
+        
+        # Suggest important columns at the top
+        suggested_cols = []
+        for col in ['pmid', 'title', 'abstract', 'publication_year', 'journal', 
+                   'gap_score', 'gap_region', 'cluster_kmeans', 'cluster_hdbscan', 'cluster_leiden',
+                   'umap_x', 'umap_y']:
+            if col in all_columns:
+                suggested_cols.append(col)
+        
+        # Add remaining columns
+        other_cols = [c for c in all_columns if c not in suggested_cols]
+        ordered_cols = suggested_cols + other_cols
+        
+        with st.expander("🎯 Select Columns to Display", expanded=False):
+            select_all = st.checkbox("Select all columns", value=False)
+            
+            if select_all:
+                selected_columns = all_columns
+            else:
+                selected_columns = st.multiselect(
+                    "Choose columns",
+                    options=ordered_cols,
+                    default=suggested_cols[:8] if len(suggested_cols) >= 8 else suggested_cols
+                )
+        
+        if not selected_columns:
+            selected_columns = suggested_cols[:8] if len(suggested_cols) >= 8 else suggested_cols
+        
+        # Display settings
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            rows_to_show = st.number_input(
+                "Rows to display", 
+                min_value=1, 
+                max_value=len(df), 
+                value=min(50, len(df)),
+                step=10
+            )
+        with col2:
+            show_index = st.checkbox("Show row index", value=False)
+        with col3:
+            sort_column = st.selectbox(
+                "Sort by column",
+                options=['None'] + selected_columns,
+                index=0
+            )
+        
+        # Sort if requested
+        df_display = df.copy()
+        if sort_column != 'None' and sort_column in df_display.columns:
+            ascending = st.checkbox("Ascending order", value=False)
+            df_display = df_display.sort_values(by=sort_column, ascending=ascending)
+        
+        # Display dataframe
+        st.dataframe(
+            df_display[selected_columns].head(rows_to_show),
+            use_container_width=True,
+            hide_index=not show_index,
+            height=600
+        )
+        
+        # Display summary stats
+        st.markdown("---")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Rows", f"{len(df):,}")
+        col2.metric("Total Columns", len(df.columns))
+        col3.metric("Displayed Rows", rows_to_show)
+        col4.metric("Displayed Columns", len(selected_columns))
+        
+        # Export options
+        st.markdown("---")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="📥 Export Full Dataset (CSV)",
+                data=csv,
+                file_name=f"database_export_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv"
+            )
+        
+        with col2:
+            if selected_columns:
+                csv = df[selected_columns].to_csv(index=False)
+                st.download_button(
+                    label="📥 Export Selected Columns (CSV)",
+                    data=csv,
+                    file_name=f"database_export_selected_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+    
+    with tab2:
+        st.subheader("🔍 Search & Filter")
+        
+        # Keyword search
+        st.markdown("### 🔎 Keyword Search")
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            search_keywords = st.text_area(
+                "Enter keywords (one per line)",
+                height=100,
+                help="Enter one keyword per line. Search will find rows containing these keywords."
+            )
+        
+        with col2:
+            search_columns = st.multiselect(
+                "Search in columns",
+                options=df.columns.tolist(),
+                default=['title', 'abstract'] if 'title' in df.columns else []
+            )
+            
+            search_mode = st.radio(
+                "Match mode",
+                options=['any', 'all'],
+                index=0,
+                help="'any': match ANY keyword (OR), 'all': match ALL keywords (AND)"
+            )
+        
+        if st.button("🔍 Search"):
+            if search_keywords and search_columns:
+                keywords = [k.strip() for k in search_keywords.split('\n') if k.strip()]
+                
+                # Create search mask
+                masks = []
+                for keyword in keywords:
+                    column_masks = []
+                    for col in search_columns:
+                        if col in df.columns:
+                            column_masks.append(
+                                df[col].astype(str).str.contains(keyword, case=False, na=False)
+                            )
+                    
+                    if column_masks:
+                        keyword_mask = pd.concat(column_masks, axis=1).any(axis=1)
+                        masks.append(keyword_mask)
+                
+                if masks:
+                    if search_mode == 'all':
+                        final_mask = pd.concat(masks, axis=1).all(axis=1)
+                    else:
+                        final_mask = pd.concat(masks, axis=1).any(axis=1)
+                    
+                    filtered_df = df[final_mask]
+                    st.success(f"✅ Found {len(filtered_df):,} papers")
+                    
+                    # Update session state with filtered data
+                    save_state_for_undo("Database keyword search")
+                    st.session_state.df_valid = filtered_df
+                    st.rerun()
+        
+        st.markdown("---")
+        
+        # Filter by numeric range
+        st.markdown("### 📊 Numeric Range Filter")
+        
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        
+        if numeric_cols:
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                numeric_col = st.selectbox("Select numeric column", options=numeric_cols)
+            
+            if numeric_col:
+                col_min = float(df[numeric_col].min())
+                col_max = float(df[numeric_col].max())
+                
+                with col2:
+                    min_val = st.number_input("Min value", value=col_min, min_value=col_min, max_value=col_max)
+                with col3:
+                    max_val = st.number_input("Max value", value=col_max, min_value=col_min, max_value=col_max)
+                
+                if st.button("Apply Numeric Filter"):
+                    filtered_df = df[(df[numeric_col] >= min_val) & (df[numeric_col] <= max_val)]
+                    st.success(f"✅ Filtered to {len(filtered_df):,} papers")
+                    
+                    save_state_for_undo("Database numeric filter")
+                    st.session_state.df_valid = filtered_df
+                    st.rerun()
+        
+        st.markdown("---")
+        
+        # Filter by categorical values
+        st.markdown("### 🏷️ Categorical Filter")
+        
+        categorical_cols = df.select_dtypes(include=['object']).columns.tolist()
+        
+        if categorical_cols:
+            cat_col = st.selectbox("Select categorical column", options=categorical_cols)
+            
+            if cat_col:
+                unique_vals = df[cat_col].dropna().unique()
+                if len(unique_vals) <= 100:  # Only show if not too many values
+                    selected_vals = st.multiselect(
+                        f"Select values from {cat_col}",
+                        options=sorted(unique_vals.astype(str)),
+                        help="Select one or more values to filter by"
+                    )
+                    
+                    if st.button("Apply Categorical Filter"):
+                        if selected_vals:
+                            filtered_df = df[df[cat_col].isin(selected_vals)]
+                            st.success(f"✅ Filtered to {len(filtered_df):,} papers")
+                            
+                            save_state_for_undo("Database categorical filter")
+                            st.session_state.df_valid = filtered_df
+                            st.rerun()
+                else:
+                    st.info(f"Too many unique values ({len(unique_vals)}) to display. Use keyword search instead.")
+        
+        st.markdown("---")
+        
+        # Reset button
+        if st.button("🔄 Reset to Original Dataset", type="secondary"):
+            if st.session_state.df_filtered is not None:
+                save_state_for_undo("Reset to filtered dataset")
+                st.session_state.df_valid = st.session_state.df_filtered.copy()
+                st.success("✅ Reset to filtered dataset")
+                st.rerun()
+    
+    with tab3:
+        st.subheader("📊 Column Statistics")
+        
+        col = st.selectbox("Select column for statistics", options=df.columns.tolist())
+        
+        if col:
+            col_data = df[col]
+            
+            # Basic info
+            st.write(f"**Data Type:** {col_data.dtype}")
+            st.write(f"**Non-null Count:** {col_data.notna().sum():,} ({col_data.notna().sum()/len(col_data)*100:.1f}%)")
+            st.write(f"**Null Count:** {col_data.isna().sum():,}")
+            st.write(f"**Unique Values:** {col_data.nunique():,}")
+            
+            # Numeric statistics
+            if pd.api.types.is_numeric_dtype(col_data):
+                st.markdown("**Numeric Statistics:**")
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Mean", f"{col_data.mean():.4f}")
+                col2.metric("Median", f"{col_data.median():.4f}")
+                col3.metric("Std Dev", f"{col_data.std():.4f}")
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("Min", f"{col_data.min():.4f}")
+                col2.metric("Max", f"{col_data.max():.4f}")
+                col3.metric("Range", f"{col_data.max() - col_data.min():.4f}")
+                
+                # Distribution plot
+                fig = px.histogram(
+                    df, 
+                    x=col, 
+                    nbins=50,
+                    title=f"Distribution of {col}"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+            
+            # Categorical statistics
+            else:
+                st.markdown("**Top 10 Values:**")
+                value_counts = col_data.value_counts().head(10)
+                
+                # Bar chart
+                fig = px.bar(
+                    x=value_counts.values,
+                    y=value_counts.index.astype(str),
+                    orientation='h',
+                    labels={'x': 'Count', 'y': col},
+                    title=f"Top 10 values in {col}"
+                )
+                st.plotly_chart(fig, use_container_width=True)
+                
+                # Table
+                st.dataframe(
+                    pd.DataFrame({
+                        'Value': value_counts.index,
+                        'Count': value_counts.values,
+                        'Percentage': (value_counts.values / len(df) * 100).round(2)
+                    }),
+                    use_container_width=True
+                )
+
+
+# ============================================================================
 # PAGE: EXPORT
 # ============================================================================
 
@@ -2778,6 +3298,7 @@ def main():
                 "🔍 Gap Analysis",
                 "🌉 Gap Regions",
                 "🤖 LLM Analysis",
+                "📚 Database Explorer",
                 "💾 Export"
             ]
         )
@@ -2826,6 +3347,8 @@ def main():
         page_gap_regions()
     elif page == "🤖 LLM Analysis":
         page_llm_analysis()
+    elif page == "📚 Database Explorer":
+        page_database_explorer()
     elif page == "💾 Export":
         page_export()
 
