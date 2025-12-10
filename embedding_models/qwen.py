@@ -239,8 +239,8 @@ class RankedDocument(BaseModel):
 class RankResponse(BaseModel):
     query: str
     instruction: Optional[str]
-    model_reranker: str
-    model_embedding: Optional[str] = None
+    qwen_model_reranker: str
+    qwen_model_embedding: Optional[str] = None
     results: List[RankedDocument]
 
 
@@ -386,8 +386,8 @@ def rank_documents(payload: RankRequest):
     return RankResponse(
         query=payload.query,
         instruction=payload.instruction,
-        model_reranker=RERANK_MODEL_NAME,
-        model_embedding=EMBED_MODEL_NAME if payload.return_embedding_similarity else None,
+        qwen_model_reranker=RERANK_MODEL_NAME,
+        qwen_model_embedding=EMBED_MODEL_NAME if payload.return_embedding_similarity else None,
         results=results_sorted,
     )
 
