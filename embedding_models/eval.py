@@ -68,7 +68,7 @@ def parse_embedding(raw_emb) -> np.ndarray:
 
 def prepare_data(
     df: pd.DataFrame,
-    embedding_col: str = "qwen_content_embedding",
+    embeddings: np.ndarray,
     keyword_col: str = "keywords",
     min_keyword_freq: int = 20,
 ) -> Tuple[np.ndarray, np.ndarray, MultiLabelBinarizer, pd.DataFrame]:
@@ -117,9 +117,8 @@ def prepare_data(
     mlb = MultiLabelBinarizer()
     Y = mlb.fit_transform(df["filtered_keywords"])
 
-    # Parse embeddings
-    emb_list = [parse_embedding(x) for x in df[embedding_col]]
-    X = np.stack(emb_list, axis=0)
+    # Use the provided embeddings array (already aligned with dataframe)
+    X = embeddings[:len(df)]
 
     return X, Y, mlb, df
 
@@ -137,12 +136,21 @@ def evaluate_linear_probe(
     """
     # Use first keyword as "primary" for stratification (rough heuristic)
     primary_labels = [kws[0] for kws in df["filtered_keywords"]]
+    
+    # Check if stratification is possible (each class needs at least 2 samples)
+    from collections import Counter
+    label_counts = Counter(primary_labels)
+    min_count = min(label_counts.values())
+    
+    # Only use stratification if all classes have at least 2 samples
+    stratify_param = primary_labels if min_count >= 2 else None
+    
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         Y,
         test_size=test_size,
         random_state=random_state,
-        stratify=primary_labels,
+        stratify=stratify_param,
     )
 
     clf = OneVsRestClassifier(
@@ -262,7 +270,7 @@ def evaluate_retrieval(
 
 def run_full_evaluation(
     df: pd.DataFrame,
-    embedding_col: str = "qwen_content_embedding",
+    embeddings: np.ndarray,
     keyword_col: str = "keywords",
     min_keyword_freq: int = 20,
     k_retrieval: int = 10,
@@ -272,16 +280,17 @@ def run_full_evaluation(
     """
     X, Y, mlb, df_used = prepare_data(
         df,
-        embedding_col=embedding_col,
+        embeddings=embeddings,
         keyword_col=keyword_col,
         min_keyword_freq=min_keyword_freq,
     )
+
+    print(f"Evaluating on {X.shape[0]} documents with {Y.shape[1]} keywords...")
 
     linear_metrics = evaluate_linear_probe(X, Y, df_used)
     retrieval_metrics = evaluate_retrieval(X, df_used, k=k_retrieval)
 
     return {
-        "embedding_col": embedding_col,
         "n_docs": int(X.shape[0]),
         "embedding_dim": int(X.shape[1]),
         "n_keywords": int(Y.shape[1]),
@@ -300,21 +309,21 @@ if __name__ == "__main__":
         description="Evaluate embedding quality using keyword prediction and retrieval."
     )
     parser.add_argument(
-        "--data_csv",
+        "--data_json",
         type=str,
         required=True,
-        help="Path to input CSV file containing documents with embeddings and keywords.",
+        help="Path to input JSON file containing documents with keywords.",
     )
     parser.add_argument(
-        "--embedding_col",
+        "--embeddings_npy",
         type=str,
-        default="qwen_content_embedding",
-        help="Column name for embeddings.",
+        required=True,
+        help="Path to NPY file containing embeddings.",
     )
     parser.add_argument(
         "--keyword_col",
         type=str,
-        default="keywords",
+        default="mesh",
         help="Column name for keywords.",
     )
     parser.add_argument(
@@ -339,12 +348,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Load data
-    df_input = pd.read_csv(args.data_csv)
+    print(f"Loading data from {args.data_json}...")
+    with open(args.data_json, 'r') as f:
+        data_list = json.load(f)
+    df_input = pd.DataFrame(data_list)
+    
+    print(f"Loading embeddings from {args.embeddings_npy}...")
+    embeddings = np.load(args.embeddings_npy)
+    
+    print(f"Loaded {len(df_input)} records and {embeddings.shape[0]} embeddings.")
+    if len(df_input) != embeddings.shape[0]:
+        print(f"WARNING: Mismatch between records ({len(df_input)}) and embeddings ({embeddings.shape[0]})")
 
     # Run evaluation
     results = run_full_evaluation(
         df_input,
-        embedding_col=args.embedding_col,
+        embeddings=embeddings,
         keyword_col=args.keyword_col,
         min_keyword_freq=args.min_keyword_freq,
         k_retrieval=args.k_retrieval,
