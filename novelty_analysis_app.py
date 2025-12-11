@@ -268,11 +268,323 @@ def summarize_gap_region_entities(df: pd.DataFrame, region_indices: List[int]) -
     return summary
 
 
+def explore_cluster(df: pd.DataFrame, cluster_column: str, cluster_id: int) -> None:
+    """Display detailed information about a specific cluster."""
+    cluster_df = df[df[cluster_column] == cluster_id]
+    n_papers = len(cluster_df)
+    
+    st.markdown(f"### 📊 Cluster {cluster_id} Overview")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Papers in Cluster", n_papers)
+    
+    # Year distribution
+    if 'publication_year' in cluster_df.columns:
+        years = cluster_df['publication_year'].dropna()
+        if len(years) > 0:
+             # Convert to numeric, handling string values
+            years_numeric = pd.to_numeric(years, errors='coerce').dropna()
+            if len(years_numeric) > 0:
+                col2.metric("Year Range", f"{int(years_numeric.min())}-{int(years_numeric.max())}")
+                col3.metric("Median Year", f"{int(years_numeric.median())}")
+    
+    # Citation statistics if available
+    if 'citation_count' in cluster_df.columns:
+        citations = pd.to_numeric(cluster_df['citation_count'], errors='coerce').dropna()
+        if len(citations) > 0:
+            col4.metric("Avg Citations", f"{citations.mean():.0f}")
+    
+    # Entity analysis
+    st.markdown("#### 🔬 Domain Entity Analysis")
+    
+    # Extract entities if not already done
+    text_col = 'processed_content' if 'processed_content' in cluster_df.columns else 'abstract'
+    entity_summary = {}
+    
+    for entity_type in ['materials', 'ligands', 'diseases', 'delivery', 'models']:
+        all_entities = []
+        for _, row in cluster_df.iterrows():
+            text = str(row.get(text_col) or row.get('content') or '').lower()
+            
+            if entity_type == 'materials':
+                hints = MATERIAL_HINTS
+            elif entity_type == 'ligands':
+                hints = LIGAND_HINTS
+            elif entity_type == 'diseases':
+                hints = DISEASE_HINTS
+            elif entity_type == 'delivery':
+                hints = DELIVERY_HINTS
+            else:
+                hints = MODEL_HINTS
+            
+            found = [h for h in hints if h in text]
+            all_entities.extend(found)
+        
+        entity_counts = Counter(all_entities)
+        entity_summary[entity_type] = entity_counts.most_common(10)
+    
+    # Display top entities in columns
+    col1, col2, col3, col4, col5 = st.columns(5)
+    
+    with col1:
+        st.markdown("**Materials**")
+        for entity, count in entity_summary['materials'][:5]:
+            st.write(f"• {entity} ({count})")
+    
+    with col2:
+        st.markdown("**Ligands**")
+        for entity, count in entity_summary['ligands'][:5]:
+            st.write(f"• {entity} ({count})")
+    
+    with col3:
+        st.markdown("**Diseases**")
+        for entity, count in entity_summary['diseases'][:5]:
+            st.write(f"• {entity} ({count})")
+    
+    with col4:
+        st.markdown("**Delivery**")
+        for entity, count in entity_summary['delivery'][:5]:
+            st.write(f"• {entity} ({count})")
+    
+    with col5:
+        st.markdown("**Models**")
+        for entity, count in entity_summary['models'][:5]:
+            st.write(f"• {entity} ({count})")
+    
+    # Top papers by various metrics
+    st.markdown("#### 📄 Representative Papers")
+    
+    # Most recent papers
+    if 'publication_year' in cluster_df.columns:
+        st.markdown("**Most Recent (Top 5)**")
+        # Convert to numeric for sorting
+        cluster_df_copy = cluster_df.copy()
+        cluster_df_copy['year_numeric'] = pd.to_numeric(cluster_df_copy['publication_year'], errors='coerce')
+        recent = cluster_df_copy.nlargest(5, 'year_numeric')[['title', 'publication_year']]
+        for idx, (_, row) in enumerate(recent.iterrows(), 1):
+            st.write(f"{idx}. [{row.get('publication_year', 'N/A')}] {row.get('title', 'N/A')}")
+    
+    st.markdown("**Sample Papers from Cluster**")
+    sample_papers = cluster_df.head(10)
+    for idx, (_, row) in enumerate(sample_papers.iterrows(), 1):
+        year = f"[{row.get('publication_year', 'N/A')}]" if 'publication_year' in row else ""
+        title = row.get('title', 'N/A')
+        st.write(f"{idx}. {year} {title}")
+        
+        # Show abstract for first 3
+        if idx <= 3:
+            abstract = str(row.get('abstract', row.get('processed_content', '')))[:300]
+            if abstract:
+                st.caption(abstract + '...')
+    
+    # LLM Summarization section
+    if OPENAI_AVAILABLE:
+        st.markdown("---")
+        st.markdown("#### 🤖 AI Cluster Summary")
+        
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col1:
+            n_papers_to_analyze = st.number_input(
+                "Number of papers to send to LLM",
+                min_value=5,
+                max_value=min(100, len(cluster_df)),
+                value=min(20, len(cluster_df)),
+                key=f"n_papers_llm_{cluster_column}_{cluster_id}"
+            )
+        with col2:
+            llm_model = st.selectbox(
+                "Model",
+                ["gpt-5-mini", "gpt-5", "gpt-5-nano"],
+                index=0,
+                key=f"llm_model_{cluster_column}_{cluster_id}"
+            )
+        with col3:
+            st.write("")
+            st.write("")
+            analyze_button = st.button(
+                "🔬 Analyze with LLM",
+                key=f"analyze_{cluster_column}_{cluster_id}"
+            )
+        
+        # API key input
+        llm_api_key = st.text_input(
+            "OpenAI API Key",
+            type="password",
+            value=os.environ.get('OPENAI_API_KEY', ''),
+            key=f"api_key_{cluster_column}_{cluster_id}",
+            help="Enter your OpenAI API key or set OPENAI_API_KEY environment variable"
+        )
+        
+        if analyze_button:
+            if not llm_api_key:
+                st.error("❌ Please provide OpenAI API key")
+            else:
+                with st.spinner(f"Analyzing {n_papers_to_analyze} papers from cluster {cluster_id}..."):
+                    try:
+                        result = summarize_cluster_with_llm(
+                            cluster_df,
+                            cluster_id,
+                            n_papers_to_analyze,
+                            llm_api_key,
+                            llm_model
+                        )
+                        
+                        st.success("✅ Analysis complete!")
+                        
+                        # Display results
+                        st.markdown("##### 📊 Summary")
+                        st.info(result.get('main_focus', 'N/A'))
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.markdown("**Key Themes**")
+                            for theme in result.get('key_themes', []):
+                                st.write(f"• {theme}")
+                            
+                            st.markdown("**Materials**")
+                            for material in result.get('materials', [])[:5]:
+                                st.write(f"• {material}")
+                            
+                            st.markdown("**Delivery Methods**")
+                            for method in result.get('delivery_methods', [])[:5]:
+                                st.write(f"• {method}")
+                        
+                        with col2:
+                            st.markdown("**Diseases/Applications**")
+                            for disease in result.get('diseases_applications', [])[:5]:
+                                st.write(f"• {disease}")
+                            
+                            st.markdown("**Experimental Models**")
+                            for model in result.get('experimental_models', [])[:5]:
+                                st.write(f"• {model}")
+                        
+                        st.markdown("**Trends & Patterns**")
+                        st.write(result.get('trends', 'N/A'))
+                        
+                        st.markdown("---")
+                        st.markdown("**📝 Detailed Summary**")
+                        st.markdown(result.get('detailed_summary', 'N/A'))
+                        
+                        # Download option
+                        st.download_button(
+                            label="💾 Download Summary (JSON)",
+                            data=json.dumps(result, indent=2),
+                            file_name=f"cluster_{cluster_id}_summary.json",
+                            mime="application/json"
+                        )
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+                        import traceback
+                        st.code(traceback.format_exc())
+    else:
+        st.info("💡 Install OpenAI package to enable AI cluster summarization")
+
+
 def build_knn_graph(X: np.ndarray, k: int, metric: str = 'cosine') -> nx.Graph:
     """Build k-NN graph from embeddings."""
     nn = NearestNeighbors(n_neighbors=k+1, metric=metric)
     nn.fit(X)
     dists, indices = nn.kneighbors(X, return_distance=True)
+    
+    G = nx.Graph()
+    G.add_nodes_from(range(len(X)))
+    
+    for i in range(len(X)):
+        for j, d in zip(indices[i, 1:], dists[i, 1:]):
+            weight = 1.0 - float(d)
+            if not G.has_edge(i, j):
+                G.add_edge(i, j, weight=weight)
+            elif G[i][j]['weight'] < weight:
+                G[i][j]['weight'] = weight
+    
+    return G
+
+
+def summarize_cluster_with_llm(cluster_df: pd.DataFrame, cluster_id: int, n_papers: int, api_key: str, model: str) -> str:
+    """Use LLM to generate a comprehensive summary of a cluster."""
+    try:
+        # Sample papers from cluster
+        if len(cluster_df) > n_papers:
+            # Take a diverse sample - some recent, some random
+            if 'publication_year' in cluster_df.columns:
+                # Convert to numeric for sorting
+                cluster_df_copy = cluster_df.copy()
+                cluster_df_copy['year_numeric'] = pd.to_numeric(cluster_df_copy['publication_year'], errors='coerce')
+                recent = cluster_df_copy.nlargest(n_papers // 2, 'year_numeric')
+            else:
+                recent = cluster_df.head(n_papers // 2)
+            random_sample = cluster_df.sample(n=n_papers - len(recent), random_state=42)
+            sample_df = pd.concat([recent, random_sample])
+        else:
+            sample_df = cluster_df
+        
+        # Build evidence pack
+        evidence_pack = []
+        for idx, row in sample_df.iterrows():
+            doc = {
+                'title': row.get('title', 'N/A'),
+                'abstract': str(row.get('abstract', row.get('processed_content', '')))[:1000],
+                'year': str(row.get('publication_year', 'N/A'))
+            }
+            evidence_pack.append(doc)
+        
+        # Create prompts
+        system_prompt = """You are an expert scientific research analyst specializing in nanotechnology and nanomedicine.
+        Your task is to analyze a cluster of research papers and provide a comprehensive summary of the research focus,
+        key themes, methodologies, and trends within this cluster."""
+        
+        user_prompt = f"""TASK: Analyze the following cluster of research papers and provide a comprehensive summary.
+
+CLUSTER INFORMATION:
+- Cluster ID: {cluster_id}
+- Total papers in cluster: {len(cluster_df)}
+- Papers analyzed: {len(sample_df)}
+
+Please provide a structured analysis covering:
+1. Main research focus and themes
+2. Common materials and nanoparticle types
+3. Target diseases or applications
+4. Delivery methods and routes
+5. Experimental models used (in vitro, in vivo, clinical)
+6. Key trends or temporal patterns (if applicable)
+
+EVIDENCE PACK (JSONL format; each line is one paper):
+```jsonl
+{chr(10).join(json.dumps(d, ensure_ascii=False) for d in evidence_pack)}
+```
+
+OUTPUT: Provide your analysis as a JSON object with the following structure:
+{{
+    "cluster_id": {cluster_id},
+    "main_focus": "Brief description of the main research focus",
+    "key_themes": ["theme1", "theme2", "theme3"],
+    "materials": ["material1", "material2"],
+    "diseases_applications": ["disease1", "application1"],
+    "delivery_methods": ["method1", "method2"],
+    "experimental_models": ["model1", "model2"],
+    "trends": "Description of key trends or patterns",
+    "detailed_summary": "Comprehensive narrative summary (2-3 paragraphs)"
+}}
+"""
+        
+        # Call LLM
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(response.choices[0].message.content)
+        return result
+        
+    except Exception as e:
+        raise Exception(f"Error in LLM summarization: {str(e)}")
     
     G = nx.Graph()
     G.add_nodes_from(range(len(X)))
@@ -767,12 +1079,17 @@ def page_filters():
                 value="Brain delivery for treatment of neurodegenerative diseases",
                 height=100
             )
+            instruction_text = st.text_input(
+                "Instruction (optional)",
+                value="Given a web search query, retrieve relevant passages that answer the query",
+                help="Leave empty to pass None as instruction"
+            )
             similarity_threshold = st.slider("Similarity Threshold", min_value=0.0, max_value=1.0, value=0.3, step=0.01)
         with col2:
             st.write("")
             st.write("")
             if st.button("🔍 Compute Similarities"):
-                compute_semantic_similarity(query_text, similarity_threshold)
+                compute_semantic_similarity(query_text, similarity_threshold, instruction_text)
         
         if st.session_state.similarity_applied:
             similarities = st.session_state.df_valid['similarity_score'].values
@@ -964,7 +1281,7 @@ def apply_cluster_filter(selected_clusters):
     st.rerun()
 
 
-def compute_semantic_similarity(query_text, threshold):
+def compute_semantic_similarity(query_text, threshold, instruction=None):
     """Compute semantic similarity to query using preloaded embeddings"""
     try:
         import requests
@@ -974,9 +1291,12 @@ def compute_semantic_similarity(query_text, threshold):
         
         with st.spinner("Generating query embedding..."):
             # Generate query embedding with instruction for better retrieval
+            # Use None if instruction is empty string
+            instruction_param = instruction if instruction and instruction.strip() else None
+            
             query_payload = {
                 "texts": [query_text],
-                "instruction": "Represent this query for retrieving relevant biomedical research papers",
+                "instruction": instruction_param,
                 "normalize": True
             }
             
@@ -991,15 +1311,18 @@ def compute_semantic_similarity(query_text, threshold):
                 return
             
             query_embedding = np.array(query_response.json()['embeddings'][0])
+            print(query_embedding)
         
         with st.spinner("Computing similarities with preloaded paper embeddings..."):
             # Use the already-loaded embeddings from session state
             paper_embeddings = st.session_state.X_primary
             
             # Normalize embeddings for cosine similarity
-            paper_embeddings_norm = paper_embeddings / np.linalg.norm(paper_embeddings, axis=1, keepdims=True)
-            query_embedding_norm = query_embedding / np.linalg.norm(query_embedding)
-            
+            # paper_embeddings_norm = paper_embeddings / np.linalg.norm(paper_embeddings, axis=1, keepdims=True)
+            # query_embedding_norm = query_embedding / np.linalg.norm(query_embedding)
+            query_embedding_norm = query_embedding
+            paper_embeddings_norm = paper_embeddings
+            # print(paper_embeddings_norm.shape, query_embedding_norm.shape)
             # Compute cosine similarity: normalized dot product
             similarities = paper_embeddings_norm @ query_embedding_norm
             
@@ -1576,6 +1899,20 @@ def page_clustering():
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
         st.plotly_chart(fig, use_container_width=True)
         
+        # Cluster exploration
+        with st.expander("🔍 Explore Clusters", expanded=False):
+            unique_clusters = sorted(st.session_state.df_valid['cluster_kmeans'].unique())
+            cluster_sizes = st.session_state.df_valid['cluster_kmeans'].value_counts().sort_index()
+            
+            selected_cluster = st.selectbox(
+                "Select Cluster to Explore",
+                unique_clusters,
+                format_func=lambda x: f"Cluster {x} ({cluster_sizes[x]} papers)"
+            )
+            
+            if selected_cluster is not None:
+                explore_cluster(st.session_state.df_valid, 'cluster_kmeans', selected_cluster)
+        
         # Selection button
         if st.session_state.selected_clustering == 'kmeans':
             st.success("✅ K-means selected for gap analysis")
@@ -1641,6 +1978,24 @@ def page_clustering():
         fig.update_traces(marker=dict(size=6))
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
         st.plotly_chart(fig, use_container_width=True)
+        
+        # Cluster exploration
+        with st.expander("🔍 Explore Clusters", expanded=False):
+            unique_clusters = sorted([c for c in st.session_state.df_valid['cluster_hdbscan'].unique() if c != -1])
+            cluster_sizes = st.session_state.df_valid[st.session_state.df_valid['cluster_hdbscan'] != -1]['cluster_hdbscan'].value_counts().sort_index()
+            
+            if len(unique_clusters) > 0:
+                selected_cluster = st.selectbox(
+                    "Select Cluster to Explore",
+                    unique_clusters,
+                    format_func=lambda x: f"Cluster {x} ({cluster_sizes[x]} papers)",
+                    key="hdbscan_explore"
+                )
+                
+                if selected_cluster is not None:
+                    explore_cluster(st.session_state.df_valid, 'cluster_hdbscan', selected_cluster)
+            else:
+                st.info("No clusters found (all noise points)")
         
         # Selection button
         if st.session_state.selected_clustering == 'hdbscan':
@@ -1776,13 +2131,19 @@ def page_clustering():
         with col2:
             st.markdown("**Detected Communities**")
             
+            # Prepare plot data with hover columns
+            df_plot_communities = st.session_state.df_valid.copy()
+            df_plot_communities['hover_title'] = df_plot_communities['title'].fillna('N/A')
+            df_plot_communities['hover_abstract'] = df_plot_communities.get('abstract', df_plot_communities.get('processed_content', '')).fillna('').astype(str).str[:200] + '...'
+            
             fig = px.scatter(
-                st.session_state.df_valid,
+                df_plot_communities,
                 x='umap_x',
                 y='umap_y',
                 color='cluster_leiden',
                 title=f"Community Detection (n={n_communities})",
                 color_continuous_scale='rainbow',
+                hover_data={'umap_x': False, 'umap_y': False, 'hover_title': True, 'hover_abstract': True},
                 opacity=0.7,
                 height=500
             )
@@ -1793,6 +2154,21 @@ def page_clustering():
             # Community size distribution
             unique, counts = np.unique(labels, return_counts=True)
             st.bar_chart({f"C{c}": cnt for c, cnt in zip(unique[:10], counts[:10])})
+        
+        # Cluster exploration
+        with st.expander("🔍 Explore Communities", expanded=False):
+            unique_clusters = sorted(st.session_state.df_valid['cluster_leiden'].unique())
+            cluster_sizes = st.session_state.df_valid['cluster_leiden'].value_counts().sort_index()
+            
+            selected_cluster = st.selectbox(
+                "Select Community to Explore",
+                unique_clusters,
+                format_func=lambda x: f"Community {x} ({cluster_sizes[x]} papers)",
+                key="leiden_explore"
+            )
+            
+            if selected_cluster is not None:
+                explore_cluster(st.session_state.df_valid, 'cluster_leiden', selected_cluster)
         
         # Selection button
         if st.session_state.selected_clustering == 'leiden':
@@ -1806,6 +2182,8 @@ def page_clustering():
     
     if 'cluster_kmeans' in st.session_state.df_valid.columns or 'cluster_hdbscan' in st.session_state.df_valid.columns or 'cluster_leiden' in st.session_state.df_valid.columns:
         st.session_state.clustering_done = True
+
+
 
 
 def run_leiden_clustering(clustering_config):
