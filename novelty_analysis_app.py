@@ -606,12 +606,19 @@ OUTPUT: Provide your analysis as a JSON object with the following structure:
 
 def save_state_for_undo(action_name: str):
     """Save current state to undo history"""
+    # Deep copy embeddings_dict
+    embeddings_dict_copy = {}
+    if st.session_state.embeddings_dict:
+        for key, value in st.session_state.embeddings_dict.items():
+            embeddings_dict_copy[key] = value.copy() if value is not None else None
+    
     state_snapshot = {
         'action_name': action_name,
         'df_valid': st.session_state.df_valid.copy() if st.session_state.df_valid is not None else None,
         'X_pca': st.session_state.X_pca.copy() if st.session_state.X_pca is not None else None,
         'X_primary': st.session_state.X_primary.copy() if st.session_state.X_primary is not None else None,
         'X_umap_2d': st.session_state.X_umap_2d.copy() if st.session_state.X_umap_2d is not None else None,
+        'embeddings_dict': embeddings_dict_copy,
         'kmeans_applied': st.session_state.kmeans_applied,
         'similarity_applied': st.session_state.similarity_applied,
         'G': st.session_state.G,  # Graph is immutable, can reference directly
@@ -636,6 +643,7 @@ def undo_last_action():
     st.session_state.X_pca = snapshot['X_pca']
     st.session_state.X_primary = snapshot['X_primary']
     st.session_state.X_umap_2d = snapshot['X_umap_2d']
+    st.session_state.embeddings_dict = snapshot.get('embeddings_dict', {})
     st.session_state.kmeans_applied = snapshot['kmeans_applied']
     st.session_state.similarity_applied = snapshot['similarity_applied']
     st.session_state.G = snapshot.get('G', None)
@@ -821,7 +829,7 @@ def page_data_loading():
 
 
 def load_data(config, keywords_title_exclusion, keywords_abstract_exclusion):
-    """Load and filter dataset from JSON file"""
+    """Load and filter dataset from JSON file, and load embeddings"""
     data_path = Path(config['data_path'])
     
     if not data_path.exists():
@@ -839,15 +847,7 @@ def load_data(config, keywords_title_exclusion, keywords_abstract_exclusion):
             
             st.session_state.df_original = df.copy()
             
-            # Apply filters
-            for keyword in keywords_title_exclusion:
-                if 'title' in df.columns:
-                    df = df[~df['title'].str.lower().str.contains(keyword, na=False)]
-            for keyword in keywords_abstract_exclusion:
-                if 'abstract' in df.columns:
-                    df = df[~df['abstract'].str.lower().str.contains(keyword, na=False)]
-            
-            # Sample if needed
+            # Sample if needed (before filtering to maintain reproducibility)
             if config['sample_n'] is not None and len(df) > config['sample_n']:
                 df = df.sample(config['sample_n'], random_state=config.get('random_seed', 42))
             
@@ -858,6 +858,62 @@ def load_data(config, keywords_title_exclusion, keywords_abstract_exclusion):
             st.error(f"Error loading JSON file: {str(e)}")
             import traceback
             st.code(traceback.format_exc())
+            return
+    
+    # Load embeddings immediately after loading data
+    with st.spinner("Loading embeddings from .npy files..."):
+        try:
+            data_dir = Path(config['data_path']).parent
+            
+            embeddings_dict, valid_idx = extract_embeddings(
+                st.session_state.df_filtered,
+                config['embedding_cols'],
+                data_dir
+            )
+            
+            st.session_state.embeddings_dict = embeddings_dict
+            st.session_state.df_valid = st.session_state.df_filtered.iloc[valid_idx].reset_index(drop=True)
+            st.session_state.X_primary = embeddings_dict[config['primary_embedding']]
+            st.session_state.embeddings_extracted = True
+            
+            st.success(f"✅ Loaded embeddings: {len(valid_idx)} valid rows")
+            
+        except Exception as e:
+            st.error(f"Error loading embeddings: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
+            return
+    
+    # Apply keyword filters AFTER embeddings are loaded
+    with st.spinner("Applying keyword filters..."):
+        n_before = len(st.session_state.df_valid)
+        
+        # Create mask for filtering
+        mask = pd.Series([True] * len(st.session_state.df_valid), index=st.session_state.df_valid.index)
+        
+        # Apply title filters
+        for keyword in keywords_title_exclusion:
+            if 'title' in st.session_state.df_valid.columns:
+                mask &= ~st.session_state.df_valid['title'].str.lower().str.contains(keyword, na=False)
+        
+        # Apply abstract filters
+        for keyword in keywords_abstract_exclusion:
+            if 'abstract' in st.session_state.df_valid.columns:
+                mask &= ~st.session_state.df_valid['abstract'].str.lower().str.contains(keyword, na=False)
+        
+        # Apply mask to dataframe
+        st.session_state.df_valid = st.session_state.df_valid[mask].reset_index(drop=True)
+        
+        # Apply mask to embeddings
+        for key in st.session_state.embeddings_dict:
+            st.session_state.embeddings_dict[key] = st.session_state.embeddings_dict[key][mask.values]
+        
+        # Update primary embedding
+        st.session_state.X_primary = st.session_state.embeddings_dict[config['primary_embedding']]
+        
+        n_after = len(st.session_state.df_valid)
+        if n_before != n_after:
+            st.info(f"Keyword filtering: {n_before} → {n_after} papers")
 
 
 # ============================================================================
@@ -875,37 +931,14 @@ def page_embedding_processing():
     config = st.session_state.config
     
     st.markdown(f"""
-    **Dataset**: {len(st.session_state.df_filtered)} papers  
+    **Dataset**: {len(st.session_state.df_valid) if st.session_state.df_valid is not None else len(st.session_state.df_filtered)} papers  
     **Primary Embedding**: {config['primary_embedding']}  
     **Available Embeddings**: {', '.join(config['embedding_cols'])}
     """)
     
-    # Extract embeddings
+    # Check if embeddings are already loaded
     if not st.session_state.embeddings_extracted:
-        if st.button("🔍 Load Embeddings", type="primary"):
-            with st.spinner("Loading embeddings from .npy files..."):
-                try:
-                    # Get data directory from config path
-                    data_dir = Path(config['data_path']).parent
-                    
-                    embeddings_dict, valid_idx = extract_embeddings(
-                        st.session_state.df_filtered,
-                        config['embedding_cols'],
-                        data_dir
-                    )
-                    
-                    st.session_state.embeddings_dict = embeddings_dict
-                    st.session_state.df_valid = st.session_state.df_filtered.iloc[valid_idx].reset_index(drop=True)
-                    st.session_state.X_primary = embeddings_dict[config['primary_embedding']]
-                    st.session_state.embeddings_extracted = True
-                    
-                    st.success(f"✅ Loaded embeddings: {len(valid_idx)} valid rows")
-                    st.rerun()
-                    
-                except Exception as e:
-                    st.error(f"Error loading embeddings: {str(e)}")
-                    import traceback
-                    st.code(traceback.format_exc())
+        st.warning("⚠️ Embeddings should have been loaded with the data. Please reload the dataset.")
         return
     
     st.success(f"✅ Embeddings extracted: {st.session_state.X_primary.shape}")
@@ -1273,9 +1306,13 @@ def apply_cluster_filter(selected_clusters):
     n_before = len(st.session_state.df_valid)
     
     st.session_state.df_valid = st.session_state.df_valid[mask].reset_index(drop=True)
-    st.session_state.X_pca = st.session_state.X_pca[mask]
+    st.session_state.X_pca = st.session_state.X_pca[mask] if st.session_state.X_pca is not None else None
     st.session_state.X_primary = st.session_state.X_primary[mask]
-    st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask]
+    st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask] if st.session_state.X_umap_2d is not None else None
+    
+    # Update embeddings_dict
+    for key in st.session_state.embeddings_dict:
+        st.session_state.embeddings_dict[key] = st.session_state.embeddings_dict[key][mask]
     
     st.success(f"✅ Filtered: {n_before} → {len(st.session_state.df_valid)} papers")
     st.rerun()
@@ -1475,9 +1512,13 @@ def apply_similarity_filter(threshold):
     n_before = len(st.session_state.df_valid)
     
     st.session_state.df_valid = st.session_state.df_valid[mask].reset_index(drop=True)
-    st.session_state.X_pca = st.session_state.X_pca[mask]
+    st.session_state.X_pca = st.session_state.X_pca[mask] if st.session_state.X_pca is not None else None
     st.session_state.X_primary = st.session_state.X_primary[mask]
-    st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask]
+    st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask] if st.session_state.X_umap_2d is not None else None
+    
+    # Update embeddings_dict
+    for key in st.session_state.embeddings_dict:
+        st.session_state.embeddings_dict[key] = st.session_state.embeddings_dict[key][mask]
     
     st.success(f"✅ Filtered: {n_before} → {len(st.session_state.df_valid)} papers")
     st.rerun()
@@ -1491,9 +1532,13 @@ def apply_qa_filter(threshold):
     n_before = len(st.session_state.df_valid)
     
     st.session_state.df_valid = st.session_state.df_valid[mask].reset_index(drop=True)
-    st.session_state.X_pca = st.session_state.X_pca[mask]
+    st.session_state.X_pca = st.session_state.X_pca[mask] if st.session_state.X_pca is not None else None
     st.session_state.X_primary = st.session_state.X_primary[mask]
-    st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask]
+    st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask] if st.session_state.X_umap_2d is not None else None
+    
+    # Update embeddings_dict
+    for key in st.session_state.embeddings_dict:
+        st.session_state.embeddings_dict[key] = st.session_state.embeddings_dict[key][mask]
     
     st.success(f"✅ Filtered: {n_before} → {len(st.session_state.df_valid)} papers")
     st.rerun()
@@ -1522,9 +1567,13 @@ def apply_entity_filter(entity_type, selected_entities):
         save_state_for_undo(f"Entity filter: {entity_type}")
         
         st.session_state.df_valid = st.session_state.df_valid[mask].reset_index(drop=True)
-        st.session_state.X_pca = st.session_state.X_pca[mask]
+        st.session_state.X_pca = st.session_state.X_pca[mask] if st.session_state.X_pca is not None else None
         st.session_state.X_primary = st.session_state.X_primary[mask]
-        st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask]
+        st.session_state.X_umap_2d = st.session_state.X_umap_2d[mask] if st.session_state.X_umap_2d is not None else None
+        
+        # Update embeddings_dict
+        for key in st.session_state.embeddings_dict:
+            st.session_state.embeddings_dict[key] = st.session_state.embeddings_dict[key][mask]
         
         st.success(f"✅ Filtered by {entity_type}: {n_before} → {len(st.session_state.df_valid)} papers")
         st.rerun()
