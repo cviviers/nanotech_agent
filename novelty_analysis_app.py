@@ -406,18 +406,10 @@ def explore_cluster(df: pd.DataFrame, cluster_column: str, cluster_id: int) -> N
                 key=f"analyze_{cluster_column}_{cluster_id}"
             )
         
-        # API key input
-        llm_api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            value=os.environ.get('OPENAI_API_KEY', ''),
-            key=f"api_key_{cluster_column}_{cluster_id}",
-            help="Enter your OpenAI API key or set OPENAI_API_KEY environment variable"
-        )
-        
         if analyze_button:
+            llm_api_key = st.session_state.get('openai_api_key', os.environ.get('OPENAI_API_KEY', ''))
             if not llm_api_key:
-                st.error("❌ Please provide OpenAI API key")
+                st.error("❌ Please provide OpenAI API key in Data & Config page")
             else:
                 with st.spinner(f"Analyzing {n_papers_to_analyze} papers from cluster {cluster_id}..."):
                     try:
@@ -781,6 +773,16 @@ def page_data_loading():
             index=0 if available_embeddings else None
         )
     
+    # OpenAI API Key Configuration
+    st.subheader("🔑 OpenAI API Key (Optional)")
+    openai_api_key = st.text_input(
+        "OpenAI API Key",
+        type="password",
+        value=st.session_state.get('openai_api_key', os.environ.get('OPENAI_API_KEY', '')),
+        key="config_openai_api_key",
+        help="Enter your OpenAI API key for LLM-based analysis features. Can also be set via OPENAI_API_KEY environment variable."
+    )
+    
     # Store in session state
     if st.button("💾 Save Configuration", type="primary"):
         st.session_state.config = {
@@ -791,6 +793,7 @@ def page_data_loading():
             'random_seed': random_seed
         }
         st.session_state.random_seed = random_seed
+        st.session_state.openai_api_key = openai_api_key
         st.success("✅ Configuration saved!")
     
     st.divider()
@@ -2207,7 +2210,109 @@ def page_clustering():
             # Community size distribution
             unique, counts = np.unique(labels, return_counts=True)
             st.bar_chart({f"C{c}": cnt for c, cnt in zip(unique[:10], counts[:10])})
-        
+
+
+        # Create summary of all communities
+        with st.expander("🔍 Summarize Communities", expanded=False):
+            st.markdown("""
+            Generate high-level summaries for all communities using an LLM.
+            The LLM will analyze paper titles from each community to create a brief overview.
+            """)
+            
+            summary_model = st.selectbox(
+                "Model",
+                ["gpt-5-nano", "gpt-5-mini", "gpt-5"],
+                index=0,
+                key="community_summary_model"
+            )
+            
+            if st.button("🚀 Generate All Community Summaries", type="primary"):
+                summary_api_key = st.session_state.get('openai_api_key', os.environ.get('OPENAI_API_KEY', ''))
+                if not summary_api_key:
+                    st.error("❌ Please provide OpenAI API key in Data & Config page")
+                else:
+                    # Get unique communities
+                    unique_communities = sorted(st.session_state.df_valid['cluster_leiden'].unique())
+                    
+                    # Initialize results storage
+                    if 'community_summaries' not in st.session_state:
+                        st.session_state.community_summaries = {}
+                    
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for idx, community_id in enumerate(unique_communities):
+                        status_text.text(f"Summarizing Community {community_id}... ({idx+1}/{len(unique_communities)})")
+                        
+                        # Get papers in this community
+                        community_df = st.session_state.df_valid[
+                            st.session_state.df_valid['cluster_leiden'] == community_id
+                        ]
+                        
+                        # Get paper titles
+                        titles = community_df['title'].fillna('Untitled').tolist()
+                        
+                        # Create prompt
+                        prompt = f"""You are analyzing a research community in nanomedicine.
+                        
+                            Below are the titles of {len(titles)} papers in Community {community_id}:
+
+                            {chr(10).join(f"{i+1}. {title}" for i, title in enumerate(titles))}
+
+                            Based on these paper titles, provide a brief high-level summary (2-3 sentences) describing:
+                            1. The main research focus or theme of this community
+                            2. Key topics or approaches that appear frequently
+
+                            Keep your response concise and focused on the overarching themes."""
+                        
+                        try:
+                            # Call OpenAI API
+                            client = OpenAI(api_key=summary_api_key)
+                            response = client.chat.completions.create(
+                                model=summary_model,
+                                messages=[
+                                   {"role": "system", "content": "You are a research analyst specializing in nanomedicine literature analysis."},
+                                   {"role": "user", "content": prompt}
+                                ]
+                            )
+                            
+                            summary = response.choices[0].message.content.strip()
+                            st.session_state.community_summaries[community_id] = {
+                                'summary': summary,
+                                'n_papers': len(titles),
+                                'model': summary_model
+                            }
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error summarizing Community {community_id}: {str(e)}")
+                            st.session_state.community_summaries[community_id] = {
+                                'summary': f"Error: {str(e)}",
+                                'n_papers': len(titles),
+                                'model': summary_model
+                            }
+                        
+                        progress_bar.progress((idx + 1) / len(unique_communities))
+                    
+                    status_text.text("✅ All communities summarized!")
+                    st.success(f"✅ Generated summaries for {len(unique_communities)} communities")
+            
+            # Display summaries if they exist
+            if 'community_summaries' in st.session_state and st.session_state.community_summaries:
+                st.markdown("---")
+                st.markdown("### 📋 Community Summaries")
+                
+                for community_id in sorted(st.session_state.community_summaries.keys()):
+                    summary_data = st.session_state.community_summaries[community_id]
+                    
+                    with st.container():
+                        st.markdown(f"#### Community {community_id}")
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.write(summary_data['summary'])
+                        with col2:
+                            st.metric("Papers", summary_data['n_papers'])
+                        st.markdown("---")
+            
         # Cluster exploration
         with st.expander("🔍 Explore Communities", expanded=False):
             unique_clusters = sorted(st.session_state.df_valid['cluster_leiden'].unique())
@@ -2660,14 +2765,17 @@ def page_llm_analysis():
     # Configuration
     col1, col2, col3 = st.columns(3)
     with col1:
-        openai_api_key = st.text_input("OpenAI API Key", type="password", 
-                                       value=os.environ.get('OPENAI_API_KEY', ''))
-        openai_model = st.selectbox("Model", ["gpt-5-mini", "gpt-5", "gpt-5-nano"], index=0)
+        openai_model = st.selectbox("Model", ["gpt-5-nano", "gpt-5-mini", "gpt-5"], index=0)
     with col2:
         region_id = st.selectbox("Select Gap Region", range(len(gap_regions)))
+        use_all_gap_regions = st.checkbox("Use ALL Gap Regions", value=False, 
+                                          help="Include papers from all gap regions instead of just the selected one.")
         n_papers_per_cluster = st.number_input("Papers per Cluster", min_value=5, max_value=100, value=15)
     with col3:
+        use_all_gap_papers = st.checkbox("Use ALL Gap Papers (Use with care)", value=False,
+                                         help="Include all gap papers (ignores number limit below)")
         n_gap_papers = st.number_input("Gap Papers to Include", min_value=5, max_value=100, value=5,
+                                       disabled=use_all_gap_papers,
                                        help="Number of gap region papers to include in evidence pack (sorted by gap score)")
     
     # Custom question and keywords
@@ -2691,16 +2799,31 @@ def page_llm_analysis():
         )
     
     # Show region preview
-    region_indices = gap_regions[region_id]
-    region_df = st.session_state.df_valid.loc[region_indices]
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Gap Region Papers", len(region_indices))
-    if 'gap_score' in region_df.columns:
-        col2.metric("Avg Gap Score", f"{region_df['gap_score'].mean():.3f}")
-    if st.session_state.selected_clustering and f'cluster_{st.session_state.selected_clustering}' in st.session_state.df_valid.columns:
-        cluster_col = f'cluster_{st.session_state.selected_clustering}'
-        col3.metric("Clusters Touched", region_df[cluster_col].nunique())
+    if use_all_gap_regions:
+        # Calculate stats across all gap regions
+        all_gap_indices = [idx for region in gap_regions for idx in region]
+        region_df = st.session_state.df_valid.loc[all_gap_indices]
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Gap Papers (All Regions)", len(all_gap_indices))
+        col1.caption(f"From {len(gap_regions)} regions")
+        if 'gap_score' in region_df.columns:
+            col2.metric("Avg Gap Score", f"{region_df['gap_score'].mean():.3f}")
+        if st.session_state.selected_clustering and f'cluster_{st.session_state.selected_clustering}' in st.session_state.df_valid.columns:
+            cluster_col = f'cluster_{st.session_state.selected_clustering}'
+            col3.metric("Clusters Touched", region_df[cluster_col].nunique())
+    else:
+        # Single region stats
+        region_indices = gap_regions[region_id]
+        region_df = st.session_state.df_valid.loc[region_indices]
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Gap Region Papers", len(region_indices))
+        if 'gap_score' in region_df.columns:
+            col2.metric("Avg Gap Score", f"{region_df['gap_score'].mean():.3f}")
+        if st.session_state.selected_clustering and f'cluster_{st.session_state.selected_clustering}' in st.session_state.df_valid.columns:
+            cluster_col = f'cluster_{st.session_state.selected_clustering}'
+            col3.metric("Clusters Touched", region_df[cluster_col].nunique())
     
     # Cluster selection - allow ANY clusters to be compared, not just those in gap region
     st.markdown("---")
@@ -2745,20 +2868,39 @@ def page_llm_analysis():
                 ))
             
             # Overlay gap region as red stars
-            gap_data = df_plot.loc[region_indices]
+            if use_all_gap_regions:
+                # Show all gap regions
+                all_gap_indices = [idx for region in gap_regions for idx in region]
+                gap_data = df_plot.loc[all_gap_indices]
+                region_label = f'All Gap Regions'
+            else:
+                # Show single selected region
+                gap_data = df_plot.loc[region_indices]
+                region_label = f'Gap Region {region_id}'
+            
+            # Create hover text with title and abstract
+            gap_hover_text = [
+                f"<b>{row.get('title', 'N/A')}</b><br>" +
+                f"Gap Region: {row.get('gap_region', 'N/A')}<br>" +
+                f"Gap Score: {row.get('gap_score', 0):.3f}<br>" +
+                f"{str(row.get('abstract', row.get('processed_content', '')))[:200]}..."
+                for _, row in gap_data.iterrows()
+            ]
+            
             fig.add_trace(go.Scatter(
                 x=gap_data['umap_x'],
                 y=gap_data['umap_y'],
                 mode='markers',
                 marker=dict(size=12, color='red', symbol='star', 
                            line=dict(color='darkred', width=1)),
-                name=f'Gap Region {region_id} (n={len(region_indices)})',
+                name=f'{region_label} (n={len(gap_data)})',
                 showlegend=True,
-                hovertemplate=f'Gap Region {region_id}<extra></extra>'
+                text=gap_hover_text,
+                hovertemplate='%{text}<extra></extra>'
             ))
             
             fig.update_layout(
-                title=f'Clusters with Gap Region {region_id} Highlighted',
+                title=f'Clusters with {region_label} Highlighted',
                 xaxis_title='UMAP 1',
                 yaxis_title='UMAP 2',
                 height=600,
@@ -2779,7 +2921,7 @@ def page_llm_analysis():
             # Count papers in each cluster
             cluster_sizes = st.session_state.df_valid[cluster_col].value_counts().to_dict()
             
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 cluster_A_selected = st.selectbox(
                     "Cluster A",
@@ -2798,10 +2940,34 @@ def page_llm_analysis():
                     format_func=lambda x: f"Cluster {x} (n={cluster_sizes.get(x, 0)} papers)",
                     key="cluster_b_select"
                 )
+            with col3:
+                # Filter out Cluster A and B from options for Cluster C (optional)
+                cluster_c_options = [c for c in all_cluster_ids if c not in [cluster_A_selected, cluster_B_selected]]
+                # Add None as first option (default)
+                cluster_c_display_options = [None] + cluster_c_options
+                cluster_C_selected = st.selectbox(
+                    "Cluster C (Optional)",
+                    cluster_c_display_options,
+                    index=0,  # Default to None
+                    format_func=lambda x: "None" if x is None else f"Cluster {x} (n={cluster_sizes.get(x, 0)} papers)",
+                    key="cluster_c_select",
+                    help="Optional third cluster to include in comparison"
+                )
             
             if cluster_A_selected is not None and cluster_B_selected is not None:
-                st.success(f"✅ Ready to compare Cluster {cluster_A_selected} ({cluster_sizes.get(cluster_A_selected, 0)} papers) vs Cluster {cluster_B_selected} ({cluster_sizes.get(cluster_B_selected, 0)} papers)")
-                st.caption(f"Using Gap Region {region_id} ({len(region_indices)} papers) as contextual evidence")
+                # Build comparison message
+                if cluster_C_selected is not None:
+                    comparison_msg = f"✅ Ready to compare Cluster {cluster_A_selected} ({cluster_sizes.get(cluster_A_selected, 0)} papers) vs Cluster {cluster_B_selected} ({cluster_sizes.get(cluster_B_selected, 0)} papers) vs Cluster {cluster_C_selected} ({cluster_sizes.get(cluster_C_selected, 0)} papers)"
+                else:
+                    comparison_msg = f"✅ Ready to compare Cluster {cluster_A_selected} ({cluster_sizes.get(cluster_A_selected, 0)} papers) vs Cluster {cluster_B_selected} ({cluster_sizes.get(cluster_B_selected, 0)} papers)"
+                
+                if use_all_gap_regions:
+                    all_gap_indices = [idx for region in gap_regions for idx in region]
+                    st.success(comparison_msg)
+                    st.caption(f"Using ALL Gap Regions ({len(all_gap_indices)} papers from {len(gap_regions)} regions) as contextual evidence")
+                else:
+                    st.success(comparison_msg)
+                    st.caption(f"Using Gap Region {region_id} ({len(region_indices)} papers) as contextual evidence")
         else:
             st.error(f"❌ Clustering column '{cluster_col}' not found")
             cluster_A_selected = None
@@ -2813,8 +2979,9 @@ def page_llm_analysis():
     
     
     if st.button("🚀 Prepare and Review Prompt", type="primary"):
+        openai_api_key = st.session_state.get('openai_api_key', os.environ.get('OPENAI_API_KEY', ''))
         if not openai_api_key:
-            st.error("Please provide OpenAI API key")
+            st.error("Please provide OpenAI API key in Data & Config page")
             return
         
         if cluster_A_selected is None or cluster_B_selected is None:
@@ -2829,7 +2996,10 @@ def page_llm_analysis():
             custom_question.strip() if custom_question.strip() else None,
             guidance_keywords.strip() if guidance_keywords.strip() else None,
             cluster_A_selected,
-            cluster_B_selected
+            cluster_B_selected,
+            cluster_C_selected,
+            use_all_gap_regions,
+            use_all_gap_papers
         )
     
     # Display prompt editor if prompts have been generated
@@ -2881,8 +3051,9 @@ def page_llm_analysis():
         
         with col3:
             if st.button("✅ Send Edited Prompts to LLM", type="primary"):
+                openai_api_key = st.session_state.get('openai_api_key', os.environ.get('OPENAI_API_KEY', ''))
                 if not openai_api_key:
-                    st.error("Please provide OpenAI API key")
+                    st.error("Please provide OpenAI API key in Data & Config page")
                     return
                 
                 # Call the LLM with edited prompts
@@ -2894,6 +3065,7 @@ def page_llm_analysis():
                     prompt_data['region_id'],
                     prompt_data['cluster_A'],
                     prompt_data['cluster_B'],
+                    prompt_data.get('cluster_C'),
                     prompt_data['region_size']
                 )
     
@@ -2915,21 +3087,33 @@ def page_llm_analysis():
             llm_data['region_id'],
             llm_data['cluster_A'],
             llm_data['cluster_B'],
+            llm_data.get('cluster_C'),
             llm_data['region_size']
         )
     else:
         st.info("💡 Click 'Prepare and Review Prompt' above to generate analysis prompts.")
 
 
-def prepare_llm_prompt(region_id, n_papers, n_gap_papers, custom_question=None, guidance_keywords=None, cluster_A=None, cluster_B=None):
+def prepare_llm_prompt(region_id, n_papers, n_gap_papers, custom_question=None, guidance_keywords=None, cluster_A=None, cluster_B=None, cluster_C=None, use_all_gap_regions=False, use_all_gap_papers=False):
     """Generate and store prompts without sending to LLM yet"""
     gap_regions = st.session_state.gap_regions
-    region_indices = gap_regions[region_id]
-    region_df = st.session_state.df_valid.loc[region_indices]
+    
+    # Get gap region papers based on selection
+    if use_all_gap_regions:
+        # Collect all papers from all gap regions
+        all_gap_indices = [idx for region in gap_regions for idx in region]
+        region_indices = all_gap_indices
+        region_df = st.session_state.df_valid.loc[region_indices]
+        region_label = f"All Gap Regions ({len(gap_regions)} regions)"
+    else:
+        # Single region
+        region_indices = gap_regions[region_id]
+        region_df = st.session_state.df_valid.loc[region_indices]
+        region_label = f"Gap Region {region_id}"
     
     # Validate cluster selection
     if cluster_A is None or cluster_B is None:
-        st.error("❌ Both clusters must be selected")
+        st.error("❌ At least two clusters (A and B) must be selected")
         return
     
     # Get cluster column based on selected clustering method
@@ -2961,6 +3145,17 @@ def prepare_llm_prompt(region_id, n_papers, n_gap_papers, custom_question=None, 
         top_B_local = np.argsort(dists_B)[:n_papers]
         top_B_idx = idx_B[top_B_local]
         
+        # Cluster C papers (optional)
+        top_C_idx = None
+        if cluster_C is not None:
+            idx_C = np.where(st.session_state.df_valid[cluster_col] == cluster_C)[0]
+            if len(idx_C) > 0:
+                X_C = X_primary[idx_C]
+                centroid_C = X_C.mean(axis=0, keepdims=True)
+                dists_C = pairwise.cosine_distances(X_C, centroid_C).ravel()
+                top_C_local = np.argsort(dists_C)[:n_papers]
+                top_C_idx = idx_C[top_C_local]
+        
         # Build evidence pack
         evidence_pack = []
         for idx in top_A_idx:
@@ -2987,9 +3182,23 @@ def prepare_llm_prompt(region_id, n_papers, n_gap_papers, custom_question=None, 
                 "cluster": "B"
             })
         
+        # Cluster C papers (if provided)
+        if top_C_idx is not None:
+            for idx in top_C_idx:
+                row = st.session_state.df_valid.iloc[idx]
+                paper_id = row.get('pmid', row.get('id', row.get('paper_id', row.get('doi', idx))))
+                evidence_pack.append({
+                    "doc_id": f"C_{paper_id}",
+                    "paper_id": str(paper_id),
+                    "title": str(row.get('title', '')),
+                    "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
+                    "abstract": str(row.get('abstract', row.get('processed_content', '')))[:500],
+                    "cluster": "C"
+                })
+        
         # Gap region papers - top N papers sorted by gap_score (highest first)
         region_df_sorted = region_df.sort_values('gap_score', ascending=False) if 'gap_score' in region_df.columns else region_df
-        n_gap_to_include = min(n_gap_papers, len(region_df_sorted))
+        n_gap_to_include = len(region_df_sorted) if use_all_gap_papers else min(n_gap_papers, len(region_df_sorted))
         
         for i, (idx, row) in enumerate(region_df_sorted.iterrows()):
             if i >= n_gap_to_include:
@@ -3009,8 +3218,8 @@ def prepare_llm_prompt(region_id, n_papers, n_gap_papers, custom_question=None, 
         
         # Build system prompt
         system_prompt = """You are a nanomedicine domain expert. Only use the EVIDENCE PACK provided.
-Never invent facts or cite outside sources. If evidence is insufficient for any claim,
-state 'unknown'. Cite by doc_id for every claim. Output exactly the JSON schema."""
+            Never invent facts or cite outside sources. If evidence is insufficient for any claim,
+            state 'unknown'. Cite by doc_id for every claim. Output exactly the JSON schema."""
         
         # Build additional guidance sections
         custom_question_section = ""
@@ -3035,7 +3244,7 @@ When identifying bridge opportunities, pay special attention to these keywords a
 Consider how these keywords might relate to potential connections between the two clusters.
 """
         
-        # Build output schema with optional custom question field
+        # Build output schema with optional cluster C and custom question fields
         output_schema = """{
 "cluster_A_summary": {
     "one_line": "string",
@@ -3048,20 +3257,48 @@ Consider how these keywords might relate to potential connections between the tw
     "bullets": ["string"],
     "salient_entities": {"materials":[], "ligands":[], "diseases":[], "delivery":[], "models":[]},
     "citations": ["doc_id"]
-},
-"axes_of_separation": [{
-    "axis": "materials|ligands|disease|model|delivery|toxicity|methods|other",
-    "what_differs": "short explanation (evidence-grounded)",
-    "evidence_A": ["doc_id"],
-    "evidence_B": ["doc_id"],
-    "confidence": 0.0-1.0
-}],
-"bridge_seeds": [{
-    "idea": "short description of a possible bridge",
-    "why_plausible": "mechanistic rationale, grounded in docs",
-    "support": ["doc_id"],
-    "risks": ["toxicity","aggregation","RES","immunogenicity","scaleup","IP","assay_limitations"]
-}],"""
+},"""
+        
+        if cluster_C is not None:
+            output_schema += """
+"cluster_C_summary": {
+    "one_line": "string",
+    "bullets": ["string"],
+    "salient_entities": {"materials":[], "ligands":[], "diseases":[], "delivery":[], "models":[]},
+    "citations": ["doc_id"]
+},"""
+        if cluster_C is not None:
+                output_schema += """
+    "axes_of_separation": [{
+        "axis": "materials|ligands|disease|model|delivery|toxicity|methods|other",
+        "what_differs": "short explanation (evidence-grounded)",
+        "evidence_A": ["doc_id"],
+        "evidence_B": ["doc_id"],
+        "evidence_C": ["doc_id"],
+        "confidence": 0.0-1.0
+    }],
+    "bridge_seeds": [{
+        "idea": "short description of a possible bridge",
+        "why_plausible": "mechanistic rationale, grounded in docs",
+        "support": ["doc_id"],
+        "risks": ["toxicity","aggregation","RES","immunogenicity","scaleup","IP","assay_limitations"]
+    }],"""
+
+        else:    
+            output_schema += """
+    "axes_of_separation": [{
+        "axis": "materials|ligands|disease|model|delivery|toxicity|methods|other",
+        "what_differs": "short explanation (evidence-grounded)",
+        "evidence_A": ["doc_id"],
+        "evidence_B": ["doc_id"],
+        "confidence": 0.0-1.0
+    }],
+    "bridge_seeds": [{
+        "idea": "short description of a possible bridge",
+        "why_plausible": "mechanistic rationale, grounded in docs",
+        "support": ["doc_id"],
+        "risks": ["toxicity","aggregation","RES","immunogenicity","scaleup","IP","assay_limitations"]
+    }],"""
         
         if custom_question:
             output_schema += """
@@ -3076,7 +3313,9 @@ Consider how these keywords might relate to potential connections between the tw
 "insufficient_evidence": false
 }"""
         
-        user_prompt = f"""TASK: Contrast Cluster A vs Cluster B to explain why they are separated in embedding space.
+        # Build task description based on number of clusters
+        if cluster_C is not None:
+            task_desc = f"""TASK: Contrast Cluster A vs Cluster B vs Cluster C to explain why they are separated in embedding space.
 Focus on: materials, surface chemistry/coatings, size/shape, targeting ligands, disease areas,
 models (in vitro/in vivo/clinical), delivery routes, pharmacokinetics/biodistribution,
 toxicity/regulatory language, endpoints/outcomes.
@@ -3084,17 +3323,39 @@ toxicity/regulatory language, endpoints/outcomes.
 CONTEXT:
 - cluster_A_meta: {{"id": {cluster_A}, "n_docs": {cluster_counts[cluster_A]}}}
 - cluster_B_meta: {{"id": {cluster_B}, "n_docs": {cluster_counts[cluster_B]}}}
-- Gap region {region_id}: {len(region_indices)} total papers with low density (potential research opportunities)
+- cluster_C_meta: {{"id": {cluster_C}, "n_docs": {cluster_counts[cluster_C]}}}
+- {region_label}: {len(region_indices)} total papers with low density (potential research opportunities)
 
 The gap papers are included in the evidence pack below. Use them to understand what research lies
-between the two clusters and identify bridge opportunities.
+between the clusters and identify bridge opportunities."""
+            evidence_desc = f"""EVIDENCE PACK (JSONL; each line is one doc):
+- Papers with cluster="A": Top {n_papers} representative papers from Cluster A (closest to centroid)
+- Papers with cluster="B": Top {n_papers} representative papers from Cluster B (closest to centroid)
+- Papers with cluster="C": Top {n_papers} representative papers from Cluster C (closest to centroid)
+- Papers with cluster="GAP": Top {n_gap_to_include} gap papers from {region_label} (sorted by gap_score, highest first)"""
+        else:
+            task_desc = f"""TASK: Contrast Cluster A vs Cluster B to explain why they are separated in embedding space.
+Focus on: materials, surface chemistry/coatings, size/shape, targeting ligands, disease areas,
+models (in vitro/in vivo/clinical), delivery routes, pharmacokinetics/biodistribution,
+toxicity/regulatory language, endpoints/outcomes.
+
+CONTEXT:
+- cluster_A_meta: {{"id": {cluster_A}, "n_docs": {cluster_counts[cluster_A]}}}
+- cluster_B_meta: {{"id": {cluster_B}, "n_docs": {cluster_counts[cluster_B]}}}
+- {region_label}: {len(region_indices)} total papers with low density (potential research opportunities)
+
+The gap papers are included in the evidence pack below. Use them to understand what research lies
+between the two clusters and identify bridge opportunities."""
+            evidence_desc = f"""EVIDENCE PACK (JSONL; each line is one doc):
+- Papers with cluster="A": Top {n_papers} representative papers from Cluster A (closest to centroid)
+- Papers with cluster="B": Top {n_papers} representative papers from Cluster B (closest to centroid)
+- Papers with cluster="GAP": Top {n_gap_to_include} gap papers from {region_label} (sorted by gap_score, highest first)"""
+        
+        user_prompt = f"""{task_desc}
 
 {custom_question_section}{keywords_guidance_section}
 
-EVIDENCE PACK (JSONL; each line is one doc):
-- Papers with cluster="A": Top {n_papers} representative papers from Cluster A (closest to centroid)
-- Papers with cluster="B": Top {n_papers} representative papers from Cluster B (closest to centroid)
-- Papers with cluster="GAP": Top {n_gap_to_include} gap papers from Region {region_id} (sorted by gap_score, highest first)
+{evidence_desc}
 
 ```jsonl
 {chr(10).join(json.dumps(d, ensure_ascii=False) for d in evidence_pack)}
@@ -3111,6 +3372,7 @@ OUTPUT JSON SCHEMA:
             'region_id': region_id,
             'cluster_A': cluster_A,
             'cluster_B': cluster_B,
+            'cluster_C': cluster_C,
             'region_size': len(region_indices)
         }
         
@@ -3126,7 +3388,7 @@ OUTPUT JSON SCHEMA:
         st.code(traceback.format_exc())
 
 
-def send_llm_prompt(api_key, model, system_prompt, user_prompt, region_id, cluster_A, cluster_B, region_size):
+def send_llm_prompt(api_key, model, system_prompt, user_prompt, region_id, cluster_A, cluster_B, cluster_C, region_size):
     """Send the edited prompts to LLM and get results"""
     try:
         with st.spinner(f"🤖 Sending prompt to {model}..."):
@@ -3148,6 +3410,7 @@ def send_llm_prompt(api_key, model, system_prompt, user_prompt, region_id, clust
                 'region_id': region_id,
                 'cluster_A': cluster_A,
                 'cluster_B': cluster_B,
+                'cluster_C': cluster_C,
                 'region_size': region_size,
                 'model': model,
                 'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -3169,8 +3432,8 @@ def send_llm_prompt(api_key, model, system_prompt, user_prompt, region_id, clust
         st.code(traceback.format_exc())
 
 
-def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, show_viz, show_prompt_editor, custom_question=None, guidance_keywords=None, cluster_A=None, cluster_B=None):
-    """Generate evidence-grounded LLM explanation using gap region as context and contrasting any two clusters"""
+def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, show_viz, show_prompt_editor, custom_question=None, guidance_keywords=None, cluster_A=None, cluster_B=None, cluster_C=None):
+    """Generate evidence-grounded LLM explanation using gap region as context and contrasting two or three clusters"""
     gap_regions = st.session_state.gap_regions
     region_indices = gap_regions[region_id]
     region_df = st.session_state.df_valid.loc[region_indices]
@@ -3187,7 +3450,10 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
         return
     
     st.markdown(f"### 🔍 Analyzing Gap Region {region_id}")
-    st.markdown(f"**Contrasting**: Cluster {cluster_A} vs Cluster {cluster_B}")
+    cluster_comparison = f"Cluster {cluster_A} vs Cluster {cluster_B}"
+    if cluster_C is not None:
+        cluster_comparison += f" vs Cluster {cluster_C}"
+    st.markdown(f"**Contrasting**: {cluster_comparison}")
     st.markdown(f"**Evidence Source**: Gap Region {region_id} ({len(region_indices)} papers)")
     
     # Visualization of clusters and gap region
@@ -3208,7 +3474,7 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
             cluster_mask = df_plot[cluster_col] == cluster_id
             cluster_data = df_plot[cluster_mask]
             
-            # Highlight the two clusters being compared
+            # Highlight the clusters being compared
             if cluster_id == cluster_A:
                 color = 'blue'
                 size = 10
@@ -3219,6 +3485,11 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
                 size = 10
                 opacity = 0.6
                 name = f'Cluster {cluster_id} (B)'
+            elif cluster_C is not None and cluster_id == cluster_C:
+                color = 'purple'
+                size = 10
+                opacity = 0.6
+                name = f'Cluster {cluster_id} (C)'
             else:
                 color = 'lightgray'
                 size = 5
@@ -3266,8 +3537,12 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
             showlegend=True
         ))
         
+        viz_title = f'Gap Region {region_id} between Cluster {cluster_A} and {cluster_B}'
+        if cluster_C is not None:
+            viz_title = f'Gap Region {region_id} among Clusters {cluster_A}, {cluster_B}, and {cluster_C}'
+        
         fig.update_layout(
-            title=f'Gap Region {region_id} between Cluster {cluster_A} and {cluster_B}',
+            title=viz_title,
             xaxis_title='UMAP 1',
             yaxis_title='UMAP 2',
             height=500,
@@ -3301,6 +3576,17 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
             top_B_local = np.argsort(dists_B)[:n_papers]
             top_B_idx = idx_B[top_B_local]
             
+            # Cluster C papers (optional)
+            top_C_idx = None
+            if cluster_C is not None:
+                idx_C = np.where(st.session_state.df_valid[cluster_col] == cluster_C)[0]
+                if len(idx_C) > 0:
+                    X_C = X_primary[idx_C]
+                    centroid_C = X_C.mean(axis=0, keepdims=True)
+                    dists_C = pairwise.cosine_distances(X_C, centroid_C).ravel()
+                    top_C_local = np.argsort(dists_C)[:n_papers]
+                    top_C_idx = idx_C[top_C_local]
+            
             # Build evidence pack
             evidence_pack = []
             for idx in top_A_idx:
@@ -3328,6 +3614,20 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
                     "abstract": str(row.get('abstract', row.get('processed_content', '')))[:500],
                     "cluster": "B"
                 })
+            
+            # Cluster C papers (if provided)
+            if top_C_idx is not None:
+                for idx in top_C_idx:
+                    row = st.session_state.df_valid.iloc[idx]
+                    paper_id = row.get('pmid', row.get('id', row.get('paper_id', row.get('doi', idx))))
+                    evidence_pack.append({
+                        "doc_id": f"C_{paper_id}",
+                        "paper_id": str(paper_id),
+                        "title": str(row.get('title', '')),
+                        "year": int(row.get('publication_year', -1)) if pd.notna(row.get('publication_year')) else -1,
+                        "abstract": str(row.get('abstract', row.get('processed_content', '')))[:500],
+                        "cluster": "C"
+                    })
             
             # Gap region papers - top N papers sorted by gap_score (highest first)
             region_df = st.session_state.df_valid.loc[region_indices].copy()
@@ -3382,7 +3682,7 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
             Consider how these keywords might relate to potential connections between the two clusters.
             """
             
-            # Build output schema with optional custom question field
+            # Build output schema with optional custom question and cluster C fields
             output_schema = """{
             "cluster_A_summary": {
                 "one_line": "string",
@@ -3395,7 +3695,18 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
                 "bullets": ["string"],
                 "salient_entities": {"materials":[], "ligands":[], "diseases":[], "delivery":[], "models":[]},
                 "citations": ["doc_id"]
-            },
+            },"""
+            
+            if cluster_C is not None:
+                output_schema += """
+            "cluster_C_summary": {
+                "one_line": "string",
+                "bullets": ["string"],
+                "salient_entities": {"materials":[], "ligands":[], "diseases":[], "delivery":[], "models":[]},
+                "citations": ["doc_id"]
+            },"""
+            
+            output_schema += """
             "axes_of_separation": [{
                 "axis": "materials|ligands|disease|model|delivery|toxicity|methods|other",
                 "what_differs": "short explanation (evidence-grounded)",
@@ -3423,7 +3734,29 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
             "insufficient_evidence": false
             }"""
             
-            user_prompt = f"""TASK: Contrast Cluster A vs Cluster B to explain why they are separated in embedding space.
+            # Build task description based on number of clusters
+            if cluster_C is not None:
+                task_desc = f"""TASK: Contrast Cluster A vs Cluster B vs Cluster C to explain why they are separated in embedding space.
+            Focus on: materials, surface chemistry/coatings, size/shape, targeting ligands, disease areas,
+            models (in vitro/in vivo/clinical), delivery routes, pharmacokinetics/biodistribution,
+            toxicity/regulatory language, endpoints/outcomes.
+
+            CONTEXT:
+            - cluster_A_meta: {{"id": {cluster_A}, "n_docs": {cluster_counts[cluster_A]}}}
+            - cluster_B_meta: {{"id": {cluster_B}, "n_docs": {cluster_counts[cluster_B]}}}
+            - cluster_C_meta: {{"id": {cluster_C}, "n_docs": {cluster_counts[cluster_C]}}}
+            - Gap region {region_id}: {len(region_indices)} total papers with low density (potential research opportunities)
+            
+            The gap papers are included in the evidence pack below. Use them to understand what research lies
+            among the clusters and identify bridge opportunities."""
+                
+                evidence_desc = f"""EVIDENCE PACK (JSONL; each line is one doc):
+            - Papers with cluster="A": Top {n_papers} representative papers from Cluster A (closest to centroid)
+            - Papers with cluster="B": Top {n_papers} representative papers from Cluster B (closest to centroid)
+            - Papers with cluster="C": Top {n_papers} representative papers from Cluster C (closest to centroid)
+            - Papers with cluster="GAP": Top {n_gap_to_include} gap papers from Region {region_id} (sorted by gap_score, highest first)"""
+            else:
+                task_desc = f"""TASK: Contrast Cluster A vs Cluster B to explain why they are separated in embedding space.
             Focus on: materials, surface chemistry/coatings, size/shape, targeting ligands, disease areas,
             models (in vitro/in vivo/clinical), delivery routes, pharmacokinetics/biodistribution,
             toxicity/regulatory language, endpoints/outcomes.
@@ -3434,14 +3767,18 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
             - Gap region {region_id}: {len(region_indices)} total papers with low density (potential research opportunities)
             
             The gap papers are included in the evidence pack below. Use them to understand what research lies
-            between the two clusters and identify bridge opportunities.
+            between the two clusters and identify bridge opportunities."""
+                
+                evidence_desc = f"""EVIDENCE PACK (JSONL; each line is one doc):
+            - Papers with cluster="A": Top {n_papers} representative papers from Cluster A (closest to centroid)
+            - Papers with cluster="B": Top {n_papers} representative papers from Cluster B (closest to centroid)
+            - Papers with cluster="GAP": Top {n_gap_to_include} gap papers from Region {region_id} (sorted by gap_score, highest first)"""
+            
+            user_prompt = f"""{task_desc}
             
             {custom_question_section}{keywords_guidance_section}
 
-            EVIDENCE PACK (JSONL; each line is one doc):
-            - Papers with cluster="A": Top {n_papers} representative papers from Cluster A (closest to centroid)
-            - Papers with cluster="B": Top {n_papers} representative papers from Cluster B (closest to centroid)
-            - Papers with cluster="GAP": Top {n_gap_to_include} gap papers from Region {region_id} (sorted by gap_score, highest first)
+            {evidence_desc}
             
             ```jsonl
             {chr(10).join(json.dumps(d, ensure_ascii=False) for d in evidence_pack)}
@@ -3526,6 +3863,7 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
                 'region_id': region_id,
                 'cluster_A': cluster_A,
                 'cluster_B': cluster_B,
+                'cluster_C': cluster_C,
                 'region_size': len(region_indices),
                 'model': model,
                 'timestamp': pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -3540,16 +3878,21 @@ def generate_llm_explanation(region_id, api_key, model, n_papers, n_gap_papers, 
             st.code(traceback.format_exc())
 
 
-def display_llm_results(result, region_id, cluster_A, cluster_B, region_size):
+def display_llm_results(result, region_id, cluster_A, cluster_B, cluster_C, region_size):
     """Display LLM analysis results in a structured format"""
     st.success("✅ Analysis complete!")
     
     st.markdown("---")
     st.markdown(f"### 📋 Contrastive Analysis Results")
-    st.markdown(f"**Region {region_id}** | Size: {region_size} papers | Comparing Cluster {cluster_A} vs {cluster_B}")
+    cluster_comparison = f"Cluster {cluster_A} vs {cluster_B}"
+    if cluster_C is not None:
+        cluster_comparison += f" vs {cluster_C}"
+    st.markdown(f"**Region {region_id}** | Size: {region_size} papers | Comparing {cluster_comparison}")
     
     # Cluster summaries side-by-side
-    col1, col2 = st.columns(2)
+    num_cols = 3 if cluster_C is not None else 2
+    cols = st.columns(num_cols)
+    col1, col2 = cols[0], cols[1]
     
     with col1:
         st.markdown(f"#### 🔵 Cluster {cluster_A} Summary")
@@ -3592,6 +3935,29 @@ def display_llm_results(result, region_id, cluster_A, cluster_B, region_size):
             
             if 'citations' in summary_B and summary_B['citations']:
                 st.caption(f"Based on: {', '.join(summary_B['citations'][:5])}")
+    
+    # Cluster C summary (if present)
+    if cluster_C is not None and 'cluster_C_summary' in result:
+        col3 = cols[2]
+        with col3:
+            st.markdown(f"#### 🟣 Cluster {cluster_C} Summary")
+            summary_C = result['cluster_C_summary']
+            st.markdown(f"**{summary_C.get('one_line', 'N/A')}**")
+            
+            if 'bullets' in summary_C and summary_C['bullets']:
+                st.markdown("**Key characteristics:**")
+                for bullet in summary_C['bullets'][:5]:
+                    st.write(f"• {bullet}")
+            
+            if 'salient_entities' in summary_C:
+                entities = summary_C['salient_entities']
+                with st.expander("📌 Salient Entities", expanded=False):
+                    for entity_type, items in entities.items():
+                        if items:
+                            st.write(f"**{entity_type.title()}:** {', '.join(items[:7])}")
+            
+            if 'citations' in summary_C and summary_C['citations']:
+                st.caption(f"Based on: {', '.join(summary_C['citations'][:5])}")
     
     # Custom question answer (if provided)
     if 'custom_question_answer' in result:
