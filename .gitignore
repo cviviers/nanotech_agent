@@ -4,6 +4,7 @@
 *.zip
 *.pptx
 *.npy
+*.csv
 
 old/*
 lda_visualizations/*
