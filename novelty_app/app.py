@@ -20,7 +20,6 @@ from novelty_analysis_app import *
 # Import our new modular components
 try:
     from core import init_session_state, save_state_for_undo, undo_last_action
-    print("✅ Using modular core functions")
 except ImportError:
     print("⚠️  Using legacy core functions")
     pass
