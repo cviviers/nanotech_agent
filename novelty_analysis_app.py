@@ -614,7 +614,8 @@ def save_state_for_undo(action_name: str):
         'kmeans_applied': st.session_state.kmeans_applied,
         'similarity_applied': st.session_state.similarity_applied,
         'G': st.session_state.G,  # Graph is immutable, can reference directly
-        'clustering_done': st.session_state.clustering_done
+        'clustering_done': st.session_state.clustering_done,
+        'selected_clustering': st.session_state.selected_clustering
     }
     st.session_state.undo_history.append(state_snapshot)
     
@@ -640,6 +641,7 @@ def undo_last_action():
     st.session_state.similarity_applied = snapshot['similarity_applied']
     st.session_state.G = snapshot.get('G', None)
     st.session_state.clustering_done = snapshot.get('clustering_done', False)
+    st.session_state.selected_clustering = snapshot.get('selected_clustering', None)
     
     # Update UMAP coordinates in dataframe if available
     if st.session_state.df_valid is not None and st.session_state.X_umap_2d is not None:
@@ -1974,6 +1976,7 @@ def page_clustering():
             st.success("✅ K-means selected for gap analysis")
         else:
             if st.button("✔️ Use K-means for Gap Analysis", type="primary"):
+                save_state_for_undo("K-means Clustering Selection")
                 st.session_state.selected_clustering = 'kmeans'
                 st.session_state.df_valid['cluster_selected'] = st.session_state.df_valid['cluster_kmeans']
                 st.success("✅ K-means clustering selected!")
@@ -2058,6 +2061,7 @@ def page_clustering():
             st.success("✅ HDBSCAN selected for gap analysis")
         else:
             if st.button("✔️ Use HDBSCAN for Gap Analysis", type="primary"):
+                save_state_for_undo("HDBSCAN Clustering Selection")
                 st.session_state.selected_clustering = 'hdbscan'
                 st.session_state.df_valid['cluster_selected'] = st.session_state.df_valid['cluster_hdbscan']
                 st.success("✅ HDBSCAN clustering selected!")
@@ -2333,6 +2337,7 @@ def page_clustering():
             st.success("✅ Community Detection selected for gap analysis")
         else:
             if st.button("✔️ Use Community Detection for Gap Analysis", type="primary"):
+                save_state_for_undo("Community Detection Clustering Selection")
                 st.session_state.selected_clustering = 'leiden'
                 st.session_state.df_valid['cluster_selected'] = st.session_state.df_valid['cluster_leiden']
                 st.success("✅ Community Detection clustering selected!")
