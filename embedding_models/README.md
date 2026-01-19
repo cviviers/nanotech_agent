@@ -86,7 +86,7 @@ export QWEN_RERANKER_MODEL="Qwen/Qwen3-Reranker-0.6B"
 ## 5. Running the server
 From the project root:
 ```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn qwen:app  --port 8000 --reload
 ```
 
 You can then browse the interactive docs at:
@@ -100,7 +100,7 @@ You can then browse the interactive docs at:
 GET /
 
 Returns basic metadata:
-```bash
+```json
 {
   "service": "qwen3-embedding-reranker-api",
   "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
@@ -109,3 +109,139 @@ Returns basic metadata:
   "embedding_dim": 1024
 }
 ```
+
+### 6.1 Embeddings
+
+POST /embed
+
+Compute embeddings for a list of texts, optionally with an instruction (instruction-aware usage, as recommended by Qwen)
+```json
+{
+  "texts": [
+    "What is the capital of China?",
+    "Explain gravity"
+  ],
+  "instruction": "Given a web search query, retrieve relevant passages that answer the query",
+  "normalize": true
+}
+```
+* texts (List[str]): Texts to embed.
+
+* instruction (str, optional): A one-sentence instruction describing the task.
+
+      * If provided, the service will wrap each text as:
+
+* Instruct: <instruction>\n Query:<text>
+
+* mirroring the official Qwen3-Embedding pattern.
+
+* normalize (bool, default true): If true, embeddings are L2-normalized.
+
+Response
+```json
+{
+  "embeddings": [
+    [0.0123, -0.0456, ...],
+    [-0.0222, 0.0011, ...]
+  ],
+  "dimension": 1024,
+  "model": "Qwen/Qwen3-Embedding-0.6B",
+  "normalize": true
+}
+```
+```bash
+curl -X POST "http://localhost:8000/embed" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "texts": [
+      "What is the capital of China?",
+      "Explain gravity"
+    ],
+    "instruction": "Given a web search query, retrieve relevant passages that answer the query",
+    "normalize": true
+  }'
+  ```
+Example Python client
+```python
+import requests
+
+payload = {
+    "texts": [
+        "What is the capital of China?",
+        "Explain gravity",
+    ],
+    "instruction": "Given a web search query, retrieve relevant passages that answer the query",
+    "normalize": True,
+}
+
+resp = requests.post("http://localhost:8000/embed", json=payload)
+resp.raise_for_status()
+data = resp.json()
+
+print("Embedding dimension:", data["dimension"])
+print("First vector length:", len(data["embeddings"][0]))
+```
+
+### 6.2 Reranking
+
+POST /rank
+
+Use Qwen3-Reranker-0.6B to score each document for a given query, following the official reranker usage. You can optionally also get embedding-based similarity scores from the embedding model for comparison.
+
+Request body
+
+```json
+{
+  "query": "What is the capital of China?",
+  "documents": [
+    "The capital of China is Beijing.",
+    "The capital of France is Paris."
+  ],
+  "instruction": "Given a web search query, retrieve relevant passages that answer the query",
+  "top_k": 2,
+  "return_embedding_similarity": true,
+  "normalize_embeddings": true
+}
+
+```
+
+* query: User query string.
+
+* documents: List of candidate documents to rank.
+
+* instruction (optional): Task description; if omitted, a default web-search-style instruction is used.
+
+* top_k (optional): If set, only the top-k highest-scoring documents are returned.
+
+* return_embedding_similarity: If true, the service also returns cosine similarities between the query embedding and each document embedding.
+
+* normalize_embeddings: Whether to normalize embeddings before similarity.
+
+```python
+import requests
+
+payload = {
+    "query": "What is the capital of China?",
+    "documents": [
+        "The capital of China is Beijing.",
+        "The capital of France is Paris."
+    ],
+    "instruction": "Given a web search query, retrieve relevant passages that answer the query",
+    "top_k": 2,
+    "return_embedding_similarity": True,
+    "normalize_embeddings": True
+}
+
+resp = requests.post("http://localhost:8000/rank", json=payload)
+resp.raise_for_status()
+data = resp.json()
+
+for r in data["results"]:
+    print(f"Doc: {r['document']}")
+    print(f"  Reranker score:  {r['reranker_score']:.4f}")
+    if r.get("embedding_score") is not None:
+        print(f"  Embedding score: {r['embedding_score']:.4f}")
+
+```
+
+### 6.1 Similarity (Embedding-based)
