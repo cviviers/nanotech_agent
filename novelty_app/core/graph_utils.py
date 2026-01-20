@@ -126,7 +126,7 @@ def explore_cluster(df: pd.DataFrame, cluster_column: str, cluster_id: int):
         with col2:
             llm_model = st.selectbox(
                 "Model",
-                ["gpt-4o-mini", "gpt-4o", "gpt-4o-nano"],
+                ["gpt-5-mini-2025-08-07", "gpt-5-nano-2025-08-07", "gpt-5.2-2025-12-11"],
                 index=0,
                 key=f"llm_model_{cluster_column}_{cluster_id}"
             )
