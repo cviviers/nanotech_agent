@@ -10,6 +10,7 @@ import networkx as nx
 
 from core.graph_utils import build_knn_graph
 from core.density_utils import compute_density_features
+from ui.export_utils import display_figure_with_export
 
 
 def page_gap_analysis():
@@ -176,7 +177,7 @@ def page_gap_analysis():
         ))
         
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "density_graph", key="export_density_graph")
         
         # Graph statistics
         col1, col2, col3, col4 = st.columns(4)
@@ -231,7 +232,7 @@ def page_gap_analysis():
         fig.add_vline(x=gap_threshold, line_dash="dash", line_color="red", 
                      annotation_text=f"Threshold ({gap_config['gap_quantile']:.0%})")
         fig.update_layout(title="Distribution of Gap Scores", xaxis_title="Gap Score", yaxis_title="Frequency")
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "gap_scores_histogram", key="export_gap_histogram")
     
     with col2:
         # Scatter plot
@@ -251,7 +252,7 @@ def page_gap_analysis():
         )
         fig.update_traces(marker=dict(size=6))
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "gap_scores_scatter", key="export_gap_scatter")
     
     # Binary gap view
     st.subheader("🎯 Gap Candidates")
@@ -275,4 +276,4 @@ def page_gap_analysis():
     fig.update_traces(marker=dict(size=8), selector=dict(name='True'))
     fig.update_traces(marker=dict(size=4), selector=dict(name='False'))
     fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-    st.plotly_chart(fig, use_container_width=True)
+    display_figure_with_export(fig, "gap_candidates", key="export_gap_candidates")

@@ -14,6 +14,7 @@ from sklearn.cluster import KMeans
 
 from core.state_management import save_state_for_undo, undo_last_action
 from core.graph_utils import build_knn_graph, explore_cluster
+from ui.export_utils import display_figure_with_export
 
 # Check for optional community detection libraries
 try:
@@ -125,7 +126,7 @@ def page_clustering():
         )
         fig.update_traces(marker=dict(size=6))
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "kmeans_clustering", key="export_kmeans_clustering")
         
         # Cluster exploration
         with st.expander("🔍 Explore Clusters", expanded=False):
@@ -206,7 +207,7 @@ def page_clustering():
         )
         fig.update_traces(marker=dict(size=6))
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "hdbscan_clustering", key="export_hdbscan")
         
         # Cluster exploration
         with st.expander("🔍 Explore Clusters", expanded=False):
@@ -348,7 +349,7 @@ def page_clustering():
             ))
             
             fig_graph.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-            st.plotly_chart(fig_graph, use_container_width=True)
+            display_figure_with_export(fig_graph, "knn_graph", key="export_knn_graph")
             
             # Graph statistics
             subcol1, subcol2 = st.columns(2)
@@ -379,7 +380,7 @@ def page_clustering():
             )
             fig.update_traces(marker=dict(size=6))
             fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-            st.plotly_chart(fig, use_container_width=True)
+            display_figure_with_export(fig, "community_detection", key="export_community")
             
             # Community size distribution
             unique, counts = np.unique(labels, return_counts=True)

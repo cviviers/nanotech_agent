@@ -16,6 +16,7 @@ altair>=5.0.0
 matplotlib>=3.7.0
 seaborn>=0.12.0
 plotly>=6.5.0
+kaleido>=1.2.0
 # Data export
 openpyxl>=3.1.0
 
@@ -23,8 +24,17 @@ openpyxl>=3.1.0
 numba>=0.57.0  # Speeds up UMAP
 pynndescent>=0.5.10  # Faster nearest neighbors for UMAP
 
+# Embedding models
+fastapi
+uvicorn[standard]
+torch
+transformers>=4.51.0
+
 # Optional: For LDA (if you want to keep that functionality)
 # gensim>=4.3.0
 # pyLDAvis>=3.4.0
 networkx
+
+
+# Optional: For LLM integration
 openai

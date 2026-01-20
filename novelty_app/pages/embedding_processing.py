@@ -5,6 +5,7 @@ import streamlit as st
 import plotly.express as px
 import umap
 from sklearn.decomposition import PCA
+from ui.export_utils import display_figure_with_export
 
 
 def page_embedding_processing():
@@ -105,4 +106,4 @@ def page_embedding_processing():
         )
         fig.update_traces(marker=dict(size=5))
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "umap_2d_projection", key="export_umap_embedding")

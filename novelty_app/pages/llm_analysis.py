@@ -10,6 +10,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.metrics import pairwise
 
+from ui.export_utils import display_figure_with_export
+
 # Check for OpenAI
 try:
     from openai import OpenAI
@@ -185,7 +187,7 @@ def page_llm_analysis():
                 hoverlabel=dict(bgcolor="white", font_size=12, font_family="Arial")
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            display_figure_with_export(fig, "llm_gap_clusters", key="export_llm_clusters")
             st.caption("💡 Select two clusters from the legend above to contrast in the analysis")
     
     # Get all available clusters from the selected clustering method

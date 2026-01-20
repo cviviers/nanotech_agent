@@ -9,6 +9,14 @@ from sklearn.cluster import KMeans
 
 from core.state_management import save_state_for_undo
 from core.constants import MATERIAL_HINTS, LIGAND_HINTS, DISEASE_HINTS, DELIVERY_HINTS, MODEL_HINTS
+from ui.export_utils import display_figure_with_export
+
+
+def to_native(obj):
+    """Convert narwhals-wrapped objects to native pandas."""
+    if hasattr(obj, 'to_native'):
+        return obj.to_native()
+    return obj
 
 
 def page_filters():
@@ -42,7 +50,7 @@ def page_filters():
         unique_clusters = sorted(np.unique(cluster_labels))
         
         # Show cluster distribution
-        cluster_counts = pd.Series(cluster_labels).value_counts().sort_index()
+        cluster_counts = to_native(pd.Series(cluster_labels).value_counts().sort_index())
         
         col1, col2 = st.columns([3, 2])
         with col1:
@@ -74,7 +82,7 @@ def page_filters():
         )
         fig.update_traces(marker=dict(size=6))
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "kmeans_clusters", key="export_kmeans")
         
         with st.expander("📊 Cluster Distribution"):
             st.bar_chart(cluster_counts.to_dict())
@@ -136,7 +144,7 @@ def page_filters():
             )
             fig.update_traces(marker=dict(size=6))
             fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-            st.plotly_chart(fig, use_container_width=True)
+            display_figure_with_export(fig, "semantic_similarity", key="export_similarity")
             
             # Show top matches
             with st.expander("📄 Top 10 Most Similar Papers"):

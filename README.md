@@ -97,7 +97,7 @@ This repository implements an end-to-end pipeline for discovering research gaps 
    pip install -r requirements.txt
    ```
 
-4. **Set up OpenAI API key** (optional, for LLM features)
+4. **Set up OpenAI API key** (optional, for LLM features & also available in the app) 
    ```bash
    # Windows PowerShell
    $env:OPENAI_API_KEY="your-api-key-here"
@@ -107,15 +107,43 @@ This repository implements an end-to-end pipeline for discovering research gaps 
 
 ### Quick Start
 
-**Run the Novelty Analysis App:**
-```bash
-streamlit run novelty_analysis_app.py
-```
+**Download Sample Data:**
 
-Or use the refactored modular version:
+We provide a preprocessed sample dataset for quick testing:
+
+1. **Download the sample dataset** (recommended for first-time users):
+   - [Sample Dataset (all_papers.json + embeddings)](https://drive.google.com/file/d/17s2DqYdRrUP3nuxPViFs5KFChtYc-xMJ/view?usp=sharing)
+   - Extract the ZIP file to your project root directory
+   - The ZIP contains:
+     - `data/all_papers.json` - Preprocessed papers with metadata
+     - `data/bert_embeddings.npy` - BERT embeddings
+     - `data/bert_embeddings_metadata.json` - BERT metadata
+     - `data/qwen_embeddings.npy` - Qwen embeddings
+     - `data/qwen_embeddings_metadata.json` - Qwen metadata
+
+2. **Optional: Download raw papers** (for full pipeline exploration):
+   - [Raw Papers (individual JSON files)](https://drive.google.com/file/d/1MP64I2MEPuNb5agwrJADemYer-ibAcfy/view?usp=sharing)
+   - Extract to `papers/` directory in project root
+
+**Run the Novelty Analysis App:**
 ```bash
 streamlit run novelty_app/app.py
 ```
+**Run the Embeddings Models:**
+In two separate terminals
+
+```bash
+cd embedding_models
+
+uvicorn qwen:app --host 0.0.0.0 --port 8000
+```
+
+```bash
+cd embedding_models
+
+uvicorn bert:app --host 0.0.0.0 --port 8001
+```
+
 
 ## 📊 Data Pipeline
 

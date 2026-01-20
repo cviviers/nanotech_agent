@@ -4,6 +4,9 @@ Main entry point for the refactored Novelty Analysis App
 Usage:
     streamlit run novelty_app/app.py
 """
+import warnings
+warnings.filterwarnings("ignore", message=".*narwhals.*", category=UserWarning)
+
 import streamlit as st
 
 # Import core utilities

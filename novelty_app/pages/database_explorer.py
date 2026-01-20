@@ -7,6 +7,14 @@ import streamlit as st
 import plotly.express as px
 
 from core.state_management import save_state_for_undo
+from ui.export_utils import display_figure_with_export
+
+
+def to_native(obj):
+    """Convert narwhals-wrapped objects to native pandas."""
+    if hasattr(obj, 'to_native'):
+        return obj.to_native()
+    return obj
 
 
 def page_database_explorer():
@@ -291,12 +299,12 @@ def page_database_explorer():
                     nbins=50,
                     title=f"Distribution of {col}"
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                display_figure_with_export(fig, f"distribution_{col}", key=f"export_dist_{col}")
             
             # Categorical statistics
             else:
                 st.markdown("**Top 10 Values:**")
-                value_counts = col_data.value_counts().head(10)
+                value_counts = to_native(col_data.value_counts().head(10))
                 
                 # Bar chart
                 fig = px.bar(
@@ -306,7 +314,7 @@ def page_database_explorer():
                     labels={'x': 'Count', 'y': col},
                     title=f"Top 10 values in {col}"
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                display_figure_with_export(fig, f"top_values_{col}", key=f"export_top_{col}")
                 
                 # Table
                 st.dataframe(

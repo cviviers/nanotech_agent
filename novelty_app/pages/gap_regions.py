@@ -10,6 +10,14 @@ import plotly.colors as colors
 import networkx as nx
 
 from core.entity_utils import extract_entities_from_dataframe, summarize_gap_region_entities
+from ui.export_utils import display_figure_with_export
+
+
+def to_native(obj):
+    """Convert narwhals-wrapped objects to native pandas."""
+    if hasattr(obj, 'to_native'):
+        return obj.to_native()
+    return obj
 
 
 def page_gap_regions():
@@ -76,7 +84,7 @@ def page_gap_regions():
         fig.update_traces(marker=dict(size=10), selector=dict(name='True'))
         fig.update_traces(marker=dict(size=4), selector=dict(name='False'))
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "gap_regions_binary", key="export_gap_regions_binary")
     
     with tab2:
         # Color by region ID with background showing all papers
@@ -139,7 +147,7 @@ def page_gap_regions():
             hovermode='closest',
             hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1)
         )
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "gap_regions_colored", key="export_gap_regions_colored")
     
     with tab3:
         df_gap = st.session_state.df_valid[st.session_state.df_valid['gap_region'] >= 0]
@@ -162,7 +170,7 @@ def page_gap_regions():
             )
             fig.update_traces(marker=dict(size=10))
             fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-            st.plotly_chart(fig, use_container_width=True)
+            display_figure_with_export(fig, "gap_regions_by_score", key="export_gap_regions_score")
     
     with tab4:
         df_plot = st.session_state.df_valid.copy()
@@ -212,7 +220,7 @@ def page_gap_regions():
             ))
         
         fig.update_layout(hoverlabel=dict(bgcolor="white", font_size=14, font_family="Arial", namelength=-1))
-        st.plotly_chart(fig, use_container_width=True)
+        display_figure_with_export(fig, "gap_regions_with_clusters", key="export_gap_regions_clusters")
     
     st.divider()
     
@@ -341,7 +349,7 @@ def display_gap_region_details(region_id, gap_regions):
                 st.write(f"**Year Range**: {int(years.min())} - {int(years.max())}")
                 st.write(f"**Median Year**: {int(years.median())}")
             with col2:
-                year_counts = years.value_counts().sort_index()
+                year_counts = to_native(years.value_counts().sort_index())
                 st.bar_chart(year_counts.to_dict())
     
     # Top papers

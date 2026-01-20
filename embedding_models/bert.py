@@ -445,3 +445,8 @@ def rank_documents(payload: RankRequest):
         max_length=max_len,
         results=ranked_sorted,
     )
+
+# example usage:
+
+# start the server:
+# uvicorn bert:app --host 0.0.0.0 --port 8001
