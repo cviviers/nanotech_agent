@@ -7,8 +7,8 @@ import streamlit as st
 import plotly.express as px
 from sklearn.cluster import KMeans
 
-from ..core.state_management import save_state_for_undo
-from ..core.constants import MATERIAL_HINTS, LIGAND_HINTS, DISEASE_HINTS, DELIVERY_HINTS, MODEL_HINTS
+from core.state_management import save_state_for_undo
+from core.constants import MATERIAL_HINTS, LIGAND_HINTS, DISEASE_HINTS, DELIVERY_HINTS, MODEL_HINTS
 
 
 def page_filters():
@@ -77,7 +77,7 @@ def page_filters():
         st.plotly_chart(fig, use_container_width=True)
         
         with st.expander("📊 Cluster Distribution"):
-            st.bar_chart(cluster_counts)
+            st.bar_chart(cluster_counts.to_dict())
     
     st.divider()
     

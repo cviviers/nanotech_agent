@@ -9,7 +9,7 @@ from pathlib import Path
 import streamlit as st
 import pandas as pd
 
-from ..core.data_utils import extract_embeddings
+from core.data_utils import extract_embeddings
 
 
 def page_data_loading():

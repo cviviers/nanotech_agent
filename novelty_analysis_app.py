@@ -394,7 +394,7 @@ def explore_cluster(df: pd.DataFrame, cluster_column: str, cluster_id: int) -> N
         with col2:
             llm_model = st.selectbox(
                 "Model",
-                ["gpt-5-mini", "gpt-5", "gpt-5-nano"],
+                ["gpt-5-mini-2025-08-07", "gpt-5-nano-2025-08-07", "gpt-5.2-2025-12-11"],
                 index=0,
                 key=f"llm_model_{cluster_column}_{cluster_id}"
             )
@@ -2225,7 +2225,7 @@ def page_clustering():
             
             summary_model = st.selectbox(
                 "Model",
-                ["gpt-5-nano", "gpt-5-mini", "gpt-5"],
+                ["gpt-5-mini-2025-08-07", "gpt-5-nano-2025-08-07", "gpt-5.2-2025-12-11"],
                 index=0,
                 key="community_summary_model"
             )
@@ -2770,7 +2770,7 @@ def page_llm_analysis():
     # Configuration
     col1, col2, col3 = st.columns(3)
     with col1:
-        openai_model = st.selectbox("Model", ["gpt-5-nano", "gpt-5-mini", "gpt-5"], index=0)
+        openai_model = st.selectbox("Model", ["gpt-5-mini-2025-08-07", "gpt-5-nano-2025-08-07", "gpt-5.2-2025-12-11"], index=0)
     with col2:
         region_id = st.selectbox("Select Gap Region", range(len(gap_regions)))
         use_all_gap_regions = st.checkbox("Use ALL Gap Regions", value=False, 

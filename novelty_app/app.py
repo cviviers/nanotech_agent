@@ -1,28 +1,24 @@
 """
 Main entry point for the refactored Novelty Analysis App
 
-This is a transitional version that imports from the original file
-while allowing gradual migration to the new modular structure.
-
 Usage:
     streamlit run novelty_app/app.py
 """
-import sys
-from pathlib import Path
+import streamlit as st
 
-# Add parent directory to path to import original functions
-parent_dir = Path(__file__).parent.parent
-sys.path.insert(0, str(parent_dir))
+# Import core utilities
+from core.state_management import init_session_state, save_state_for_undo, undo_last_action
 
-# Import from original file (temporary during migration)
-from novelty_analysis_app import *
-
-# Import our new modular components
-try:
-    from core import init_session_state, save_state_for_undo, undo_last_action
-except ImportError:
-    print("⚠️  Using legacy core functions")
-    pass
+# Import page functions
+from pages.data_loading import page_data_loading
+from pages.embedding_processing import page_embedding_processing
+from pages.filters import page_filters
+from pages.clustering import page_clustering
+from pages.gap_analysis import page_gap_analysis
+from pages.gap_regions import page_gap_regions
+from pages.llm_analysis import page_llm_analysis
+from pages.database_explorer import page_database_explorer
+from pages.export import page_export
 
 # Main app function
 def main():
