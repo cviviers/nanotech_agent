@@ -3,10 +3,13 @@
 *.pdf
 *.zip
 *.pptx
+*.npy
+*.csv
 
 old/*
 lda_visualizations/*
 lda_models/*
 output/*
-
+venv/*
 .gradio/*
+.streamlit/*
