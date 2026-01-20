@@ -12,3 +12,4 @@ lda_models/*
 output/*
 venv/*
 .gradio/*
+.streamlit/*
