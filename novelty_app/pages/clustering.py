@@ -401,6 +401,109 @@ def page_clustering():
             if selected_cluster is not None:
                 explore_cluster(st.session_state.df_valid, 'cluster_leiden', selected_cluster)
         
+        # Create summary of all communities
+        with st.expander("🔍 Summarize Communities", expanded=False):
+            st.markdown("""
+            Generate high-level summaries for all communities using an LLM.
+            The LLM will analyze paper titles from each community to create a brief overview.
+            """)
+            
+            summary_model = st.selectbox(
+                "Model",
+                ["gpt-5-mini-2025-08-07", "gpt-5-nano-2025-08-07", "gpt-5.2-2025-12-11"],
+                index=0,
+                key="community_summary_model"
+            )
+            
+            if st.button("🚀 Generate All Community Summaries", type="primary"):
+                summary_api_key = st.session_state.get('openai_api_key', os.environ.get('OPENAI_API_KEY', ''))
+                if not summary_api_key:
+                    st.error("❌ Please provide OpenAI API key in Data & Config page")
+                elif not OPENAI_AVAILABLE:
+                    st.error("❌ OpenAI library not available. Install with: pip install openai")
+                else:
+                    # Get unique communities
+                    unique_communities = sorted(st.session_state.df_valid['cluster_leiden'].unique())
+                    
+                    # Initialize results storage
+                    if 'community_summaries' not in st.session_state:
+                        st.session_state.community_summaries = {}
+                    
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for idx, community_id in enumerate(unique_communities):
+                        status_text.text(f"Summarizing Community {community_id}... ({idx+1}/{len(unique_communities)})")
+                        
+                        # Get papers in this community
+                        community_df = st.session_state.df_valid[
+                            st.session_state.df_valid['cluster_leiden'] == community_id
+                        ]
+                        
+                        # Get paper titles
+                        titles = community_df['title'].fillna('Untitled').tolist()
+                        
+                        # Create prompt
+                        prompt = f"""You are analyzing a research community in nanomedicine.
+                        
+                        Below are the titles of {len(titles)} papers in Community {community_id}:
+
+                        {chr(10).join(f"{i+1}. {title}" for i, title in enumerate(titles))}
+
+                        Based on these paper titles, provide a brief high-level summary (2-3 sentences) describing:
+                        1. The main research focus or theme of this community
+                        2. Key topics or approaches that appear frequently
+
+                        Keep your response concise and focused on the overarching themes."""
+                        
+                        try:
+                            # Call OpenAI API
+                            client = OpenAI(api_key=summary_api_key)
+                            response = client.chat.completions.create(
+                                model=summary_model,
+                                messages=[
+                                   {"role": "system", "content": "You are a research analyst specializing in nanomedicine literature analysis."},
+                                   {"role": "user", "content": prompt}
+                                ]
+                            )
+                            
+                            summary = response.choices[0].message.content.strip()
+                            st.session_state.community_summaries[community_id] = {
+                                'summary': summary,
+                                'n_papers': len(titles),
+                                'model': summary_model
+                            }
+                            
+                        except Exception as e:
+                            st.error(f"❌ Error summarizing Community {community_id}: {str(e)}")
+                            st.session_state.community_summaries[community_id] = {
+                                'summary': f"Error: {str(e)}",
+                                'n_papers': len(titles),
+                                'model': summary_model
+                            }
+                        
+                        progress_bar.progress((idx + 1) / len(unique_communities))
+                    
+                    status_text.text("✅ All communities summarized!")
+                    st.success(f"✅ Generated summaries for {len(unique_communities)} communities")
+            
+            # Display summaries if they exist
+            if 'community_summaries' in st.session_state and st.session_state.community_summaries:
+                st.markdown("---")
+                st.markdown("### 📋 Community Summaries")
+                
+                for community_id in sorted(st.session_state.community_summaries.keys()):
+                    summary_data = st.session_state.community_summaries[community_id]
+                    
+                    with st.container():
+                        st.markdown(f"#### Community {community_id}")
+                        col1, col2 = st.columns([3, 1])
+                        with col1:
+                            st.write(summary_data['summary'])
+                        with col2:
+                            st.metric("Papers", summary_data['n_papers'])
+                        st.markdown("---")
+        
         # Selection button
         if st.session_state.selected_clustering == 'leiden':
             st.success("✅ Community Detection selected for gap analysis")

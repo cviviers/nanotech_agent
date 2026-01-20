@@ -20,7 +20,6 @@ This repository implements an end-to-end pipeline for discovering research gaps 
 ├── 2.data_preprocessing.ipynb           # Data cleaning and preprocessing
 ├── 3.create_bert_embeddings.ipynb       # BERT embedding generation
 ├── 3.create_qwen_embeddings.ipynb       # Qwen embedding generation
-├── novelty_analysis_app.py              # Main Streamlit application
 ├── requirements.txt                      # Python dependencies
 │
 ├── data/                                 # Processed datasets
@@ -44,7 +43,7 @@ This repository implements an end-to-end pipeline for discovering research gaps 
 │   ├── qwen_eval_results.json           # Qwen evaluation metrics
 │   └── README.md                        # Embedding models documentation
 │
-├── novelty_app/                         # Refactored modular app (in progress)
+├── novelty_app/                         # Main app
 │   ├── app.py                           # App entry point
 │   ├── config.py                        # Configuration settings
 │   ├── core/                            # Core business logic
@@ -55,8 +54,8 @@ This repository implements an end-to-end pipeline for discovering research gaps 
 │   │   ├── clustering.py                # Clustering algorithms
 │   │   ├── gap_detection.py             # Gap identification
 │   │   └── undo.py                      # Undo functionality
-│   ├── ui/                              # UI components (planned)
-│   └── pages/                           # Page modules (planned)
+│   ├── ui/                              # UI components 
+│   └── pages/                           # Page modules
 │
 └── utils/                                # Utility modules
     ├── utils.py                         # General utilities & Paper class
