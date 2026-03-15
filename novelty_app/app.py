@@ -20,6 +20,7 @@ from pages.clustering import page_clustering
 from pages.gap_analysis import page_gap_analysis
 from pages.gap_regions import page_gap_regions
 from pages.llm_analysis import page_llm_analysis
+from pages.agent_console import page_agent_console
 from pages.database_explorer import page_database_explorer
 from pages.export import page_export
 
@@ -49,6 +50,7 @@ def main():
                 "🔍 Gap Analysis",
                 "🌉 Gap Regions",
                 "🤖 LLM Analysis",
+                "🧠 Agent Console",
                 "📚 Database Explorer",
                 "💾 Export"
             ]
@@ -98,6 +100,8 @@ def main():
         page_gap_regions()
     elif page == "🤖 LLM Analysis":
         page_llm_analysis()
+    elif page == "🧠 Agent Console":
+        page_agent_console()
     elif page == "📚 Database Explorer":
         page_database_explorer()
     elif page == "💾 Export":
@@ -106,3 +110,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+# streamlit run app.py
