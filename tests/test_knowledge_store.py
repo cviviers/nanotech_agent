@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,6 +44,41 @@ class KnowledgeStoreTests(unittest.TestCase):
         paper = self.store.papers_batch(snapshot_id="snap_1", paper_ids=["p1"])[0]
         self.assertEqual(paper["gap_score"], 0.75)
 
+    def test_publish_snapshot_recreates_schema_after_db_truncation(self) -> None:
+        self.db_path.write_bytes(b"")
+        payload = {
+            "snapshot_id": "snap_recovered",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Recovered paper",
+                    "abstract": "Recovered abstract",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                }
+            ],
+            "clusters": [{"cluster_id": 1, "size": 1, "metadata": {}}],
+            "gaps": [],
+            "gap_papers": [],
+            "llm_analyses": [],
+        }
+
+        self.store.publish_snapshot(payload)
+
+        paper = self.store.papers_batch(snapshot_id="snap_recovered", paper_ids=["p1"])[0]
+        self.assertEqual(paper["paper_id"], "p1")
+        with sqlite3.connect(self.db_path) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name"
+                ).fetchall()
+            }
+        self.assertIn("papers", tables)
+        self.assertIn("snapshots", tables)
+
     def test_store_and_list_evaluation_records(self) -> None:
         run = {
             "run_id": "run_1",
@@ -76,6 +112,7 @@ class KnowledgeStoreTests(unittest.TestCase):
                     "future_best_paper_id": "p9",
                     "support_citations": ["p1"],
                     "hypothesis": {"title": "Hypothesis"},
+                    "idea_scores": {"importance": {"score": 4}, "average_score": 4.0},
                     "fingerprint": {"material": ["liposome"]},
                     "historical_match": {},
                     "future_match": {"paper_id": "p9"},
@@ -89,6 +126,34 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(runs[0]["run_id"], "run_1")
         self.assertEqual(len(matches), 1)
         self.assertEqual(matches[0]["classification"], "anticipatory_strong")
+        self.assertEqual(matches[0]["idea_scores"]["importance"]["score"], 4)
+
+    def test_update_snapshot_metadata_merges_fields(self) -> None:
+        payload = {
+            "snapshot_id": "snap_meta",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "streamlit_agent_console", "selected_clustering": "kmeans"},
+            "papers": [],
+            "clusters": [],
+            "gaps": [],
+            "gap_papers": [],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(payload)
+
+        updated = self.store.update_snapshot_metadata(
+            "snap_meta",
+            {
+                "split_role": "historical",
+                "cutoff_date": "2020-12-31",
+                "future_window_start": "2022-01-01",
+            },
+        )
+
+        self.assertEqual(updated["metadata"]["source"], "streamlit_agent_console")
+        self.assertEqual(updated["metadata"]["split_role"], "historical")
+        self.assertEqual(updated["metadata"]["cutoff_date"], "2020-12-31")
+        self.assertEqual(updated["metadata"]["future_window_start"], "2022-01-01")
 
     def test_build_evidence_pack_applies_discovery_cue(self) -> None:
         payload = {

@@ -18,11 +18,12 @@ The retrospective benchmark in [run_retrospective.py](run_retrospective.py) runs
 3. Build a historical novelty snapshot.
 4. Select gap targets and cluster-pair targets from that snapshot.
 5. Generate hypotheses with one or more methods.
-6. Normalize each generated idea into a fingerprint.
-7. Retrieve historical and future candidate papers for that idea.
-8. Judge the best historical and future matches.
-9. Assign a retrospective classification.
-10. Persist the run and export review packets for human inspection.
+6. Score each generated idea on importance, novelty, plausibility, feasibility, evaluability, and likely impact.
+7. Normalize each generated idea into a fingerprint.
+8. Retrieve historical and future candidate papers for that idea.
+9. Judge the best historical and future matches.
+10. Assign a retrospective classification.
+11. Persist the run and export review packets for human inspection.
 
 ## Module Layout
 
@@ -32,7 +33,7 @@ The retrospective benchmark in [run_retrospective.py](run_retrospective.py) runs
 - [generators.py](generators.py): generation methods and baselines.
 - [idea_fingerprint.py](idea_fingerprint.py): converts hypotheses into structured fields.
 - [candidate_match.py](candidate_match.py): keyword, embedding, and rerank retrieval.
-- [judge.py](judge.py): match labeling and hypothesis classification.
+- [judge.py](judge.py): idea scoring, match labeling, and hypothesis classification.
 - [metrics.py](metrics.py): aggregate metrics.
 - [qwen_client.py](qwen_client.py): local embedding and reranker HTTP client.
 
@@ -237,6 +238,15 @@ The exported CSV includes:
 - `classification`
 - `title`
 - `text`
+- `importance_score`
+- `novelty_score`
+- `plausibility_score`
+- `feasibility_score`
+- `evaluability_score`
+- `likely_impact_score`
+- `average_idea_score`
+- `idea_score_summary`
+- `idea_score_method`
 - `support_citations`
 - `historical_label`
 - `historical_best_paper_id`
@@ -247,6 +257,21 @@ The exported CSV includes:
 - `first_future_year`
 
 This file is intended for expert review and manual adjudication.
+
+## Idea Scoring
+
+Implemented in [judge.py](judge.py).
+
+Each generated idea is scored on a 1-5 integer scale for:
+
+- `importance`
+- `novelty`
+- `plausibility`
+- `feasibility`
+- `evaluability`
+- `likely_impact`
+
+When OpenAI-backed judging is available, the scorer uses a structured LLM judge. If that is unavailable, it falls back to a deterministic heuristic scorer so the evaluation pipeline still runs.
 
 ## Matching and Classification
 
@@ -303,6 +328,8 @@ Aggregated in [metrics.py](metrics.py):
 - `unrealized_rate`
 - `novelty_adjusted_hit_rate`
 - `median_time_to_first_future_match_year`
+- `mean_average_idea_score`
+- average per-criterion idea scores
 - per-method counts and hit rates
 
 ## Practical Notes

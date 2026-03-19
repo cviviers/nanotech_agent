@@ -38,3 +38,9 @@ networkx
 
 # Optional: For LLM integration
 openai
+requests
+
+# Agentic tools
+langchain
+langchain-openai
+langgraph

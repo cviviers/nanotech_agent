@@ -152,6 +152,9 @@ class RetrospectiveMinimalTests(unittest.TestCase):
                 result.matches[0]["discovery_cue"]["text"],
                 "Focus on folate liposome siRNA approaches in breast cancer",
             )
+            self.assertIn("idea_scores", result.matches[0])
+            self.assertIn("importance", result.matches[0]["idea_scores"])
+            self.assertEqual(result.run["metrics"]["n_scored_hypotheses"], 1)
 
 
 if __name__ == "__main__":

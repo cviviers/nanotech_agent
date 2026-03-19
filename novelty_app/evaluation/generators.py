@@ -190,6 +190,12 @@ def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[Generat
     meta = {
         "audit": out.get("audit", {}),
         "explanation": out.get("explanation", {}),
+        "evidence_pack": {
+            "snapshot_id": context.snapshot_id,
+            "target_type": context.target["target_type"],
+            "papers": out.get("evidence", []),
+            "meta": out.get("evidence_meta", {}),
+        },
         "effective_target": dict(context.target),
     }
     return generated, meta

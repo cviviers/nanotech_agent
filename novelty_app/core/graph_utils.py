@@ -105,7 +105,8 @@ def explore_cluster(df: pd.DataFrame, cluster_column: str, cluster_id: int):
         label=f"💾 Download Cluster {cluster_id} as CSV",
         data=csv,
         file_name=f"cluster_{cluster_id}.csv",
-        mime="text/csv"
+        mime="text/csv",
+        key=f"download_csv_{cluster_column}_{cluster_id}"
     )
     
     # LLM analysis option
@@ -195,7 +196,8 @@ def explore_cluster(df: pd.DataFrame, cluster_column: str, cluster_id: int):
                             label="💾 Download Summary (JSON)",
                             data=json.dumps(result, indent=2),
                             file_name=f"cluster_{cluster_id}_summary.json",
-                            mime="application/json"
+                            mime="application/json",
+                            key=f"download_json_{cluster_column}_{cluster_id}"
                         )
                         
                     except Exception as e:

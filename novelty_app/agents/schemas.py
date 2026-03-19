@@ -92,6 +92,7 @@ class GeneratedHypothesis(BaseModel):
     raw_hypothesis: Dict[str, Any] = Field(default_factory=dict)
     normalized_hypothesis: Dict[str, Any] = Field(default_factory=dict)
     idea_fingerprint: Dict[str, Any] = Field(default_factory=dict)
+    idea_scores: Dict[str, Any] = Field(default_factory=dict)
     discovery_cue: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -134,6 +135,7 @@ class EvaluationMatch(BaseModel):
     future_best_paper_id: Optional[str] = None
     support_citations: List[str] = Field(default_factory=list)
     hypothesis: Dict[str, Any] = Field(default_factory=dict)
+    idea_scores: Dict[str, Any] = Field(default_factory=dict)
     fingerprint: Dict[str, Any] = Field(default_factory=dict)
     historical_match: Dict[str, Any] = Field(default_factory=dict)
     future_match: Dict[str, Any] = Field(default_factory=dict)

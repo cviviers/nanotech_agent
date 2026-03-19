@@ -20,6 +20,11 @@ except Exception:  # pragma: no cover
     from novelty_app.discovery_cue import cue_prompt_block, discovery_cue_to_dict
 
 try:
+    from evaluation.judge import score_hypotheses
+except Exception:  # pragma: no cover
+    from novelty_app.evaluation.judge import score_hypotheses
+
+try:
     from langchain_openai import ChatOpenAI
     from langgraph.graph import END, StateGraph
 except Exception:  # pragma: no cover
@@ -119,6 +124,7 @@ class OrchestratorState(TypedDict, total=False):
     explanation: Dict[str, Any]
     audit: Dict[str, Any]
     hypotheses: Dict[str, Any]
+    idea_scores: Dict[str, Any]
     blueprint: Dict[str, Any]
     published: bool
 
@@ -317,13 +323,57 @@ Return JSON per schema.
     return state
 
 
+def node_score(
+    state: OrchestratorState,
+    *,
+    openai_api_key: str | None = None,
+    model_name: str | None = None,
+) -> OrchestratorState:
+    hypotheses = list((state.get("hypotheses") or {}).get("hypotheses") or [])
+    scores = score_hypotheses(
+        hypotheses,
+        evidence_pack={
+            "papers": state.get("evidence", []),
+            "meta": state.get("evidence_meta", {}),
+        },
+        audit=state.get("audit", {}),
+        explanation=state.get("explanation", {}),
+        target={
+            "target_type": state.get("target_type"),
+            "gap_id": state.get("gap_id"),
+            "cluster_a": state.get("cluster_a"),
+            "cluster_b": state.get("cluster_b"),
+            "snapshot_id": state.get("snapshot_id"),
+        },
+        discovery_cue=discovery_cue_to_dict(state.get("discovery_cue")),
+        openai_api_key=openai_api_key,
+        model_name=model_name,
+    )
+    state["idea_scores"] = scores
+    for hyp in hypotheses:
+        hyp_id = str(hyp.get("id") or "")
+        hyp["idea_scores"] = dict(scores.get(hyp_id) or {})
+    state["hypotheses"] = {"hypotheses": hypotheses}
+    return state
+
+
 def node_blueprint(state: OrchestratorState, llm: ChatOpenAI) -> OrchestratorState:
     pack = format_pack_jsonl(state.get("evidence", []))
     hyps = state.get("hypotheses", {}).get("hypotheses", [])
     if not hyps:
         state["blueprint"] = {}
         return state
-    h1 = hyps[0]
+    scores = state.get("idea_scores", {})
+    ranked_hyps = sorted(
+        hyps,
+        key=lambda hyp: float(
+            (scores.get(str(hyp.get("id") or ""), {}) or {}).get("average_score")
+            or (hyp.get("idea_scores") or {}).get("average_score")
+            or 0.0
+        ),
+        reverse=True,
+    )
+    h1 = ranked_hyps[0]
     cue_block = cue_prompt_block(state.get("discovery_cue"))
     user = f"""
 HYPOTHESIS JSON:
@@ -364,6 +414,7 @@ def node_publish(state: OrchestratorState, backend: BackendClient) -> Orchestrat
         "explanation": state.get("explanation", {}),
         "audit": state.get("audit", {}),
         "hypotheses": state.get("hypotheses", {}),
+        "idea_scores": state.get("idea_scores", {}),
         "blueprint": state.get("blueprint", {}),
         "iterations": state.get("iter", 0),
     }
@@ -408,6 +459,7 @@ def build_orchestrator(
     g.add_node("audit", lambda s: node_audit(s, llm))
     g.add_node("patch_retrieve", lambda s: node_patch_retrieve(s, backend))
     g.add_node("ideate", lambda s: node_ideate(s, llm))
+    g.add_node("score", lambda s: node_score(s, openai_api_key=openai_api_key, model_name=model))
     g.add_node("blueprint", lambda s: node_blueprint(s, llm))
     g.add_node("publish", lambda s: node_publish(s, backend))
 
@@ -416,7 +468,8 @@ def build_orchestrator(
     g.add_edge("explain", "audit")
     g.add_conditional_edges("audit", route_after_audit, {"patch": "patch_retrieve", "ideate": "ideate"})
     g.add_edge("patch_retrieve", "explain")
-    g.add_edge("ideate", "blueprint")
+    g.add_edge("ideate", "score")
+    g.add_edge("score", "blueprint")
     g.add_edge("blueprint", "publish")
     g.add_edge("publish", END)
 

@@ -55,6 +55,7 @@ class BackendApiEvaluationTests(unittest.TestCase):
                         "future_label": "partial_match",
                         "support_citations": ["p1"],
                         "hypothesis": {"title": "x"},
+                        "idea_scores": {"importance": {"score": 4}, "average_score": 4.0},
                         "fingerprint": {},
                         "historical_match": {},
                         "future_match": {},
@@ -65,6 +66,7 @@ class BackendApiEvaluationTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(self.client.get("/evaluations/runs").json()["runs"][0]["run_id"], "run_api")
         self.assertEqual(self.client.get("/evaluations/matches").json()["matches"][0]["hypothesis_id"], "h1")
+        self.assertEqual(self.client.get("/evaluations/matches").json()["matches"][0]["idea_scores"]["importance"]["score"], 4)
 
     def test_evidence_pack_request_accepts_discovery_cue(self) -> None:
         req = backend_api.EvidencePackRequest(

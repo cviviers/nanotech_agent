@@ -1,22 +1,20 @@
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
 
 try:
-    from agents.knowledge_store import KnowledgeStore
+    from agents.knowledge_store import KnowledgeStore, default_db_path
     from agents.schemas import DiscoveryCue, EvaluationMatch, EvaluationRun, SnapshotPayload
 except Exception:  # pragma: no cover
-    from novelty_app.agents.knowledge_store import KnowledgeStore
+    from novelty_app.agents.knowledge_store import KnowledgeStore, default_db_path
     from novelty_app.agents.schemas import DiscoveryCue, EvaluationMatch, EvaluationRun, SnapshotPayload
 
 
 def _build_store() -> KnowledgeStore:
-    db_path = os.getenv("NOVELTY_AGENT_DB", os.path.join("data", "novelty_agent_knowledge.sqlite"))
-    return KnowledgeStore(db_path)
+    return KnowledgeStore(default_db_path())
 
 
 STORE = _build_store()

@@ -121,3 +121,23 @@ def init_session_state():
     # LLM prompts (for editing before sending)
     if 'llm_prompts' not in st.session_state:
         st.session_state.llm_prompts = None
+
+    # Agent backend / console state
+    if 'agent_backend_url' not in st.session_state:
+        st.session_state.agent_backend_url = "http://localhost:8088"
+    if 'agent_snapshot_id' not in st.session_state:
+        st.session_state.agent_snapshot_id = ""
+    if 'agent_last_health' not in st.session_state:
+        st.session_state.agent_last_health = None
+    if 'agent_snapshots_cache' not in st.session_state:
+        st.session_state.agent_snapshots_cache = None
+    if 'agent_publish_result' not in st.session_state:
+        st.session_state.agent_publish_result = None
+    if 'agent_last_tool_response' not in st.session_state:
+        st.session_state.agent_last_tool_response = None
+    if 'agent_last_pack' not in st.session_state:
+        st.session_state.agent_last_pack = None
+    if 'agent_last_run' not in st.session_state:
+        st.session_state.agent_last_run = None
+    if 'agent_artifacts_cache' not in st.session_state:
+        st.session_state.agent_artifacts_cache = None

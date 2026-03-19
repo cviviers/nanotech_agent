@@ -104,7 +104,7 @@ This is useful for smoke testing and debugging the agent path outside Streamlit.
 
 The implemented orchestration flow is:
 
-`target -> evidence pack -> explanation -> audit -> patch retrieval -> ideation -> blueprint -> publish`
+`target -> evidence pack -> explanation -> audit -> patch retrieval -> ideation -> score -> blueprint -> publish`
 
 ### 1. Target Selection
 
@@ -213,7 +213,24 @@ The output stores:
 
 ### 7. Experimental Blueprint
 
-The agent then generates a preclinical blueprint for the top hypothesis.
+Before blueprinting, the agent scores the generated ideas.
+
+Each hypothesis is scored on a 1-5 scale for:
+
+- importance
+- novelty
+- plausibility
+- feasibility
+- evaluability
+- likely impact
+
+When OpenAI-backed judging is available, the scorer uses a structured LLM judge. If it is unavailable, the framework falls back to a deterministic heuristic scorer so the pipeline still runs.
+
+The blueprint stage then selects the top-scored hypothesis.
+
+### 8. Experimental Blueprint
+
+The agent then generates a preclinical blueprint for the selected top hypothesis.
 
 The blueprint includes:
 
@@ -226,7 +243,7 @@ The blueprint includes:
 
 Unsupported items are supposed to be marked as assumptions.
 
-### 8. Publish
+### 9. Publish
 
 The final step stores a `research_brief` artifact in the backend.
 
@@ -238,6 +255,7 @@ The persisted payload includes:
 - explanation
 - audit output
 - hypotheses
+- idea scores
 - blueprint
 - number of retrieval/audit iterations
 

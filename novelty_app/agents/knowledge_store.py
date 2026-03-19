@@ -19,6 +19,27 @@ except Exception:  # pragma: no cover
     )
 
 
+_REQUIRED_TABLES = {
+    "artifacts",
+    "clusters",
+    "evaluation_matches",
+    "evaluation_runs",
+    "gap_papers",
+    "gaps",
+    "llm_analyses",
+    "papers",
+    "snapshots",
+}
+
+
+def default_db_path() -> Path:
+    configured = os.getenv("NOVELTY_AGENT_DB")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    project_root = Path(__file__).resolve().parents[2]
+    return (project_root / "data" / "novelty_agent_knowledge.sqlite").resolve()
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -143,155 +164,186 @@ class KnowledgeStore:
     """SQLite-backed knowledge store for agent-accessible novelty analysis artifacts."""
 
     def __init__(self, db_path: str | Path):
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _open_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _connect(self) -> sqlite3.Connection:
+        conn = self._open_connection()
+        self._ensure_schema(conn)
+        return conn
+
     def _init_schema(self) -> None:
-        with self._connect() as conn:
-            cur = conn.cursor()
-            try:
-                cur.execute("PRAGMA journal_mode=WAL;")
-            except sqlite3.OperationalError:
-                # WAL can fail on synced folders (e.g., OneDrive); fallback to default journal mode.
-                pass
-            cur.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS snapshots (
-                    snapshot_id TEXT PRIMARY KEY,
-                    created_at TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL
-                );
+        with self._open_connection() as conn:
+            self._ensure_schema(conn)
 
-                CREATE TABLE IF NOT EXISTS papers (
-                    snapshot_id TEXT NOT NULL,
-                    paper_id TEXT NOT NULL,
-                    row_index INTEGER,
-                    title TEXT,
-                    abstract TEXT,
-                    publication_year INTEGER,
-                    doi TEXT,
-                    journal TEXT,
-                    cluster_id INTEGER,
-                    gap_score REAL,
-                    gap_region INTEGER,
-                    embedding_json TEXT,
-                    embedding_dim INTEGER,
-                    raw_json TEXT NOT NULL,
-                    PRIMARY KEY (snapshot_id, paper_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_papers_snapshot_cluster ON papers(snapshot_id, cluster_id);
-                CREATE INDEX IF NOT EXISTS idx_papers_snapshot_gap_region ON papers(snapshot_id, gap_region);
-                CREATE INDEX IF NOT EXISTS idx_papers_snapshot_gap_score ON papers(snapshot_id, gap_score);
-
-                CREATE TABLE IF NOT EXISTS clusters (
-                    snapshot_id TEXT NOT NULL,
-                    cluster_id INTEGER NOT NULL,
-                    size INTEGER NOT NULL,
-                    metadata_json TEXT NOT NULL,
-                    PRIMARY KEY (snapshot_id, cluster_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_clusters_snapshot_size ON clusters(snapshot_id, size);
-
-                CREATE TABLE IF NOT EXISTS gaps (
-                    snapshot_id TEXT NOT NULL,
-                    gap_id TEXT NOT NULL,
-                    region_index INTEGER,
-                    size INTEGER NOT NULL,
-                    avg_gap_score REAL,
-                    max_gap_score REAL,
-                    density_z REAL,
-                    cluster_ids_json TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL,
-                    PRIMARY KEY (snapshot_id, gap_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_gaps_snapshot_avg ON gaps(snapshot_id, avg_gap_score);
-
-                CREATE TABLE IF NOT EXISTS gap_papers (
-                    snapshot_id TEXT NOT NULL,
-                    gap_id TEXT NOT NULL,
-                    paper_id TEXT NOT NULL,
-                    rank_idx INTEGER,
-                    gap_score REAL,
-                    PRIMARY KEY (snapshot_id, gap_id, paper_id)
-                );
-                CREATE INDEX IF NOT EXISTS idx_gap_papers_snapshot_gap ON gap_papers(snapshot_id, gap_id, rank_idx);
-
-                CREATE TABLE IF NOT EXISTS llm_analyses (
-                    analysis_id TEXT PRIMARY KEY,
-                    snapshot_id TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    target_json TEXT NOT NULL,
-                    result_json TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_llm_analyses_snapshot ON llm_analyses(snapshot_id, created_at);
-
-                CREATE TABLE IF NOT EXISTS artifacts (
-                    artifact_id TEXT PRIMARY KEY,
-                    snapshot_id TEXT,
-                    kind TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    target_json TEXT NOT NULL,
-                    payload_json TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_artifacts_snapshot_created ON artifacts(snapshot_id, created_at);
-
-                CREATE TABLE IF NOT EXISTS evaluation_runs (
-                    run_id TEXT PRIMARY KEY,
-                    snapshot_id TEXT,
-                    created_at TEXT NOT NULL,
-                    cutoff_date TEXT,
-                    future_window_start TEXT,
-                    future_window_end TEXT,
-                    method_names_json TEXT NOT NULL,
-                    config_json TEXT NOT NULL,
-                    summary_json TEXT NOT NULL,
-                    metrics_json TEXT NOT NULL,
-                    status TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_evaluation_runs_snapshot_created ON evaluation_runs(snapshot_id, created_at);
-
-                CREATE TABLE IF NOT EXISTS evaluation_matches (
-                    match_id TEXT PRIMARY KEY,
-                    run_id TEXT NOT NULL,
-                    snapshot_id TEXT,
-                    created_at TEXT NOT NULL,
-                    target_id TEXT NOT NULL,
-                    target_type TEXT NOT NULL,
-                    method_name TEXT NOT NULL,
-                    seed INTEGER,
-                    hypothesis_id TEXT NOT NULL,
-                    classification TEXT NOT NULL,
-                    historical_label TEXT,
-                    future_label TEXT,
-                    first_future_year INTEGER,
-                    historical_best_paper_id TEXT,
-                    future_best_paper_id TEXT,
-                    support_citations_json TEXT NOT NULL,
-                    hypothesis_json TEXT NOT NULL,
-                    fingerprint_json TEXT NOT NULL,
-                    historical_match_json TEXT NOT NULL,
-                    future_match_json TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_evaluation_matches_run_method ON evaluation_matches(run_id, method_name, seed);
-                CREATE INDEX IF NOT EXISTS idx_evaluation_matches_snapshot_target ON evaluation_matches(snapshot_id, target_id, classification);
-                """
-            )
-            self._ensure_table_columns(
-                cur,
-                "papers",
-                {
-                    "embedding_json": "TEXT",
-                    "embedding_dim": "INTEGER",
-                },
-            )
+    def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+        cur = conn.cursor()
+        existing = {
+            str(r[0])
+            for r in cur.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+            if r[0]
+        }
+        if not _REQUIRED_TABLES.issubset(existing):
+            self._apply_schema(cur)
             conn.commit()
+            return
+        self._ensure_runtime_columns(cur)
+        conn.commit()
+
+    def _apply_schema(self, cur: sqlite3.Cursor) -> None:
+        try:
+            cur.execute("PRAGMA journal_mode=WAL;")
+        except sqlite3.OperationalError:
+            # WAL can fail on synced folders (e.g., OneDrive); fallback to default journal mode.
+            pass
+        cur.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS papers (
+                snapshot_id TEXT NOT NULL,
+                paper_id TEXT NOT NULL,
+                row_index INTEGER,
+                title TEXT,
+                abstract TEXT,
+                publication_year INTEGER,
+                doi TEXT,
+                journal TEXT,
+                cluster_id INTEGER,
+                gap_score REAL,
+                gap_region INTEGER,
+                embedding_json TEXT,
+                embedding_dim INTEGER,
+                raw_json TEXT NOT NULL,
+                PRIMARY KEY (snapshot_id, paper_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_papers_snapshot_cluster ON papers(snapshot_id, cluster_id);
+            CREATE INDEX IF NOT EXISTS idx_papers_snapshot_gap_region ON papers(snapshot_id, gap_region);
+            CREATE INDEX IF NOT EXISTS idx_papers_snapshot_gap_score ON papers(snapshot_id, gap_score);
+
+            CREATE TABLE IF NOT EXISTS clusters (
+                snapshot_id TEXT NOT NULL,
+                cluster_id INTEGER NOT NULL,
+                size INTEGER NOT NULL,
+                metadata_json TEXT NOT NULL,
+                PRIMARY KEY (snapshot_id, cluster_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_clusters_snapshot_size ON clusters(snapshot_id, size);
+
+            CREATE TABLE IF NOT EXISTS gaps (
+                snapshot_id TEXT NOT NULL,
+                gap_id TEXT NOT NULL,
+                region_index INTEGER,
+                size INTEGER NOT NULL,
+                avg_gap_score REAL,
+                max_gap_score REAL,
+                density_z REAL,
+                cluster_ids_json TEXT NOT NULL,
+                metadata_json TEXT NOT NULL,
+                PRIMARY KEY (snapshot_id, gap_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_gaps_snapshot_avg ON gaps(snapshot_id, avg_gap_score);
+
+            CREATE TABLE IF NOT EXISTS gap_papers (
+                snapshot_id TEXT NOT NULL,
+                gap_id TEXT NOT NULL,
+                paper_id TEXT NOT NULL,
+                rank_idx INTEGER,
+                gap_score REAL,
+                PRIMARY KEY (snapshot_id, gap_id, paper_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_gap_papers_snapshot_gap ON gap_papers(snapshot_id, gap_id, rank_idx);
+
+            CREATE TABLE IF NOT EXISTS llm_analyses (
+                analysis_id TEXT PRIMARY KEY,
+                snapshot_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                target_json TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                metadata_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_llm_analyses_snapshot ON llm_analyses(snapshot_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                snapshot_id TEXT,
+                kind TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                target_json TEXT NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_artifacts_snapshot_created ON artifacts(snapshot_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS evaluation_runs (
+                run_id TEXT PRIMARY KEY,
+                snapshot_id TEXT,
+                created_at TEXT NOT NULL,
+                cutoff_date TEXT,
+                future_window_start TEXT,
+                future_window_end TEXT,
+                method_names_json TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                summary_json TEXT NOT NULL,
+                metrics_json TEXT NOT NULL,
+                status TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_evaluation_runs_snapshot_created ON evaluation_runs(snapshot_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS evaluation_matches (
+                match_id TEXT PRIMARY KEY,
+                run_id TEXT NOT NULL,
+                snapshot_id TEXT,
+                created_at TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                target_type TEXT NOT NULL,
+                method_name TEXT NOT NULL,
+                seed INTEGER,
+                hypothesis_id TEXT NOT NULL,
+                classification TEXT NOT NULL,
+                historical_label TEXT,
+                future_label TEXT,
+                first_future_year INTEGER,
+                historical_best_paper_id TEXT,
+                future_best_paper_id TEXT,
+                support_citations_json TEXT NOT NULL,
+                hypothesis_json TEXT NOT NULL,
+                idea_scores_json TEXT NOT NULL DEFAULT '{}',
+                fingerprint_json TEXT NOT NULL,
+                historical_match_json TEXT NOT NULL,
+                future_match_json TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_evaluation_matches_run_method ON evaluation_matches(run_id, method_name, seed);
+            CREATE INDEX IF NOT EXISTS idx_evaluation_matches_snapshot_target ON evaluation_matches(snapshot_id, target_id, classification);
+            """
+        )
+        self._ensure_runtime_columns(cur)
+
+    def _ensure_runtime_columns(self, cur: sqlite3.Cursor) -> None:
+        self._ensure_table_columns(
+            cur,
+            "papers",
+            {
+                "embedding_json": "TEXT",
+                "embedding_dim": "INTEGER",
+            },
+        )
+        self._ensure_table_columns(
+            cur,
+            "evaluation_matches",
+            {
+                "idea_scores_json": "TEXT",
+            },
+        )
 
     def _ensure_table_columns(self, cur: sqlite3.Cursor, table: str, columns: Dict[str, str]) -> None:
         existing = {str(r[1]) for r in cur.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -504,6 +556,42 @@ class KnowledgeStore:
                 }
             )
         return out
+
+    def get_snapshot(self, snapshot_id: str) -> Dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT snapshot_id, created_at, metadata_json FROM snapshots WHERE snapshot_id = ?",
+                (str(snapshot_id),),
+            ).fetchone()
+        if not row:
+            raise ValueError(f"Snapshot not found: {snapshot_id}")
+        return {
+            "snapshot_id": row["snapshot_id"],
+            "created_at": row["created_at"],
+            "metadata": _json_loads(row["metadata_json"], {}),
+        }
+
+    def update_snapshot_metadata(
+        self,
+        snapshot_id: str,
+        updates: Dict[str, Any],
+        *,
+        replace: bool = False,
+    ) -> Dict[str, Any]:
+        current = self.get_snapshot(snapshot_id)
+        metadata = {} if replace else dict(current.get("metadata") or {})
+        metadata.update(dict(updates or {}))
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE snapshots SET metadata_json = ? WHERE snapshot_id = ?",
+                (_json_dumps(metadata), str(snapshot_id)),
+            )
+            conn.commit()
+        return {
+            "snapshot_id": current["snapshot_id"],
+            "created_at": current["created_at"],
+            "metadata": metadata,
+        }
 
     def list_clusters(self, snapshot_id: Optional[str] = None, limit: int = 100, sort: str = "size_desc") -> List[Dict[str, Any]]:
         sid = self.resolve_snapshot_id(snapshot_id)
@@ -1225,8 +1313,8 @@ class KnowledgeStore:
                         match_id, run_id, snapshot_id, created_at, target_id, target_type, method_name, seed,
                         hypothesis_id, classification, historical_label, future_label, first_future_year,
                         historical_best_paper_id, future_best_paper_id, support_citations_json, hypothesis_json,
-                        fingerprint_json, historical_match_json, future_match_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        idea_scores_json, fingerprint_json, historical_match_json, future_match_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         match_id,
@@ -1246,6 +1334,7 @@ class KnowledgeStore:
                         _to_text(rec.get("future_best_paper_id")),
                         _json_dumps(rec.get("support_citations") or []),
                         _json_dumps(rec.get("hypothesis") or {}),
+                        _json_dumps(rec.get("idea_scores") or {}),
                         _json_dumps(rec.get("fingerprint") or {}),
                         _json_dumps(rec.get("historical_match") or {}),
                         _json_dumps(rec.get("future_match") or {}),
@@ -1279,7 +1368,7 @@ class KnowledgeStore:
                 SELECT match_id, run_id, snapshot_id, created_at, target_id, target_type, method_name, seed,
                        hypothesis_id, classification, historical_label, future_label, first_future_year,
                        historical_best_paper_id, future_best_paper_id, support_citations_json, hypothesis_json,
-                       fingerprint_json, historical_match_json, future_match_json
+                       idea_scores_json, fingerprint_json, historical_match_json, future_match_json
                 FROM evaluation_matches
                 {where_sql}
                 ORDER BY created_at DESC
@@ -1309,6 +1398,7 @@ class KnowledgeStore:
                     "future_best_paper_id": r["future_best_paper_id"],
                     "support_citations": _json_loads(r["support_citations_json"], []),
                     "hypothesis": hypothesis,
+                    "idea_scores": _json_loads(r["idea_scores_json"], (hypothesis or {}).get("idea_scores", {})),
                     "fingerprint": _json_loads(r["fingerprint_json"], {}),
                     "historical_match": _json_loads(r["historical_match_json"], {}),
                     "future_match": _json_loads(r["future_match_json"], {}),
@@ -1319,5 +1409,4 @@ class KnowledgeStore:
 
 
 def default_store() -> KnowledgeStore:
-    db_path = os.getenv("NOVELTY_AGENT_DB", os.path.join("data", "novelty_agent_knowledge.sqlite"))
-    return KnowledgeStore(db_path)
+    return KnowledgeStore(default_db_path())

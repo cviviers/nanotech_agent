@@ -26,7 +26,7 @@ from .analysis_v1 import run_analysis_v1
 from .candidate_match import best_candidate, build_corpus_index, first_matching_year, retrieve_candidates_for_hypothesis
 from .generators import GenerationContext, run_generation_method, target_id
 from .idea_fingerprint import fingerprint_hypothesis
-from .judge import classify_hypothesis_match
+from .judge import classify_hypothesis_match, score_hypotheses
 from .metrics import aggregate_match_metrics
 from .qwen_client import QwenClient
 from .time_split import load_dataset_and_embeddings, split_corpus_by_time
@@ -152,6 +152,7 @@ def _review_rows(matches: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     for match in matches:
         hypothesis = match.get("hypothesis", {})
+        idea_scores = match.get("idea_scores") or hypothesis.get("idea_scores") or {}
         historical = match.get("historical_match", {})
         future = match.get("future_match", {})
         rows.append(
@@ -166,6 +167,15 @@ def _review_rows(matches: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "title": hypothesis.get("title"),
                 "text": hypothesis.get("text"),
                 "discovery_cue_text": ((match.get("discovery_cue") or {}).get("text") or ""),
+                "importance_score": (idea_scores.get("importance") or {}).get("score"),
+                "novelty_score": (idea_scores.get("novelty") or {}).get("score"),
+                "plausibility_score": (idea_scores.get("plausibility") or {}).get("score"),
+                "feasibility_score": (idea_scores.get("feasibility") or {}).get("score"),
+                "evaluability_score": (idea_scores.get("evaluability") or {}).get("score"),
+                "likely_impact_score": (idea_scores.get("likely_impact") or {}).get("score"),
+                "average_idea_score": idea_scores.get("average_score"),
+                "idea_score_summary": idea_scores.get("summary"),
+                "idea_score_method": idea_scores.get("score_method"),
                 "support_citations": "; ".join(match.get("support_citations") or []),
                 "historical_label": match.get("historical_label"),
                 "historical_best_paper_id": match.get("historical_best_paper_id"),
@@ -327,7 +337,18 @@ def run_retrospective(
                     continue
 
                 effective_target = dict(gen_meta.get("effective_target") or target)
+                scored_hypotheses = score_hypotheses(
+                    [hypothesis.model_dump() for hypothesis in hypotheses],
+                    evidence_pack=gen_meta.get("evidence_pack"),
+                    audit=gen_meta.get("audit"),
+                    explanation=gen_meta.get("explanation"),
+                    target=effective_target,
+                    discovery_cue=normalized_cue,
+                    openai_api_key=openai_api_key,
+                    model_name=model_name,
+                )
                 for hypothesis in hypotheses:
+                    hypothesis.idea_scores = dict(scored_hypotheses.get(hypothesis.hypothesis_id) or {})
                     hyp_payload = hypothesis.model_dump()
                     fingerprint = dict(hypothesis.idea_fingerprint or fingerprint_hypothesis(hyp_payload))
                     query_text = str(fingerprint.get("query_text") or hypothesis.text or hypothesis.title)
@@ -379,6 +400,7 @@ def run_retrospective(
                         future_best_paper_id=future_best.get("paper_id"),
                         support_citations=hypothesis.support_citations,
                         hypothesis=hyp_payload,
+                        idea_scores=hypothesis.idea_scores,
                         fingerprint=fingerprint,
                         historical_match=historical_best,
                         future_match=future_payload,
