@@ -69,14 +69,28 @@ def init_session_state():
         st.session_state.df_filtered = None
     if 'df_valid' not in st.session_state:
         st.session_state.df_valid = None
+    if 'df_valid_full' not in st.session_state:
+        st.session_state.df_valid_full = None
+    if 'frontend_corpus_manifest' not in st.session_state:
+        st.session_state.frontend_corpus_manifest = None
+    if 'frontend_keyword_filters' not in st.session_state:
+        st.session_state.frontend_keyword_filters = {}
+    if 'frontend_analysis_config' not in st.session_state:
+        st.session_state.frontend_analysis_config = None
+    if 'embedding_processing_config' not in st.session_state:
+        st.session_state.embedding_processing_config = {}
     
     # Processing states
     if 'embeddings_extracted' not in st.session_state:
         st.session_state.embeddings_extracted = False
     if 'embeddings_dict' not in st.session_state:
         st.session_state.embeddings_dict = {}
+    if 'embeddings_dict_full' not in st.session_state:
+        st.session_state.embeddings_dict_full = {}
     if 'X_primary' not in st.session_state:
         st.session_state.X_primary = None
+    if 'X_primary_full' not in st.session_state:
+        st.session_state.X_primary_full = None
     if 'X_pca' not in st.session_state:
         st.session_state.X_pca = None
     if 'X_umap_2d' not in st.session_state:
@@ -141,3 +155,27 @@ def init_session_state():
         st.session_state.agent_last_run = None
     if 'agent_artifacts_cache' not in st.session_state:
         st.session_state.agent_artifacts_cache = None
+    if 'agent_publish_retrospective_metadata' not in st.session_state:
+        st.session_state.agent_publish_retrospective_metadata = False
+    if 'agent_publish_split_role' not in st.session_state:
+        st.session_state.agent_publish_split_role = "historical"
+    if 'agent_publish_cutoff_date' not in st.session_state:
+        st.session_state.agent_publish_cutoff_date = ""
+    if 'agent_publish_future_window_start' not in st.session_state:
+        st.session_state.agent_publish_future_window_start = ""
+    if 'agent_publish_future_window_end' not in st.session_state:
+        st.session_state.agent_publish_future_window_end = ""
+    if 'agent_split_bundle_prefix' not in st.session_state:
+        st.session_state.agent_split_bundle_prefix = ""
+    if 'agent_publish_future_snapshot' not in st.session_state:
+        st.session_state.agent_publish_future_snapshot = True
+    if 'agent_split_publish_result' not in st.session_state:
+        st.session_state.agent_split_publish_result = None
+    if 'agent_publish_drop_post_cutoff' not in st.session_state:
+        st.session_state.agent_publish_drop_post_cutoff = False
+    if 'load_drop_post_cutoff' not in st.session_state:
+        st.session_state.load_drop_post_cutoff = False
+    if 'load_cutoff_date' not in st.session_state:
+        st.session_state.load_cutoff_date = ""
+    if 'load_cutoff_applied' not in st.session_state:
+        st.session_state.load_cutoff_applied = False

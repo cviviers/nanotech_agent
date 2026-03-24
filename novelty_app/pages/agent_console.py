@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import calendar
+import hashlib
 import json
 import os
 import traceback
@@ -16,21 +18,51 @@ try:
     from agents.backend_client import BackendClient
     _BACKEND_IMPORT_ERROR = None
 except Exception as exc:  # pragma: no cover
-    BackendClient = None  # type: ignore
-    _BACKEND_IMPORT_ERROR = exc
+    try:
+        from novelty_app.agents.backend_client import BackendClient
+        _BACKEND_IMPORT_ERROR = None
+    except Exception:
+        BackendClient = None  # type: ignore
+        _BACKEND_IMPORT_ERROR = exc
+
+try:
+    from agents.corpus_manifest import (
+        build_frontend_corpus_manifest,
+        hash_paper_ids,
+        stable_paper_id_from_row,
+        stable_paper_ids,
+    )
+    from agents.schemas import AnalysisConfig
+    from agents.snapshot_builder import build_snapshot_payload
+    from evaluation.analysis_v1 import run_analysis_v1
+except Exception:  # pragma: no cover
+    try:
+        from novelty_app.agents.corpus_manifest import (
+            build_frontend_corpus_manifest,
+            hash_paper_ids,
+            stable_paper_id_from_row,
+            stable_paper_ids,
+        )
+        from novelty_app.agents.schemas import AnalysisConfig
+        from novelty_app.agents.snapshot_builder import build_snapshot_payload
+        from novelty_app.evaluation.analysis_v1 import run_analysis_v1
+    except Exception:
+        AnalysisConfig = None  # type: ignore
+        build_snapshot_payload = None  # type: ignore
+        build_frontend_corpus_manifest = None  # type: ignore
+        hash_paper_ids = None  # type: ignore
+        stable_paper_id_from_row = None  # type: ignore
+        stable_paper_ids = None  # type: ignore
+        run_analysis_v1 = None  # type: ignore
 
 try:
     from agents.orchestrator_langgraph import build_orchestrator
 except Exception:  # pragma: no cover
     build_orchestrator = None  # type: ignore
 
-try:
-    from agents.snapshot_builder import build_snapshot_payload
-except Exception:  # pragma: no cover
-    from novelty_app.agents.snapshot_builder import build_snapshot_payload
-
 
 DEFAULT_BACKEND_URL = "http://localhost:8088"
+_USE_SESSION = object()
 
 
 def _now_iso() -> str:
@@ -104,6 +136,10 @@ def _jsonable(value: Any) -> Any:
     return str(value)
 
 
+def _hash_payload(payload: Dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+
 def _cluster_column() -> Optional[str]:
     selected = st.session_state.get("selected_clustering")
     df = st.session_state.get("df_valid")
@@ -121,14 +157,8 @@ def _cluster_column() -> Optional[str]:
 
 
 def _paper_id_from_row(row: pd.Series, row_label: Any, row_pos: int) -> str:
-    for key in ("pmid", "id", "paper_id", "doi"):
-        if key in row.index:
-            value = row.get(key)
-            if not _is_null(value):
-                text = str(value).strip()
-                if text:
-                    return text
-    return f"row_{row_pos}_{row_label}"
+    del row_label, row_pos
+    return stable_paper_id_from_row(row)
 
 
 def _safe_row_lookup(df: pd.DataFrame, idx_like: Any) -> Tuple[int, Any, pd.Series]:
@@ -143,21 +173,17 @@ def _safe_row_lookup(df: pd.DataFrame, idx_like: Any) -> Tuple[int, Any, pd.Seri
 def _build_snapshot_payload(
     include_raw_rows: bool = True,
     include_embeddings: bool = True,
+    metadata_overrides: Optional[Dict[str, Any]] = None,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     df = st.session_state.get("df_valid")
     if df is None:
         raise ValueError("No df_valid in session state. Load data first.")
-    return build_snapshot_payload(
+    return _build_snapshot_payload_for_df(
         df=df,
-        gap_regions=st.session_state.get("gap_regions") or [],
-        llm_results=st.session_state.get("llm_results"),
-        selected_clustering=st.session_state.get("selected_clustering"),
-        x_primary=st.session_state.get("X_primary"),
-        x_umap_2d=st.session_state.get("X_umap_2d"),
         include_raw_rows=include_raw_rows,
         include_embeddings=include_embeddings,
         snapshot_id=st.session_state.get("agent_snapshot_id") or f"snapshot_{uuid.uuid4().hex[:10]}",
-        source="streamlit_agent_console",
+        metadata_overrides=metadata_overrides,
     )
 
 
@@ -166,6 +192,389 @@ def _get_backend() -> BackendClient:
         raise RuntimeError(f"Backend client unavailable: {_BACKEND_IMPORT_ERROR}")
     base_url = (st.session_state.get("agent_backend_url") or DEFAULT_BACKEND_URL).strip()
     return BackendClient(base_url=base_url)
+
+
+def _normalize_optional_date(value: Any, field_label: str) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return pd.Timestamp(text).date().isoformat()
+    except Exception as exc:
+        raise ValueError(f"{field_label} must be a valid date in YYYY-MM-DD format.") from exc
+
+
+def _publication_year_span(df: Optional[pd.DataFrame]) -> Optional[str]:
+    if df is None or "publication_year" not in df.columns:
+        return None
+    years = pd.to_numeric(df["publication_year"], errors="coerce").dropna()
+    if years.empty:
+        return None
+    min_year = int(years.min())
+    max_year = int(years.max())
+    if min_year == max_year:
+        return str(min_year)
+    return f"{min_year}-{max_year}"
+
+
+def _sanitize_snapshot_id_fragment(value: str, fallback: str) -> str:
+    text = (value or "").strip()
+    if not text:
+        return fallback
+    cleaned = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in text)
+    cleaned = cleaned.strip("_")
+    return cleaned or fallback
+
+
+def _publication_dates(df: pd.DataFrame) -> pd.Series:
+    def _numeric_column(name: str) -> pd.Series:
+        if name in df.columns:
+            return pd.to_numeric(df[name], errors="coerce")
+        return pd.Series([None] * len(df), index=df.index, dtype="float64")
+
+    years = _numeric_column("publication_year")
+    months = _numeric_column("publication_month")
+    days = _numeric_column("publication_day")
+
+    values: List[pd.Timestamp] = []
+    for idx in range(len(df)):
+        year = years.iloc[idx]
+        if pd.isna(year):
+            values.append(pd.NaT)
+            continue
+        y = int(year)
+        month = int(months.iloc[idx]) if not pd.isna(months.iloc[idx]) else 12
+        month = min(max(month, 1), 12)
+        if not pd.isna(days.iloc[idx]):
+            day = int(days.iloc[idx])
+        else:
+            day = calendar.monthrange(y, month)[1]
+        day = min(max(day, 1), calendar.monthrange(y, month)[1])
+        values.append(pd.Timestamp(year=y, month=month, day=day))
+    return pd.Series(values, index=df.index, name="publication_date")
+
+
+def _subset_array(values: Any, keep_mask: List[bool]) -> Any:
+    if values is None:
+        return None
+    try:
+        return values[keep_mask]
+    except Exception:
+        pass
+    try:
+        return [value for value, keep in zip(values, keep_mask) if keep]
+    except Exception:
+        return None
+
+
+def _subset_gap_regions(
+    df: pd.DataFrame,
+    gap_regions: Optional[List[List[Any]]],
+    keep_mask: List[bool],
+) -> List[List[int]]:
+    if not gap_regions:
+        return []
+
+    label_to_pos: Dict[Any, int] = {}
+    for pos, label in enumerate(df.index):
+        label_to_pos.setdefault(label, pos)
+
+    pos_map: Dict[int, int] = {}
+    next_pos = 0
+    for orig_pos, keep in enumerate(keep_mask):
+        if keep:
+            pos_map[orig_pos] = next_pos
+            next_pos += 1
+
+    subset_regions: List[List[int]] = []
+    for region in gap_regions:
+        subset_region: List[int] = []
+        seen: set[int] = set()
+        for idx_like in region:
+            orig_pos: Optional[int] = None
+            if idx_like in label_to_pos:
+                orig_pos = label_to_pos[idx_like]
+            else:
+                try:
+                    orig_pos = int(idx_like)
+                except Exception:
+                    orig_pos = None
+            if orig_pos is None:
+                continue
+            new_pos = pos_map.get(orig_pos)
+            if new_pos is None or new_pos in seen:
+                continue
+            seen.add(new_pos)
+            subset_region.append(new_pos)
+        if subset_region:
+            subset_regions.append(subset_region)
+    return subset_regions
+
+
+def _build_snapshot_payload_for_df(
+    *,
+    df: pd.DataFrame,
+    include_raw_rows: bool,
+    include_embeddings: bool,
+    snapshot_id: str,
+    metadata_overrides: Optional[Dict[str, Any]] = None,
+    gap_regions: Optional[List[List[Any]]] = None,
+    llm_results: Any = _USE_SESSION,
+    x_primary: Any = _USE_SESSION,
+    x_umap_2d: Any = _USE_SESSION,
+    selected_clustering: Any = _USE_SESSION,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    return build_snapshot_payload(
+        df=df,
+        gap_regions=gap_regions if gap_regions is not None else st.session_state.get("gap_regions") or [],
+        llm_results=st.session_state.get("llm_results") if llm_results is _USE_SESSION else llm_results,
+        selected_clustering=(
+            st.session_state.get("selected_clustering") if selected_clustering is _USE_SESSION else selected_clustering
+        ),
+        x_primary=st.session_state.get("X_primary") if x_primary is _USE_SESSION else x_primary,
+        x_umap_2d=st.session_state.get("X_umap_2d") if x_umap_2d is _USE_SESSION else x_umap_2d,
+        include_raw_rows=include_raw_rows,
+        include_embeddings=include_embeddings,
+        snapshot_id=snapshot_id,
+        source="streamlit_agent_console",
+        metadata_overrides=metadata_overrides,
+    )
+
+
+def _retrospective_metadata_from_state(*, require_enabled: bool = False) -> Dict[str, Any]:
+    enabled = bool(st.session_state.get("agent_publish_retrospective_metadata"))
+    if not enabled:
+        if require_enabled:
+            raise ValueError("Enable retrospective metadata above before publishing split historical/future snapshots.")
+        return {}
+
+    split_role = str(st.session_state.get("agent_publish_split_role") or "historical")
+    cutoff_date = _normalize_optional_date(st.session_state.get("agent_publish_cutoff_date"), "Cutoff date")
+    future_window_start = _normalize_optional_date(
+        st.session_state.get("agent_publish_future_window_start"),
+        "Future window start",
+    )
+    future_window_end = _normalize_optional_date(
+        st.session_state.get("agent_publish_future_window_end"),
+        "Future window end",
+    )
+
+    missing_fields = [
+        label
+        for label, value in (
+            ("cutoff date", cutoff_date),
+            ("future window start", future_window_start),
+            ("future window end", future_window_end),
+        )
+        if not value
+    ]
+    if missing_fields:
+        raise ValueError("Retrospective snapshot metadata requires " + ", ".join(missing_fields) + ".")
+
+    cutoff_ts = pd.Timestamp(cutoff_date)
+    future_start_ts = pd.Timestamp(future_window_start)
+    future_end_ts = pd.Timestamp(future_window_end)
+    if future_start_ts <= cutoff_ts:
+        raise ValueError("Future window start must be after the cutoff date.")
+    if future_end_ts < future_start_ts:
+        raise ValueError("Future window end must be on or after future window start.")
+
+    return {
+        "split_role": split_role,
+        "cutoff_date": cutoff_date,
+        "future_window_start": future_window_start,
+        "future_window_end": future_window_end,
+    }
+
+
+def _retrospective_split_plan() -> Dict[str, Any]:
+    return _retrospective_split_plan_for_df(st.session_state.get("df_valid"))
+
+
+def _retrospective_split_plan_for_df(df: Optional[pd.DataFrame]) -> Dict[str, Any]:
+    if df is None:
+        raise ValueError("No df_valid in session state. Load data first.")
+
+    metadata = _retrospective_metadata_from_state(require_enabled=True)
+    publication_dates = _publication_dates(df)
+    cutoff_ts = pd.Timestamp(metadata["cutoff_date"])
+    future_start_ts = pd.Timestamp(metadata["future_window_start"])
+    future_end_ts = pd.Timestamp(metadata["future_window_end"])
+
+    historical_mask = (publication_dates.notna()) & (publication_dates <= cutoff_ts)
+    future_mask = (publication_dates.notna()) & (publication_dates >= future_start_ts) & (publication_dates <= future_end_ts)
+    excluded_mask = publication_dates.notna() & ~(historical_mask | future_mask)
+    undated_mask = publication_dates.isna()
+
+    return {
+        "metadata": metadata,
+        "publication_dates": publication_dates,
+        "historical_mask": historical_mask,
+        "future_mask": future_mask,
+        "excluded_mask": excluded_mask,
+        "undated_mask": undated_mask,
+        "counts": {
+            "historical": int(historical_mask.sum()),
+            "future": int(future_mask.sum()),
+            "excluded": int(excluded_mask.sum()),
+            "undated": int(undated_mask.sum()),
+        },
+    }
+
+
+def _frontend_authoritative_df() -> pd.DataFrame:
+    df = st.session_state.get("df_valid_full")
+    if df is not None:
+        return df.copy()
+    df = st.session_state.get("df_valid")
+    if df is None:
+        raise ValueError("No frontend corpus is loaded.")
+    return df.copy()
+
+
+def _frontend_authoritative_embeddings() -> Dict[str, Any]:
+    embeddings = st.session_state.get("embeddings_dict_full") or {}
+    if embeddings:
+        return {key: value.copy() if value is not None else None for key, value in embeddings.items()}
+    embeddings = st.session_state.get("embeddings_dict") or {}
+    if not embeddings:
+        raise ValueError("No embeddings are loaded for the frontend corpus.")
+    return {key: value.copy() if value is not None else None for key, value in embeddings.items()}
+
+
+def _normalized_frontend_analysis_config() -> Dict[str, Any]:
+    if AnalysisConfig is None:
+        raise RuntimeError("AnalysisConfig import is unavailable.")
+
+    selected_clustering = st.session_state.get("selected_clustering")
+    if selected_clustering not in {"hdbscan", "kmeans", "leiden"}:
+        raise ValueError(
+            "Retrospective export currently requires `kmeans`, `hdbscan`, or community detection (`leiden`)."
+        )
+
+    if st.session_state.get("gap_config") is None:
+        raise ValueError("Gap analysis configuration is missing. Run the Gap Analysis page before retrospective export.")
+
+    config = st.session_state.get("config") or {}
+    clustering_config = st.session_state.get("clustering_config") or {}
+    gap_config = st.session_state.get("gap_config") or {}
+    embedding_processing_config = st.session_state.get("embedding_processing_config") or {}
+    df = _frontend_authoritative_df()
+    working_df = st.session_state.get("df_valid")
+
+    x_pca = st.session_state.get("X_pca")
+    x_umap_2d = st.session_state.get("X_umap_2d")
+    primary_embedding = str(config.get("primary_embedding") or "qwen")
+    use_pca_for_analysis = x_pca is not None
+    pca_components = int(x_pca.shape[1]) if x_pca is not None else int(embedding_processing_config.get("pca_components") or 102)
+    kmeans_n_clusters: Optional[int] = (
+        int(clustering_config["kmeans_n_clusters"]) if clustering_config.get("kmeans_n_clusters") is not None else None
+    )
+    if selected_clustering == "kmeans" and working_df is not None and "cluster_kmeans" in working_df.columns:
+        kmeans_values = pd.to_numeric(working_df["cluster_kmeans"], errors="coerce").dropna()
+        unique_clusters = {int(value) for value in kmeans_values.tolist()}
+        if unique_clusters and kmeans_n_clusters is None:
+            kmeans_n_clusters = len(unique_clusters)
+
+    analysis_config = AnalysisConfig(
+        embedding_name=primary_embedding,
+        use_pca_for_analysis=use_pca_for_analysis,
+        pca_components=pca_components,
+        clustering_method=selected_clustering,
+        kmeans_n_clusters=kmeans_n_clusters if selected_clustering == "kmeans" else None,
+        hdbscan_min_cluster_size=int(clustering_config.get("hdbscan_min_cluster_size") or 5),
+        hdbscan_min_samples=int(clustering_config.get("hdbscan_min_samples") or 10),
+        community_detection_algorithm=str(
+            clustering_config.get("community_detection_algorithm") or "leiden"
+        ),
+        community_resolution=float(clustering_config.get("leiden_resolution") or 1.0),
+        community_graph_k=int(clustering_config.get("knn_graph_k") or 21),
+        community_graph_metric=str(clustering_config.get("community_graph_metric") or "cosine"),
+        knn_graph_k=int(gap_config.get("knn_graph_k") or clustering_config.get("knn_graph_k") or 21),
+        density_metric=str(gap_config.get("density_metric") or "cosine"),
+        density_k_list=[int(item) for item in (gap_config.get("k_neighbors") or [10, 20, 30, 50])],
+        gap_quantile=float(gap_config.get("gap_quantile") or 0.95),
+        min_gap_region_size=int(gap_config.get("min_gap_region_size") or 3),
+        random_seed=int(st.session_state.get("random_seed") or config.get("random_seed") or 42),
+        compute_umap=bool(x_umap_2d is not None),
+        umap_neighbors=int(embedding_processing_config.get("umap_neighbors") or 50),
+        umap_min_dist=float(embedding_processing_config.get("umap_min_dist") or 0.1),
+        notes="normalized_from_streamlit_frontend",
+    ).model_dump()
+    st.session_state.frontend_analysis_config = analysis_config
+    return analysis_config
+
+
+def _frontend_corpus_manifest_from_state() -> Dict[str, Any]:
+    manifest = st.session_state.get("frontend_corpus_manifest")
+    if manifest:
+        return dict(manifest)
+    if build_frontend_corpus_manifest is None:
+        raise RuntimeError("Frontend corpus manifest helpers are unavailable.")
+    config = st.session_state.get("config") or {}
+    keyword_filters = st.session_state.get("frontend_keyword_filters") or {}
+    data_path = str(config.get("data_path") or "data/cleaned_dataset.json")
+    data_dir = os.fspath(os.path.dirname(data_path) or ".")
+    manifest = build_frontend_corpus_manifest(
+        _frontend_authoritative_df(),
+        sample_n=config.get("sample_n"),
+        random_seed=int(st.session_state.get("random_seed") or config.get("random_seed") or 42),
+        title_exclusion_keywords=keyword_filters.get("title_exclusion_keywords") or [],
+        abstract_exclusion_keywords=keyword_filters.get("abstract_exclusion_keywords") or [],
+        embedding_source=str(config.get("primary_embedding") or "qwen"),
+        available_embeddings=config.get("embedding_cols") or [str(config.get("primary_embedding") or "qwen")],
+        data_json=data_path,
+        data_dir=data_dir,
+    )
+    st.session_state.frontend_corpus_manifest = manifest
+    return dict(manifest)
+
+
+def _snapshot_metadata_overrides() -> Dict[str, Any]:
+    if not st.checkbox(
+        "Annotate snapshot for retrospective evaluation",
+        key="agent_publish_retrospective_metadata",
+        help=(
+            "Adds split-role and cutoff-window metadata to the snapshot so historical "
+            "retrospective evaluation runs can reuse the published snapshot cleanly."
+        ),
+    ):
+        return {}
+
+    year_span = _publication_year_span(st.session_state.get("df_valid"))
+    if year_span:
+        st.caption(f"Current dataframe publication_year span: {year_span}")
+
+    split_role = st.selectbox(
+        "Snapshot split role",
+        options=["historical", "future", "full"],
+        key="agent_publish_split_role",
+        help="Use `historical` for snapshots intended to seed the retrospective evaluation pipeline.",
+    )
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        cutoff_raw = st.text_input(
+            "Cutoff date",
+            key="agent_publish_cutoff_date",
+            help="Historical papers must fall on or before this date.",
+            placeholder="YYYY-MM-DD",
+        )
+    with col2:
+        future_start_raw = st.text_input(
+            "Future window start",
+            key="agent_publish_future_window_start",
+            help="First future-paper date used by the retrospective benchmark.",
+            placeholder="YYYY-MM-DD",
+        )
+    with col3:
+        future_end_raw = st.text_input(
+            "Future window end",
+            key="agent_publish_future_window_end",
+            help="Last future-paper date used by the retrospective benchmark.",
+            placeholder="YYYY-MM-DD",
+        )
+
+    return _retrospective_metadata_from_state()
 
 
 def page_agent_console() -> None:
@@ -238,12 +647,54 @@ def _tab_snapshot_publish() -> None:
         key="agent_include_embeddings",
         help="Uses st.session_state.X_primary. Increases snapshot size, but enables richer evidence-pack selection.",
     )
+    drop_post_cutoff = st.checkbox(
+        "Drop papers after cutoff date before publishing snapshot",
+        key="agent_publish_drop_post_cutoff",
+        help=(
+            "When retrospective metadata is enabled, publish only papers on or before the cutoff date. "
+            "This is useful for historical snapshots."
+        ),
+    )
 
     try:
-        payload, summary = _build_snapshot_payload(
-            include_raw_rows=include_raw_rows,
-            include_embeddings=include_embeddings,
-        )
+        metadata_overrides = _snapshot_metadata_overrides()
+        if drop_post_cutoff:
+            split_plan = _retrospective_split_plan()
+            historical_mask_list = [bool(v) for v in split_plan["historical_mask"].tolist()]
+            if not any(historical_mask_list):
+                raise ValueError("No papers remain on or before the cutoff date.")
+            cutoff_metadata = dict(metadata_overrides or {})
+            cutoff_metadata["split_role"] = "historical"
+            extra = dict(cutoff_metadata.get("extra") or {})
+            extra["cutoff_filter_applied"] = True
+            extra["excluded_post_cutoff_papers"] = split_plan["counts"]["excluded"]
+            extra["excluded_undated_papers"] = split_plan["counts"]["undated"]
+            cutoff_metadata["extra"] = extra
+            payload, summary = _build_snapshot_payload_for_df(
+                df=st.session_state.df_valid.loc[split_plan["historical_mask"]].copy(),
+                include_raw_rows=include_raw_rows,
+                include_embeddings=include_embeddings,
+                snapshot_id=st.session_state.get("agent_snapshot_id") or f"snapshot_{uuid.uuid4().hex[:10]}",
+                metadata_overrides=cutoff_metadata,
+                gap_regions=_subset_gap_regions(
+                    st.session_state.df_valid,
+                    st.session_state.get("gap_regions") or [],
+                    historical_mask_list,
+                ),
+                llm_results=None,
+                x_primary=_subset_array(st.session_state.get("X_primary"), historical_mask_list),
+                x_umap_2d=_subset_array(st.session_state.get("X_umap_2d"), historical_mask_list),
+            )
+            st.info(
+                "Publishing a cutoff-filtered historical snapshot. "
+                f"Included {summary['n_papers']} papers on or before {split_plan['metadata']['cutoff_date']}."
+            )
+        else:
+            payload, summary = _build_snapshot_payload(
+                include_raw_rows=include_raw_rows,
+                include_embeddings=include_embeddings,
+                metadata_overrides=metadata_overrides,
+            )
     except Exception as exc:
         st.error(f"Failed to build snapshot payload: {exc}")
         return
@@ -292,6 +743,264 @@ def _tab_snapshot_publish() -> None:
 
     if st.checkbox("Preview first 3 paper records", value=False, key="agent_preview_records"):
         st.json(payload["papers"][:3])
+
+    st.divider()
+    st.subheader("Retrospective Split Export")
+    st.caption(
+        "Rerun historical-only analysis on the preserved frontend corpus, publish a historical snapshot, "
+        "optionally publish the future window, and store a manifest artifact for later evaluation."
+    )
+    publish_future_snapshot = st.checkbox(
+        "Also publish future snapshot for inspection",
+        value=True,
+        key="agent_publish_future_snapshot",
+        help="The historical snapshot plus manifest artifact are sufficient for evaluation. The future snapshot is optional.",
+    )
+
+    split_prefix_raw = st.text_input(
+        "Split Snapshot Prefix (optional)",
+        key="agent_split_bundle_prefix",
+        help="If blank, the current snapshot id or cutoff date is used to derive snapshot ids.",
+        placeholder="retro_eval_20201231",
+    )
+
+    split_plan: Optional[Dict[str, Any]] = None
+    source_df: Optional[pd.DataFrame] = None
+    frontend_manifest: Optional[Dict[str, Any]] = None
+    analysis_config_payload: Optional[Dict[str, Any]] = None
+    split_error: Optional[str] = None
+    try:
+        source_df = _frontend_authoritative_df()
+        split_plan = _retrospective_split_plan_for_df(source_df)
+        frontend_manifest = _frontend_corpus_manifest_from_state()
+        expected_paper_ids = stable_paper_ids(source_df)
+        expected_hash = hash_paper_ids(expected_paper_ids)
+        if frontend_manifest.get("retained_paper_id_hash") != expected_hash or int(frontend_manifest.get("row_count") or 0) != len(source_df):
+            raise ValueError(
+                "The preserved frontend corpus manifest no longer matches the authoritative frontend corpus in memory."
+            )
+        analysis_config_payload = _normalized_frontend_analysis_config()
+    except Exception as exc:
+        split_error = str(exc)
+        st.info("Enable retrospective metadata above and provide valid dates to prepare a split export.")
+        st.caption(split_error)
+
+    if split_plan is not None and source_df is not None and frontend_manifest is not None and analysis_config_payload is not None:
+        counts = split_plan["counts"]
+        metadata = split_plan["metadata"]
+        default_prefix = st.session_state.get("agent_snapshot_publish_id") or st.session_state.get("agent_snapshot_id") or (
+            f"retro_{metadata['cutoff_date'].replace('-', '')}"
+        )
+        bundle_prefix = _sanitize_snapshot_id_fragment(split_prefix_raw or default_prefix, "retrospective_bundle")
+        historical_snapshot_id = f"{bundle_prefix}_historical"
+        future_snapshot_id = f"{bundle_prefix}_future" if publish_future_snapshot else None
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Historical Papers", counts["historical"])
+        c2.metric("Future Papers", counts["future"])
+        c3.metric("Excluded Dated Papers", counts["excluded"])
+        c4.metric("Undated Papers", counts["undated"])
+        if st.session_state.get("load_cutoff_applied"):
+            st.info(
+                "The active working dataframe is cutoff-filtered, but retrospective export will use the preserved "
+                "full frontend corpus captured at load time."
+            )
+        st.code(
+            json.dumps(
+                {
+                    "historical_snapshot_id": historical_snapshot_id,
+                    "future_snapshot_id": future_snapshot_id,
+                    "authoritative_frontend_corpus_rows": len(source_df),
+                    "analysis_config_hash": _hash_payload(analysis_config_payload),
+                    **metadata,
+                },
+                indent=2,
+            ),
+            language="json",
+        )
+        st.success(
+            "Historical export will rerun analysis on pre-cutoff papers only, using the preserved frontend corpus "
+            "definition and the normalized frontend analysis configuration."
+        )
+
+        if st.button("Publish Retrospective Evaluation Bundle", key="agent_publish_split_snapshots"):
+            try:
+                backend = _get_backend()
+                historical_mask_list = [bool(v) for v in split_plan["historical_mask"].tolist()]
+                future_mask_list = [bool(v) for v in split_plan["future_mask"].tolist()]
+                if not any(historical_mask_list):
+                    raise ValueError("Historical split is empty for the selected cutoff date.")
+                if not any(future_mask_list):
+                    raise ValueError("Future split is empty for the selected future window.")
+
+                embeddings_full = _frontend_authoritative_embeddings()
+                embedding_source = str(analysis_config_payload["embedding_name"])
+                if embedding_source not in embeddings_full:
+                    raise ValueError(f"Primary embedding `{embedding_source}` is not available in the preserved corpus.")
+
+                analysis = run_analysis_v1(
+                    source_df.loc[split_plan["historical_mask"]].reset_index(drop=True).copy(),
+                    embeddings_full[embedding_source][split_plan["historical_mask"].to_numpy()].copy(),
+                    config=AnalysisConfig(**analysis_config_payload),
+                )
+                future_df = source_df.loc[split_plan["future_mask"]].reset_index(drop=True).copy()
+                future_embeddings = embeddings_full[embedding_source][split_plan["future_mask"].to_numpy()].copy()
+                analysis_config_hash = _hash_payload(analysis.analysis_config)
+                historical_paper_ids = stable_paper_ids(analysis.df)
+                future_paper_ids = stable_paper_ids(future_df)
+
+                shared_metadata = {
+                    "cutoff_date": metadata["cutoff_date"],
+                    "future_window_start": metadata["future_window_start"],
+                    "future_window_end": metadata["future_window_end"],
+                    "analysis_config": analysis.analysis_config,
+                    "analysis_config_hash": analysis_config_hash,
+                    "embedding_source": embedding_source,
+                }
+                historical_metadata = {
+                    **shared_metadata,
+                    "split_role": "historical",
+                    "extra": {
+                        "bundle_prefix": bundle_prefix,
+                        "paired_snapshot_id": future_snapshot_id,
+                        "export_mode": "streamlit_retrospective_rerun",
+                        "retrospective_bundle_kind": "retrospective_snapshot_bundle",
+                        "source_corpus_row_count": frontend_manifest["row_count"],
+                        "source_corpus_paper_id_hash": frontend_manifest["retained_paper_id_hash"],
+                        "historical_paper_count": len(historical_paper_ids),
+                        "historical_paper_id_hash": hash_paper_ids(historical_paper_ids),
+                        "future_paper_count": len(future_paper_ids),
+                        "future_paper_id_hash": hash_paper_ids(future_paper_ids),
+                        "excluded_dated_papers": counts["excluded"],
+                        "undated_papers": counts["undated"],
+                    },
+                }
+
+                historical_payload, historical_summary = _build_snapshot_payload_for_df(
+                    df=analysis.df,
+                    include_raw_rows=include_raw_rows,
+                    include_embeddings=include_embeddings,
+                    snapshot_id=historical_snapshot_id,
+                    metadata_overrides=historical_metadata,
+                    gap_regions=analysis.gap_regions,
+                    llm_results=None,
+                    x_primary=analysis.x_primary,
+                    x_umap_2d=analysis.x_umap_2d,
+                    selected_clustering=analysis.selected_clustering,
+                )
+
+                historical_resp = backend.publish_snapshot(historical_payload)
+                future_resp: Optional[Dict[str, Any]] = None
+                future_summary: Dict[str, Any] = {
+                    "n_papers": len(future_df),
+                    "paper_id_hash": hash_paper_ids(future_paper_ids),
+                }
+                if publish_future_snapshot and future_snapshot_id is not None:
+                    future_metadata = {
+                        **shared_metadata,
+                        "split_role": "future",
+                        "extra": {
+                            "bundle_prefix": bundle_prefix,
+                            "paired_snapshot_id": historical_snapshot_id,
+                            "export_mode": "streamlit_retrospective_rerun",
+                            "retrospective_bundle_kind": "retrospective_snapshot_bundle",
+                            "source_corpus_row_count": frontend_manifest["row_count"],
+                            "source_corpus_paper_id_hash": frontend_manifest["retained_paper_id_hash"],
+                            "future_paper_count": len(future_paper_ids),
+                            "future_paper_id_hash": hash_paper_ids(future_paper_ids),
+                        },
+                    }
+                    future_payload, future_summary = _build_snapshot_payload_for_df(
+                        df=future_df,
+                        include_raw_rows=include_raw_rows,
+                        include_embeddings=include_embeddings,
+                        snapshot_id=future_snapshot_id,
+                        metadata_overrides=future_metadata,
+                        gap_regions=[],
+                        llm_results=None,
+                        x_primary=future_embeddings,
+                        x_umap_2d=None,
+                        selected_clustering=None,
+                    )
+                    future_resp = backend.publish_snapshot(future_payload)
+
+                manifest_resp = backend.store_artifact(
+                    kind="retrospective_snapshot_bundle",
+                    snapshot_id=historical_snapshot_id,
+                    target={
+                        "target_type": "retrospective_snapshot_bundle",
+                        "bundle_prefix": bundle_prefix,
+                        "historical_snapshot_id": historical_snapshot_id,
+                        "future_snapshot_id": future_snapshot_id,
+                    },
+                    payload={
+                        "schema_version": "retrospective_snapshot_bundle_v1",
+                        "source": "streamlit_agent_console",
+                        **shared_metadata,
+                        "historical_snapshot_id": historical_snapshot_id,
+                        "future_snapshot_id": future_snapshot_id,
+                        "publish_future_snapshot": publish_future_snapshot,
+                        "corpus_manifest": frontend_manifest,
+                        "analysis_config": analysis.analysis_config,
+                        "analysis_config_hash": analysis_config_hash,
+                        "historical_summary": historical_summary,
+                        "future_summary": future_summary,
+                        "historical_paper_count": len(historical_paper_ids),
+                        "historical_paper_id_hash": hash_paper_ids(historical_paper_ids),
+                        "future_paper_count": len(future_paper_ids),
+                        "future_paper_id_hash": hash_paper_ids(future_paper_ids),
+                        "excluded_dated_papers": counts["excluded"],
+                        "undated_papers": counts["undated"],
+                    },
+                )
+                backend.update_snapshot_metadata(
+                    historical_snapshot_id,
+                    {
+                        "extra": {
+                            **dict(historical_payload.get("metadata", {}).get("extra") or {}),
+                            "retrospective_bundle_artifact_id": manifest_resp.get("artifact_id"),
+                            "retrospective_bundle_kind": "retrospective_snapshot_bundle",
+                        }
+                    },
+                )
+                if publish_future_snapshot and future_snapshot_id is not None:
+                    backend.update_snapshot_metadata(
+                        future_snapshot_id,
+                        {
+                            "extra": {
+                                **dict(future_payload.get("metadata", {}).get("extra") or {}),
+                                "retrospective_bundle_artifact_id": manifest_resp.get("artifact_id"),
+                                "retrospective_bundle_kind": "retrospective_snapshot_bundle",
+                            }
+                        },
+                    )
+                st.session_state.agent_snapshot_id = historical_snapshot_id
+                st.session_state.agent_split_publish_result = {
+                    "ok": True,
+                    "bundle_prefix": bundle_prefix,
+                    "analysis_config": analysis.analysis_config,
+                    "historical": historical_resp,
+                    "future": future_resp,
+                    "manifest_artifact": manifest_resp,
+                }
+                st.success("Retrospective evaluation bundle published")
+            except Exception as exc:
+                st.session_state.agent_split_publish_result = {
+                    "error": str(exc),
+                    "repr": repr(exc),
+                    "traceback": traceback.format_exc(),
+                }
+                st.error(f"Split publish failed: {exc}")
+                with st.expander("Split Publish Debug Details", expanded=True):
+                    st.json(
+                        {
+                            "error": str(exc),
+                            "repr": repr(exc),
+                        }
+                    )
+                    st.code(traceback.format_exc())
+
+    if st.session_state.get("agent_split_publish_result"):
+        st.json(st.session_state.agent_split_publish_result)
 
 
 def _tab_skills_playground() -> None:
@@ -414,7 +1123,12 @@ def _tab_skills_playground() -> None:
             try:
                 target = json.loads(target_text or "{}")
                 payload = json.loads(payload_text or "{}")
-                resp = backend.store_artifact(kind=kind, target=target, payload=payload)
+                resp = backend.store_artifact(
+                    kind=kind,
+                    target=target,
+                    payload=payload,
+                    snapshot_id=snapshot_id or None,
+                )
                 st.session_state.agent_last_tool_response = resp
                 st.success("Artifact stored")
             except Exception as exc:
@@ -485,6 +1199,18 @@ def _tab_orchestrator() -> None:
             st.error(f"Orchestrator failed: {exc}")
 
     if st.session_state.get("agent_last_run"):
+        observability = dict((st.session_state.get("agent_last_run") or {}).get("observability") or {})
+        if observability:
+            cols = st.columns([2, 3])
+            cols[0].text_input(
+                "Latest Trace ID",
+                value=str(observability.get("trace_id") or ""),
+                disabled=True,
+                key="agent_last_run_trace_id",
+            )
+            trace_url = str(observability.get("url") or "").strip()
+            if trace_url:
+                cols[1].markdown(f"[Open Langfuse Trace]({trace_url})")
         st.json(st.session_state.agent_last_run)
 
 

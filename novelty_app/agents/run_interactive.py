@@ -74,6 +74,10 @@ def main() -> None:
     print("iterations:", out.get("iter", 0))
     print("published:", out.get("published", False))
     print("audit supported_claim_fraction:", out.get("audit", {}).get("supported_claim_fraction"))
+    observability = dict(out.get("observability") or {})
+    if observability:
+        print("trace_id:", observability.get("trace_id"))
+        print("trace_url:", observability.get("url"))
     axes = out.get("explanation", {}).get("axes_of_separation", [])[:3]
     print("\nAxes of separation (first 3):")
     print(json.dumps(axes, indent=2, ensure_ascii=False))

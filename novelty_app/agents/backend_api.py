@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -42,6 +42,7 @@ class EvidencePackRequest(BaseModel):
     gap_id: Optional[str] = None
     cluster_a: Optional[int] = None
     cluster_b: Optional[int] = None
+    profile: Literal["default", "focused_eval"] = "default"
     exemplars: int = 25
     boundary: int = 25
     diverse: int = 25
@@ -56,6 +57,11 @@ class ArtifactStoreRequest(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 
+class SnapshotMetadataUpdateRequest(BaseModel):
+    updates: Dict[str, Any] = Field(default_factory=dict)
+    replace: bool = False
+
+
 class EvaluationMatchesBatchRequest(BaseModel):
     records: List[EvaluationMatch] = Field(default_factory=list)
 
@@ -67,6 +73,8 @@ def root() -> Dict[str, Any]:
         "endpoints": [
             "GET /health",
             "GET /snapshots",
+            "GET /snapshots/{snapshot_id}",
+            "PATCH /snapshots/{snapshot_id}/metadata",
             "POST /admin/snapshots/publish",
             "GET /gaps/top",
             "GET /clusters",
@@ -74,6 +82,7 @@ def root() -> Dict[str, Any]:
             "POST /evidence/pack",
             "POST /artifacts/store",
             "GET /artifacts",
+            "GET /artifacts/{artifact_id}",
             "POST /evaluations/runs",
             "GET /evaluations/runs",
             "POST /evaluations/matches/batch",
@@ -90,6 +99,26 @@ def health() -> Dict[str, Any]:
 @app.get("/snapshots")
 def list_snapshots(limit: int = Query(20, ge=1, le=200)) -> Dict[str, Any]:
     return {"snapshots": STORE.list_snapshots(limit=limit)}
+
+
+@app.get("/snapshots/{snapshot_id}")
+def get_snapshot(snapshot_id: str) -> Dict[str, Any]:
+    try:
+        return STORE.get_snapshot(snapshot_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/snapshots/{snapshot_id}/metadata")
+def patch_snapshot_metadata(snapshot_id: str, req: SnapshotMetadataUpdateRequest) -> Dict[str, Any]:
+    try:
+        return STORE.update_snapshot_metadata(snapshot_id, req.updates, replace=bool(req.replace))
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/admin/snapshots/publish")
@@ -169,9 +198,23 @@ def artifacts_store(req: ArtifactStoreRequest) -> Dict[str, Any]:
 
 
 @app.get("/artifacts")
-def artifacts_list(snapshot_id: Optional[str] = None, limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
+def artifacts_list(
+    snapshot_id: Optional[str] = None,
+    kind: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+) -> Dict[str, Any]:
     try:
-        return {"artifacts": STORE.list_artifacts(snapshot_id=snapshot_id, limit=limit)}
+        return {"artifacts": STORE.list_artifacts(snapshot_id=snapshot_id, limit=limit, kind=kind)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/artifacts/{artifact_id}")
+def artifacts_get(artifact_id: str) -> Dict[str, Any]:
+    try:
+        return STORE.get_artifact(artifact_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

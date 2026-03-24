@@ -21,10 +21,14 @@ class AnalysisConfig(BaseModel):
     embedding_name: str = "qwen"
     use_pca_for_analysis: bool = True
     pca_components: int = 102
-    clustering_method: Literal["hdbscan", "kmeans"] = "hdbscan"
+    clustering_method: Literal["hdbscan", "kmeans", "leiden"] = "hdbscan"
     kmeans_n_clusters: Optional[int] = None
     hdbscan_min_cluster_size: int = 5
     hdbscan_min_samples: int = 10
+    community_detection_algorithm: Literal["leiden", "louvain"] = "leiden"
+    community_resolution: float = 1.0
+    community_graph_k: int = 21
+    community_graph_metric: str = "cosine"
     knn_graph_k: int = 21
     density_metric: str = "cosine"
     density_k_list: List[int] = Field(default_factory=lambda: [10, 20, 30, 50])
@@ -76,6 +80,16 @@ class EvidencePack(BaseModel):
     discovery_cue: Optional[Dict[str, Any]] = None
 
 
+class TraceRef(BaseModel):
+    provider: Optional[str] = None
+    trace_id: Optional[str] = None
+    observation_id: Optional[str] = None
+    url: Optional[str] = None
+    session_id: Optional[str] = None
+    tags: Optional[List[str]] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
 class GeneratedHypothesis(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
     run_id: Optional[str] = None
@@ -94,6 +108,7 @@ class GeneratedHypothesis(BaseModel):
     idea_fingerprint: Dict[str, Any] = Field(default_factory=dict)
     idea_scores: Dict[str, Any] = Field(default_factory=dict)
     discovery_cue: Dict[str, Any] = Field(default_factory=dict)
+    trace_ref: TraceRef = Field(default_factory=TraceRef)
 
 
 class EvaluationRun(BaseModel):
@@ -109,6 +124,7 @@ class EvaluationRun(BaseModel):
     metrics: Dict[str, Any] = Field(default_factory=dict)
     status: str = "completed"
     discovery_cue: Dict[str, Any] = Field(default_factory=dict)
+    observability: TraceRef = Field(default_factory=TraceRef)
 
 
 class EvaluationMatch(BaseModel):
@@ -121,25 +137,39 @@ class EvaluationMatch(BaseModel):
     method_name: str
     seed: int = 0
     hypothesis_id: str
-    classification: Literal[
-        "already_present",
-        "anticipatory_strong",
-        "anticipatory_partial",
-        "unsupported",
-        "unrealized",
+    recovery_label: Literal[
+        "gold_recovered",
+        "future_neighbor_only",
+        "historical_confound",
+        "not_recovered",
     ]
     historical_label: Literal["strong_match", "partial_match", "background_only", "no_match"] = "no_match"
-    future_label: Literal["strong_match", "partial_match", "background_only", "no_match"] = "no_match"
-    first_future_year: Optional[int] = None
-    historical_best_paper_id: Optional[str] = None
-    future_best_paper_id: Optional[str] = None
+    future_neighbor_label: Literal["strong_match", "partial_match", "background_only", "no_match"] = "no_match"
+    gold_future_paper_id: str
+    gold_future_title: str = ""
+    gold_future_year: Optional[int] = None
+    assigned_target_id: str
+    assigned_target_score: float = 0.0
+    gold_rank: Optional[int] = None
+    gold_reciprocal_rank: float = 0.0
+    gold_hit_at_1: bool = False
+    gold_hit_at_5: bool = False
+    gold_hit_at_10: bool = False
+    cue_score: Optional[float] = None
+    cue_weighted_rr: float = 0.0
+    best_future_neighbor_paper_id: Optional[str] = None
+    best_historical_confounder_id: Optional[str] = None
     support_citations: List[str] = Field(default_factory=list)
     hypothesis: Dict[str, Any] = Field(default_factory=dict)
     idea_scores: Dict[str, Any] = Field(default_factory=dict)
     fingerprint: Dict[str, Any] = Field(default_factory=dict)
+    evidence_pack_summary: Dict[str, Any] = Field(default_factory=dict)
     historical_match: Dict[str, Any] = Field(default_factory=dict)
     future_match: Dict[str, Any] = Field(default_factory=dict)
+    historical_candidates: List[Dict[str, Any]] = Field(default_factory=list)
+    future_candidates: List[Dict[str, Any]] = Field(default_factory=list)
     discovery_cue: Dict[str, Any] = Field(default_factory=dict)
+    trace_ref: TraceRef = Field(default_factory=TraceRef)
 
 
 class ReviewPacket(BaseModel):

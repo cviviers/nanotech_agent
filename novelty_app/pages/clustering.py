@@ -73,7 +73,12 @@ def page_clustering():
         'hdbscan_min_cluster_size': hdbscan_min_cluster,
         'knn_graph_k': knn_graph_k,
         'hdbscan_min_samples': hdbscan_min_samples,
-        'leiden_resolution': leiden_resolution
+        'leiden_resolution': leiden_resolution,
+        'kmeans_n_clusters': int(st.session_state.get('kmeans_main', 20)),
+        'community_detection_algorithm': (
+            'leiden' if LEIDEN_AVAILABLE else 'louvain' if LOUVAIN_AVAILABLE else None
+        ),
+        'community_graph_metric': 'cosine',
     }
     
     clustering_config = st.session_state.clustering_config
@@ -267,7 +272,7 @@ def page_clustering():
                 run_leiden_clustering(clustering_config)
         elif LOUVAIN_AVAILABLE:
             if st.button("▶️ Run Louvain Community Detection"):
-                run_louvain_clustering()
+                run_louvain_clustering(clustering_config)
         else:
             st.warning("⚠️ No community detection algorithm available")
     else:
@@ -523,6 +528,13 @@ def run_leiden_clustering(clustering_config):
     """Run Leiden algorithm"""
     save_state_for_undo("Leiden Clustering")
     with st.spinner("Running Leiden algorithm..."):
+        st.session_state.clustering_config = {
+            **dict(st.session_state.get("clustering_config") or {}),
+            "community_detection_algorithm": "leiden",
+            "community_graph_metric": "cosine",
+            "knn_graph_k": int(clustering_config["knn_graph_k"]),
+            "leiden_resolution": float(clustering_config["leiden_resolution"]),
+        }
         G = st.session_state.G
         mapping = {n: i for i, n in enumerate(G.nodes())}
         edges = [(mapping[u], mapping[v]) for u, v in G.edges()]
@@ -548,12 +560,24 @@ def run_leiden_clustering(clustering_config):
         st.rerun()
 
 
-def run_louvain_clustering():
+def run_louvain_clustering(clustering_config):
     """Run Louvain algorithm"""
     save_state_for_undo("Louvain Clustering")
     with st.spinner("Running Louvain algorithm..."):
+        st.session_state.clustering_config = {
+            **dict(st.session_state.get("clustering_config") or {}),
+            "community_detection_algorithm": "louvain",
+            "community_graph_metric": "cosine",
+            "knn_graph_k": int(clustering_config["knn_graph_k"]),
+            "leiden_resolution": float(clustering_config["leiden_resolution"]),
+        }
         G = st.session_state.G
-        partition = community_louvain.best_partition(G, weight='weight', random_state=st.session_state.random_seed)
+        partition = community_louvain.best_partition(
+            G,
+            weight='weight',
+            resolution=float(clustering_config['leiden_resolution']),
+            random_state=st.session_state.random_seed,
+        )
         labels = np.array([partition[i] for i in range(len(G))], dtype=int)
         
         st.session_state.df_valid['cluster_leiden'] = labels

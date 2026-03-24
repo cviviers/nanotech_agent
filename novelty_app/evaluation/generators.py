@@ -32,6 +32,7 @@ except Exception:  # pragma: no cover
     from novelty_app.agents.schemas import GeneratedHypothesis
 
 from novelty_app.discovery_cue import cue_prompt_block, discovery_cue_to_dict, normalize_discovery_cue
+from novelty_app.agents.observability import current_trace_ref, observe_current
 
 from .idea_fingerprint import fingerprint_hypothesis, fingerprint_text
 
@@ -45,12 +46,14 @@ class GenerationContext:
     openai_api_key: Optional[str] = None
     model_name: Optional[str] = None
     discovery_cue: Optional[Dict[str, Any]] = None
-    exemplars: int = 25
-    boundary: int = 25
-    diverse: int = 25
+    exemplars: int = 8
+    boundary: int = 8
+    diverse: int = 0
+    evidence_pack_profile: str = "focused_eval"
     max_iters: int = 2
     hypotheses_per_target: int = 3
     all_clusters: Optional[Sequence[int]] = None
+    all_targets: Optional[Sequence[Dict[str, Any]]] = None
 
 
 def target_id(target: Dict[str, Any]) -> str:
@@ -64,6 +67,7 @@ def _pack_request(context: GenerationContext, target_override: Optional[Dict[str
     payload: Dict[str, Any] = {
         "snapshot_id": context.snapshot_id,
         "target_type": target["target_type"],
+        "profile": context.evidence_pack_profile,
         "exemplars": context.exemplars,
         "boundary": context.boundary,
         "diverse": context.diverse,
@@ -87,6 +91,13 @@ def _cluster_only_pack_request(context: GenerationContext) -> Dict[str, Any]:
 
 
 def _random_control_target(context: GenerationContext) -> Dict[str, Any]:
+    candidates = [dict(target) for target in (context.all_targets or [])]
+    current_target_id = target_id(context.target)
+    candidates = [target for target in candidates if target_id(target) != current_target_id]
+    if candidates:
+        rng = random.Random(context.seed)
+        return dict(rng.choice(candidates))
+
     clusters = [int(c) for c in (context.all_clusters or [])]
     if len(clusters) < 2:
         clusters = [
@@ -135,6 +146,11 @@ def _as_generated_hypotheses(
     out: List[GeneratedHypothesis] = []
     effective_target = target or context.target
     this_target_id = target_id(effective_target)
+    trace_ref = current_trace_ref(
+        session_id=context.snapshot_id,
+        tags=[method_name, str(effective_target.get("target_type") or "unknown")],
+        metadata={"snapshot_id": context.snapshot_id, "target_id": this_target_id},
+    )
     for idx, raw in enumerate(raw_hypotheses[: context.hypotheses_per_target]):
         title = str(raw.get("title") or raw.get("idea") or f"Hypothesis {idx + 1}")
         text = str(raw.get("mechanistic_rationale") or raw.get("why_plausible") or title)
@@ -152,10 +168,43 @@ def _as_generated_hypotheses(
             raw_hypothesis=dict(raw),
             normalized_hypothesis={"title": title, "text": text},
             discovery_cue=dict(discovery_cue_to_dict(context.discovery_cue) or {}),
+            trace_ref=trace_ref or {},
         )
         model.idea_fingerprint = fingerprint_hypothesis(model.model_dump())
         out.append(model)
     return out
+
+
+def _trace_metadata(context: GenerationContext, *, method_name: str, target: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    effective_target = dict(target or context.target)
+    metadata: Dict[str, Any] = {
+        "snapshot_id": context.snapshot_id,
+        "method_name": method_name,
+        "target_type": effective_target.get("target_type"),
+        "seed": context.seed,
+        "hypotheses_per_target": context.hypotheses_per_target,
+    }
+    if effective_target.get("target_type") == "gap":
+        metadata["gap_id"] = effective_target.get("gap_id")
+    else:
+        metadata["cluster_a"] = effective_target.get("cluster_a")
+        metadata["cluster_b"] = effective_target.get("cluster_b")
+    return metadata
+
+
+def _pack_summary(pack: Dict[str, Any]) -> Dict[str, Any]:
+    papers = list(pack.get("papers") or [])
+    return {
+        "snapshot_id": pack.get("snapshot_id"),
+        "target_type": pack.get("target_type"),
+        "n_papers": len(papers),
+        "paper_ids": [paper.get("paper_id") for paper in papers[:5] if paper.get("paper_id")],
+        "profile": (pack.get("meta") or {}).get("profile"),
+    }
+
+
+def _llm_name(llm: ChatOpenAI) -> Optional[str]:
+    return getattr(llm, "model_name", None) or getattr(llm, "model", None)
 
 
 def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
@@ -209,7 +258,14 @@ def _single_shot_from_pack(
     preamble: str = "",
     target_override: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
-    backend_pack = context.backend.evidence_pack(pack_payload)
+    with observe_current(
+        name=f"{method_name}_evidence_pack",
+        as_type="retriever",
+        input_payload=pack_payload,
+        metadata=_trace_metadata(context, method_name=method_name, target=target_override),
+    ) as pack_observation:
+        backend_pack = context.backend.evidence_pack(pack_payload)
+        pack_observation.update(output=_pack_summary(backend_pack))
     papers = backend_pack.get("papers", [])
     llm = _llm_from_context(context)
     structured = llm.with_structured_output(HypothesesOut, method="function_calling")
@@ -225,12 +281,19 @@ EVIDENCE PACK (JSONL):
 {format_pack_jsonl(papers)}
 ```
 """
-    out = structured.invoke(
-        [
-            {"role": "system", "content": SYSTEM_IDEATE},
-            {"role": "user", "content": prompt},
-        ]
-    )
+    messages = [
+        {"role": "system", "content": SYSTEM_IDEATE},
+        {"role": "user", "content": prompt},
+    ]
+    with observe_current(
+        name=method_name,
+        as_type="generation",
+        input_payload=messages,
+        metadata=_trace_metadata(context, method_name=method_name, target=target_override),
+        model=_llm_name(llm),
+    ) as generation_observation:
+        out = structured.invoke(messages)
+        generation_observation.update(output=out.model_dump())
     generated = _as_generated_hypotheses(
         out.model_dump().get("hypotheses", []),
         context=context,
@@ -250,7 +313,15 @@ def generate_single_shot_llm(context: GenerationContext) -> Tuple[List[Generated
 
 
 def generate_retrieval_summary_direct(context: GenerationContext) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
-    backend_pack = context.backend.evidence_pack(_pack_request(context))
+    pack_payload = _pack_request(context)
+    with observe_current(
+        name="retrieval_summary_direct_evidence_pack",
+        as_type="retriever",
+        input_payload=pack_payload,
+        metadata=_trace_metadata(context, method_name="retrieval_summary_direct"),
+    ) as pack_observation:
+        backend_pack = context.backend.evidence_pack(pack_payload)
+        pack_observation.update(output=_pack_summary(backend_pack))
     papers = backend_pack.get("papers", [])
     llm = _llm_from_context(context)
     cue_block = cue_prompt_block(context.discovery_cue)
@@ -264,12 +335,19 @@ EVIDENCE PACK (JSONL):
 {format_pack_jsonl(papers)}
 ```
 """
-    summary = llm.invoke(
-        [
-            {"role": "system", "content": "You are a careful scientific summarizer. Use only the evidence pack."},
-            {"role": "user", "content": summary_prompt},
-        ]
-    ).content
+    messages = [
+        {"role": "system", "content": "You are a careful scientific summarizer. Use only the evidence pack."},
+        {"role": "user", "content": summary_prompt},
+    ]
+    with observe_current(
+        name="retrieval_summary_direct_summary",
+        as_type="generation",
+        input_payload=messages,
+        metadata=_trace_metadata(context, method_name="retrieval_summary_direct"),
+        model=_llm_name(llm),
+    ) as generation_observation:
+        summary = llm.invoke(messages).content
+        generation_observation.update(output={"summary": summary})
     return _single_shot_from_pack(
         context,
         method_name="retrieval_summary_direct",
@@ -313,7 +391,15 @@ def generate_heuristic_bridge(
     target_override: Optional[Dict[str, Any]] = None,
 ) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
     effective_target = target_override or context.target
-    pack = context.backend.evidence_pack(_pack_request(context, target_override=effective_target))
+    pack_payload = _pack_request(context, target_override=effective_target)
+    with observe_current(
+        name=f"{method_name}_evidence_pack",
+        as_type="retriever",
+        input_payload=pack_payload,
+        metadata=_trace_metadata(context, method_name=method_name, target=effective_target),
+    ) as pack_observation:
+        pack = context.backend.evidence_pack(pack_payload)
+        pack_observation.update(output=_pack_summary(pack))
     papers = pack.get("papers", [])
     terms = _heuristic_terms_from_pack(papers)
     cue = normalize_discovery_cue(context.discovery_cue)
@@ -355,20 +441,80 @@ def generate_heuristic_bridge(
     return generated, {"evidence_pack": pack, "effective_target": dict(effective_target)}
 
 
-def generate_random_cluster_pair_control(context: GenerationContext) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
+def generate_pack_query_baseline(context: GenerationContext) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
+    pack_payload = _pack_request(context)
+    with observe_current(
+        name="pack_query_baseline_evidence_pack",
+        as_type="retriever",
+        input_payload=pack_payload,
+        metadata=_trace_metadata(context, method_name="pack_query_baseline"),
+    ) as pack_observation:
+        pack = context.backend.evidence_pack(pack_payload)
+        pack_observation.update(output=_pack_summary(pack))
+    papers = pack.get("papers", [])
+    terms = _heuristic_terms_from_pack(papers)
+    cue = normalize_discovery_cue(context.discovery_cue)
+    if cue is not None:
+        for field in ("material", "disease", "targeting", "payload", "mechanism"):
+            cue_terms = list((cue.fingerprint or {}).get(field) or [])
+            if cue_terms:
+                terms[field] = list(dict.fromkeys(cue_terms + terms.get(field, [])))
+
+    material = (terms.get("material") or ["nanoparticle"])[0]
+    disease = (terms.get("disease") or ["cancer"])[0]
+    payload = (terms.get("payload") or ["drug"])[0]
+    targeting = (terms.get("targeting") or ["targeting"])[0]
+    mechanism = (terms.get("mechanism") or ["delivery"])[0]
+    query_text = " ".join([material, targeting, payload, disease, mechanism]).strip()
+    support = [str(p.get("paper_id")) for p in papers[:5]]
+
+    generated: List[GeneratedHypothesis] = []
+    for idx in range(context.hypotheses_per_target):
+        title = f"Pack-query baseline {idx + 1}: {query_text}"
+        text = (
+            f"Investigate a {material}-based {targeting} system for {payload} {mechanism} in {disease}. "
+            f"Use this retrieval-oriented query: {query_text}."
+        )
+        hypothesis = GeneratedHypothesis(
+            hypothesis_id=f"pack_query_baseline_{context.seed}_{idx}",
+            target_id=target_id(context.target),
+            target_type=str(context.target.get("target_type") or "unknown"),
+            method_name="pack_query_baseline",
+            model_name="deterministic",
+            seed=context.seed,
+            title=title,
+            text=text,
+            support_citations=support,
+            grounding_summary={"n_evidence_papers": len(papers), "deterministic_pack_query": True},
+            raw_hypothesis={"title": title, "mechanistic_rationale": text, "citations": support},
+            normalized_hypothesis={"title": title, "text": text},
+            discovery_cue=dict(discovery_cue_to_dict(context.discovery_cue) or {}),
+        )
+        hypothesis.idea_fingerprint = fingerprint_hypothesis(
+            {
+                **hypothesis.model_dump(),
+                "text": query_text,
+            }
+        )
+        hypothesis.idea_fingerprint["query_text"] = query_text
+        generated.append(hypothesis)
+    return generated, {"evidence_pack": pack, "effective_target": dict(context.target)}
+
+
+def generate_random_target_control(context: GenerationContext) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
     random_target = _random_control_target(context)
     try:
         return _single_shot_from_pack(
             context,
-            method_name="random_cluster_pair_control",
+            method_name="random_target_control",
             pack_payload=_pack_request(context, target_override=random_target),
             target_override=random_target,
-            preamble="This is a random cluster-pair control target.",
+            preamble="This is a random historical target control.",
         )
     except Exception:
         return generate_heuristic_bridge(
             context,
-            method_name="random_cluster_pair_control",
+            method_name="random_target_control",
             target_override=random_target,
         )
 
@@ -377,9 +523,9 @@ GENERATOR_REGISTRY = {
     "orchestrator": generate_with_orchestrator,
     "single_shot_llm": generate_single_shot_llm,
     "retrieval_summary_direct": generate_retrieval_summary_direct,
-    "cluster_only": generate_cluster_only,
-    "random_cluster_pair_control": generate_random_cluster_pair_control,
     "heuristic_bridge": generate_heuristic_bridge,
+    "pack_query_baseline": generate_pack_query_baseline,
+    "random_target_control": generate_random_target_control,
 }
 
 

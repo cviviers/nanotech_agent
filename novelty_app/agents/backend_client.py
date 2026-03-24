@@ -52,6 +52,22 @@ class BackendClient:
     def list_snapshots(self, limit: int = 20) -> Dict[str, Any]:
         return self._request("GET", "/snapshots", params={"limit": limit})
 
+    def get_snapshot(self, snapshot_id: str) -> Dict[str, Any]:
+        return self._request("GET", f"/snapshots/{snapshot_id}")
+
+    def update_snapshot_metadata(
+        self,
+        snapshot_id: str,
+        updates: Dict[str, Any],
+        *,
+        replace: bool = False,
+    ) -> Dict[str, Any]:
+        return self._request(
+            "PATCH",
+            f"/snapshots/{snapshot_id}/metadata",
+            json_body={"updates": updates, "replace": replace},
+        )
+
     def publish_snapshot(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._request(
             "POST",
@@ -91,18 +107,37 @@ class BackendClient:
     def evidence_pack(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._request("POST", "/evidence/pack", json_body=payload)
 
-    def store_artifact(self, kind: str, target: Dict[str, Any], payload: Dict[str, Any]) -> Dict[str, Any]:
+    def store_artifact(
+        self,
+        kind: str,
+        target: Dict[str, Any],
+        payload: Dict[str, Any],
+        snapshot_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        body: Dict[str, Any] = {"kind": kind, "target": target, "payload": payload}
+        if snapshot_id:
+            body["snapshot_id"] = snapshot_id
         return self._request(
             "POST",
             "/artifacts/store",
-            json_body={"kind": kind, "target": target, "payload": payload},
+            json_body=body,
         )
 
-    def list_artifacts(self, snapshot_id: Optional[str] = None, limit: int = 50) -> Dict[str, Any]:
+    def list_artifacts(
+        self,
+        snapshot_id: Optional[str] = None,
+        limit: int = 50,
+        kind: Optional[str] = None,
+    ) -> Dict[str, Any]:
         params: Dict[str, Any] = {"limit": limit}
         if snapshot_id:
             params["snapshot_id"] = snapshot_id
+        if kind:
+            params["kind"] = kind
         return self._request("GET", "/artifacts", params=params)
+
+    def get_artifact(self, artifact_id: str) -> Dict[str, Any]:
+        return self._request("GET", f"/artifacts/{artifact_id}")
 
     def store_evaluation_run(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._request("POST", "/evaluations/runs", json_body=payload)

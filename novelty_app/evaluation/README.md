@@ -1,357 +1,157 @@
-# Retrospective Evaluation
+# Retrospective Future-Paper Recovery
 
-This package evaluates whether grounded ideas generated from a historical literature snapshot later appear in the literature.
+This package evaluates whether historical frontier evidence can recover held-out future papers.
 
 The core question is:
 
-`Given evidence only up to a cutoff date, does the system generate ideas that are absent historically and later show up in future papers?`
+`Given evidence only up to a cutoff date, can the system recover later papers that are plausibly anchored to a historical frontier target?`
 
-## What This Pipeline Does
+## What The Benchmark Does
 
-The retrospective benchmark in [run_retrospective.py](run_retrospective.py) runs this sequence:
+The retrospective runner in [run_retrospective.py](run_retrospective.py) now works as a future-paper recovery benchmark:
 
-1. Load the master corpus and precomputed embeddings.
-2. Split the corpus into:
-   - `historical`: papers on or before the cutoff
-   - `future`: papers in the evaluation window
-   - `sensitivity_future`: optional broader future window
+1. Load the corpus and embeddings.
+2. Split the corpus into `historical` and `future`.
 3. Build a historical novelty snapshot.
-4. Select gap targets and cluster-pair targets from that snapshot.
-5. Generate hypotheses with one or more methods.
-6. Score each generated idea on importance, novelty, plausibility, feasibility, evaluability, and likely impact.
-7. Normalize each generated idea into a fingerprint.
-8. Retrieve historical and future candidate papers for that idea.
-9. Judge the best historical and future matches.
-10. Assign a retrospective classification.
-11. Persist the run and export review packets for human inspection.
+4. Select historical gap and cluster-pair frontier targets.
+5. Build focused evidence packs for those targets.
+6. Filter future papers:
+   - remove future papers with a strong historical near-duplicate
+   - keep only frontier-eligible future papers with positive target affinity
+   - if a discovery cue is provided, use it to rerank future papers without hard-filtering them
+7. Assign each benchmark future paper to a single historical target.
+8. Generate hypotheses from the assigned historical target using the configured method(s).
+9. Retrieve against the future corpus and record the rank of the gold future paper.
+10. Retrieve against the historical corpus and record the strongest confounder.
+11. Aggregate task-level recovery metrics and export hybrid review packets.
 
-## Module Layout
+## Cue Semantics
 
-- [run_retrospective.py](run_retrospective.py): CLI entrypoint and full benchmark orchestration.
-- [time_split.py](time_split.py): corpus loading and time-based splitting.
-- [analysis_v1.py](analysis_v1.py): headless analysis used to build historical snapshots.
-- [generators.py](generators.py): generation methods and baselines.
-- [idea_fingerprint.py](idea_fingerprint.py): converts hypotheses into structured fields.
-- [candidate_match.py](candidate_match.py): keyword, embedding, and rerank retrieval.
-- [judge.py](judge.py): idea scoring, match labeling, and hypothesis classification.
-- [metrics.py](metrics.py): aggregate metrics.
-- [qwen_client.py](qwen_client.py): local embedding and reranker HTTP client.
+Discovery cues are part of the core protocol:
 
-## Inputs
+- without a cue, the benchmark uses the broader frontier-eligible future-paper pool
+- with a cue, the benchmark reranks that frontier-eligible pool toward cue-relevant papers
+- cues steer evidence-pack construction and generation
+- cue mismatch is penalized in cue-aware metrics but does not hard-reject a hypothesis
 
-The benchmark expects:
-
-- `data/cleaned_dataset.json`
-- `data/qwen_embeddings.npy`
-- `data/bert_embeddings.npy`
-- a running backend API
-- a running local Qwen embedding and reranking service
-
-The dataset is expected to contain `publication_year`. If available, `publication_month` and `publication_day` are also used to build a more precise publication date.
-
-## Required Services
-
-### Backend
-
-Run the novelty backend, typically on:
-
-```powershell
-uvicorn novelty_app.agents.backend_api:app --app-dir novelty_app --host 0.0.0.0 --port 8088
-```
-
-When calling it from the CLI, use `127.0.0.1`, not `0.0.0.0`:
-
-```text
-http://127.0.0.1:8088
-```
-
-### Qwen Embedding + Reranker Service
-
-Run the local Qwen service:
-
-```powershell
-cd embedding_models
-uvicorn qwen:app --host 0.0.0.0 --port 8000
-```
-
-The retrospective CLI should point to:
-
-```text
-http://127.0.0.1:8000
-```
-
-## Environment
-
-For OpenAI-backed generation methods, set:
-
-```powershell
-$env:OPENAI_API_KEY="your-key"
-$env:OPENAI_MODEL="gpt-5-mini-2025-08-07"
-```
-
-`run_retrospective.py` reads `OPENAI_API_KEY` and `OPENAI_MODEL`.
-
-If your local `.env` uses `openai_key` instead of `OPENAI_API_KEY`, map it before running:
-
-```powershell
-$env:OPENAI_API_KEY=$env:openai_key
-```
-
-## Default Evaluation Setup
-
-The current defaults in [run_retrospective.py](run_retrospective.py) are:
-
-- cutoff date: `2020-12-31`
-- future window: `2022-01-01` to `2025-12-31`
-- sensitivity window: `2021-01-01` to `2025-12-31`
-- gap targets: `20`
-- cluster-pair targets: `10`
-- methods:
-  - `orchestrator`
-  - `single_shot_llm`
-  - `retrieval_summary_direct`
-  - `cluster_only`
-  - `random_cluster_pair_control`
-- seeds: `3`
-- hypotheses per target: `3`
-
-An optional discovery cue can also be supplied to steer retrieval and generation without changing the historical evidence cutoff.
+The cue is steering context, not evidence.
 
 ## Generation Methods
 
-Defined in [generators.py](generators.py):
+The default method set is:
 
-- `orchestrator`: full LangGraph evidence -> explain -> audit -> ideate -> blueprint path.
-- `single_shot_llm`: one LLM call over the evidence pack.
-- `retrieval_summary_direct`: retrieval summary followed by direct ideation.
-- `cluster_only`: removes boundary evidence; falls back to a heuristic generator if LLM generation fails.
-- `random_cluster_pair_control`: random cluster-pair baseline; also has a heuristic fallback.
-- `heuristic_bridge`: deterministic heuristic generator used as a fallback/debug baseline.
+- `orchestrator`
+- `single_shot_llm`
+- `retrieval_summary_direct`
+- `heuristic_bridge`
+- `pack_query_baseline`
+- `random_target_control`
 
-## Quick Start
+`pack_query_baseline` is a deterministic retrieval-oriented baseline built from the focused evidence pack.
 
-### Smoke Run
+## Evidence Packs
 
-Use this first. It exercises the full path without the full publication-scale budget.
+Retrospective evaluation uses the `focused_eval` evidence-pack profile:
 
-```powershell
-python -m novelty_app.evaluation.run_retrospective `
-  --backend-url http://127.0.0.1:8088 `
-  --qwen-base-url http://127.0.0.1:8000 `
-  --n-gap-targets 1 `
-  --n-cluster-pair-targets 1 `
-  --methods orchestrator single_shot_llm cluster_only random_cluster_pair_control `
-  --seeds 1 `
-  --hypotheses-per-target 1 `
-  --analysis-clustering-method kmeans `
-  --analysis-pca-components 16 `
-  --discovery-cue-text "Focus on inhaled RNA delivery for inflammatory lung disease" `
-  --output-dir data/retrospective_eval_smoke
-```
+- `diverse=0`
+- small local frontier neighborhoods only
+- cue-aware reranking when a discovery cue is provided
 
-### Full Benchmark Run
+This keeps the pack closer to the actual frontier target and avoids broad global filler papers.
 
-```powershell
-python -m novelty_app.evaluation.run_retrospective `
-  --backend-url http://127.0.0.1:8088 `
-  --qwen-base-url http://127.0.0.1:8000 `
-  --cutoff-date 2020-12-31 `
-  --future-window-start 2022-01-01 `
-  --future-window-end 2025-12-31 `
-  --n-gap-targets 20 `
-  --n-cluster-pair-targets 10 `
-  --methods orchestrator single_shot_llm retrieval_summary_direct cluster_only random_cluster_pair_control `
-  --seeds 3 `
-  --hypotheses-per-target 3 `
-  --discovery-cue-text "Focus on folate-targeted RNA delivery for breast cancer" `
-  --output-dir data/retrospective_eval
-```
+## Outputs
 
-### Resume From an Existing Historical Snapshot
+Each run writes:
 
-If a historical snapshot has already been published to the backend, reuse it:
-
-```powershell
-python -m novelty_app.evaluation.run_retrospective `
-  --backend-url http://127.0.0.1:8088 `
-  --qwen-base-url http://127.0.0.1:8000 `
-  --existing-snapshot-id retro_hist_20201231_abcd1234 `
-  --n-gap-targets 20 `
-  --n-cluster-pair-targets 10 `
-  --methods orchestrator single_shot_llm retrieval_summary_direct cluster_only random_cluster_pair_control `
-  --seeds 3 `
-  --hypotheses-per-target 3 `
-  --output-dir data/retrospective_eval_resume
-```
-
-This avoids rebuilding and re-publishing the historical snapshot.
-
-### Cue Semantics
-
-The retrospective CLI accepts:
-
-- `--discovery-cue-text`: free-text steering cue
-- `--discovery-cue-goal`: optional shorter statement of the intended direction
-
-The cue is treated as steering context, not evidence. It is used to:
-
-- rerank automatically selected gap and cluster-pair targets inside retrospective runs
-- expand and rerank evidence-pack retrieval
-- steer orchestrator and baseline prompts
-- annotate generated hypotheses and evaluation runs for reproducibility
-
-## What Gets Written
-
-### Backend
-
-The run writes:
-
-- a historical snapshot if `--existing-snapshot-id` is not used
-- evaluation run records
-- evaluation match records
-
-### Files
-
-Each run exports:
-
+- one evaluation run record
+- raw hypothesis-level match records
 - `<run_id>_review_packet.csv`
 - `<run_id>_review_packet.json`
 
-Both are written under the configured `--output-dir`.
+The review packet is built from the best hypothesis per `(method, seed, gold_future_paper_id)` task and includes:
 
-The CLI also prints a JSON summary containing:
+- the gold future paper
+- the assigned historical target
+- the best hypothesis
+- focused evidence-pack summary
+- top future retrievals
+- top historical retrievals
+- cue text and cue score
+- blank manual review fields
 
-- `run`
-- `review_packet_csv`
-- `review_packet_json`
+## Primary Outcome Labels
 
-## Review Packet Columns
+The benchmark uses recovery-oriented labels:
 
-The exported CSV includes:
-
-- `run_id`
-- `method_name`
-- `seed`
-- `target_id`
-- `target_type`
-- `hypothesis_id`
-- `classification`
-- `title`
-- `text`
-- `importance_score`
-- `novelty_score`
-- `plausibility_score`
-- `feasibility_score`
-- `evaluability_score`
-- `likely_impact_score`
-- `average_idea_score`
-- `idea_score_summary`
-- `idea_score_method`
-- `support_citations`
-- `historical_label`
-- `historical_best_paper_id`
-- `historical_best_title`
-- `future_label`
-- `future_best_paper_id`
-- `future_best_title`
-- `first_future_year`
-
-This file is intended for expert review and manual adjudication.
-
-## Idea Scoring
-
-Implemented in [judge.py](judge.py).
-
-Each generated idea is scored on a 1-5 integer scale for:
-
-- `importance`
-- `novelty`
-- `plausibility`
-- `feasibility`
-- `evaluability`
-- `likely_impact`
-
-When OpenAI-backed judging is available, the scorer uses a structured LLM judge. If that is unavailable, it falls back to a deterministic heuristic scorer so the evaluation pipeline still runs.
-
-## Matching and Classification
-
-### Idea Fingerprint
-
-Each hypothesis is normalized into fields in [idea_fingerprint.py](idea_fingerprint.py):
-
-- `disease`
-- `material`
-- `payload`
-- `targeting`
-- `mechanism`
-- `model`
-- `route`
-- `outcome`
-
-### Candidate Retrieval
-
-Implemented in [candidate_match.py](candidate_match.py):
-
-- keyword retrieval from fingerprint terms
-- embedding retrieval using Qwen query embeddings against precomputed paper embeddings
-- reranking with the local Qwen reranker
-
-If the Qwen service times out or throws an error, the matcher degrades gracefully and continues with the available signals instead of aborting the whole benchmark.
-
-### Match Labels
-
-Candidate papers are assigned one of:
-
-- `strong_match`
-- `partial_match`
-- `background_only`
-- `no_match`
-
-### Hypothesis-Level Classifications
-
-Implemented in [judge.py](judge.py):
-
-- `already_present`: strong historical match before the cutoff
-- `anticipatory_strong`: not historically present and strongly matched in the future
-- `anticipatory_partial`: not historically present and partially matched in the future
-- `unsupported`: poor grounding or no support citations
-- `unrealized`: no convincing future match in the evaluation window
+- `gold_recovered`
+- `future_neighbor_only`
+- `historical_confound`
+- `not_recovered`
 
 ## Reported Metrics
 
 Aggregated in [metrics.py](metrics.py):
 
-- `historical_leakage_rate`
-- `anticipatory_strong_rate`
-- `anticipatory_partial_rate`
-- `unsupported_rate`
-- `unrealized_rate`
-- `novelty_adjusted_hit_rate`
-- `median_time_to_first_future_match_year`
+- `gold_recall_at_1`
+- `gold_recall_at_5`
+- `gold_recall_at_10`
+- `gold_mrr`
+- `future_neighbor_only_rate`
+- `historical_confound_rate`
+- `median_gold_rank`
+- `gold_recovered_rate`
+- `not_recovered_rate`
 - `mean_average_idea_score`
 - average per-criterion idea scores
-- per-method counts and hit rates
+- per-method versions of the same metrics
+
+When a cue is provided, the benchmark also reports:
+
+- `cue_weighted_recall_at_1`
+- `cue_weighted_recall_at_5`
+- `cue_weighted_recall_at_10`
+- `cue_weighted_mrr`
+- `mean_hypothesis_cue_score`
+
+## Quick Start
+
+Smoke run:
+
+```powershell
+python -m novelty_app.evaluation.run_retrospective `
+  --backend-url http://127.0.0.1:8088 `
+  --qwen-base-url http://127.0.0.1:8000 `
+  --n-gap-targets 2 `
+  --n-cluster-pair-targets 2 `
+  --n-gold-future-papers 10 `
+  --methods orchestrator single_shot_llm heuristic_bridge pack_query_baseline random_target_control `
+  --seeds 1 `
+  --hypotheses-per-target 1 `
+  --analysis-clustering-method kmeans `
+  --analysis-pca-components 16 `
+  --output-dir data/retrospective_eval_smoke
+```
+
+Cue-aware smoke run:
+
+```powershell
+python -m novelty_app.evaluation.run_retrospective `
+  --backend-url http://127.0.0.1:8088 `
+  --qwen-base-url http://127.0.0.1:8000 `
+  --n-gap-targets 5 `
+  --n-cluster-pair-targets 5 `
+  --n-gold-future-papers 20 `
+  --methods orchestrator single_shot_llm retrieval_summary_direct heuristic_bridge pack_query_baseline random_target_control `
+  --seeds 1 `
+  --hypotheses-per-target 2 `
+  --discovery-cue-text "Focus on folate-targeted RNA delivery for breast cancer" `
+  --output-dir data/retrospective_eval_cued
+```
 
 ## Practical Notes
 
 - Use `127.0.0.1` for local service URLs when calling from the CLI.
-- The Qwen service can run out of GPU memory on large runs. The matcher now falls back rather than hard-failing, but runtime can still increase.
-- Publishing a full historical snapshot can take time. If you already have a valid historical snapshot in the backend, prefer `--existing-snapshot-id`.
-- The full benchmark is expensive in both runtime and API usage. Start with a smoke run.
-- OpenAI-backed methods require `OPENAI_API_KEY`. The heuristic fallback methods do not.
-
-## Recommended Workflow
-
-1. Run a smoke benchmark and inspect the review packet.
-2. Fix obvious matching or prompt failures.
-3. Run the full `2020 -> 2022-2025` benchmark.
-4. Add rolling historical cutoffs such as `2016`, `2018`, and `2020`.
-5. Manually review a stratified subset of outputs.
-6. Freeze the protocol before writing paper results.
-
-## Current Limitations
-
-- Matching is heuristic and still needs expert calibration.
-- A clean future hit rate does not by itself prove scientific value.
-- The sensitivity window is stored in the future match payload, but the main reported classification still uses the primary future window.
-- Publication-grade evaluation still requires manual review of ambiguous cases.
+- OpenAI-backed methods require `OPENAI_API_KEY`.
+- The Qwen service remains the retrieval backbone.
+- The benchmark still depends on heuristic matching and should be reviewed manually for paper-grade claims.
+- Start with a smoke run and inspect the review packet before scaling up.

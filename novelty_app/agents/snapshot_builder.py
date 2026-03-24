@@ -9,8 +9,10 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 import pandas as pd
 
 try:
+    from agents.corpus_manifest import hash_paper_ids, stable_paper_id_from_row
     from agents.schemas import SnapshotMetadata, SnapshotPayload
 except Exception:  # pragma: no cover
+    from novelty_app.agents.corpus_manifest import hash_paper_ids, stable_paper_id_from_row
     from novelty_app.agents.schemas import SnapshotMetadata, SnapshotPayload
 
 
@@ -95,14 +97,8 @@ def resolve_cluster_column(df: pd.DataFrame, selected_clustering: Optional[str] 
 
 
 def paper_id_from_row(row: pd.Series, row_label: Any, row_pos: int) -> str:
-    for key in ("pmid", "id", "paper_id", "doi"):
-        if key in row.index:
-            value = row.get(key)
-            if not is_null(value):
-                text = str(value).strip()
-                if text:
-                    return text
-    return f"row_{row_pos}_{row_label}"
+    del row_label, row_pos
+    return stable_paper_id_from_row(row)
 
 
 def safe_row_lookup(df: pd.DataFrame, idx_like: Any) -> Tuple[int, Any, pd.Series]:
@@ -325,8 +321,12 @@ def build_snapshot_payload(
     overrides = dict(metadata_overrides or {})
     extra = overrides.pop("extra", None)
     metadata_dict.update({k: jsonable(v) for k, v in overrides.items()})
+    extra_payload = dict(metadata_dict.get("extra") or {})
     if extra is not None:
-        metadata_dict["extra"] = jsonable(extra)
+        extra_payload.update(jsonable(extra) or {})
+    extra_payload.setdefault("snapshot_paper_id_hash", hash_paper_ids([paper["paper_id"] for paper in papers]))
+    extra_payload.setdefault("snapshot_paper_count", len(papers))
+    metadata_dict["extra"] = extra_payload
 
     payload = SnapshotPayload(
         snapshot_id=snapshot_id or f"snapshot_{uuid.uuid4().hex[:10]}",

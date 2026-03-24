@@ -90,8 +90,13 @@ class KnowledgeStoreTests(unittest.TestCase):
             "method_names": ["heuristic"],
             "config": {"x": 1},
             "summary": {"n": 1},
-            "metrics": {"anticipatory_strong_rate": 1.0},
+            "metrics": {"gold_recall_at_1": 1.0},
             "status": "completed",
+            "observability": {
+                "provider": "langfuse",
+                "trace_id": "trace_run_1",
+                "url": "https://langfuse.example/project/p/traces/trace_run_1",
+            },
         }
         self.store.store_evaluation_run(run)
         self.store.store_evaluation_matches_batch(
@@ -104,18 +109,35 @@ class KnowledgeStoreTests(unittest.TestCase):
                     "method_name": "heuristic",
                     "seed": 0,
                     "hypothesis_id": "h1",
-                    "classification": "anticipatory_strong",
+                    "recovery_label": "gold_recovered",
                     "historical_label": "no_match",
-                    "future_label": "strong_match",
-                    "first_future_year": 2023,
-                    "historical_best_paper_id": None,
-                    "future_best_paper_id": "p9",
+                    "future_neighbor_label": "strong_match",
+                    "gold_future_paper_id": "p9",
+                    "gold_future_title": "Future Paper",
+                    "gold_future_year": 2023,
+                    "assigned_target_id": "cluster_pair_1_2",
+                    "assigned_target_score": 0.91,
+                    "gold_rank": 1,
+                    "gold_reciprocal_rank": 1.0,
+                    "gold_hit_at_1": True,
+                    "gold_hit_at_5": True,
+                    "gold_hit_at_10": True,
+                    "best_historical_confounder_id": None,
+                    "best_future_neighbor_paper_id": "p9",
                     "support_citations": ["p1"],
                     "hypothesis": {"title": "Hypothesis"},
                     "idea_scores": {"importance": {"score": 4}, "average_score": 4.0},
                     "fingerprint": {"material": ["liposome"]},
+                    "evidence_pack_summary": {"n_papers": 2},
                     "historical_match": {},
                     "future_match": {"paper_id": "p9"},
+                    "historical_candidates": [],
+                    "future_candidates": [{"paper_id": "p9"}],
+                    "trace_ref": {
+                        "provider": "langfuse",
+                        "trace_id": "trace_match_1",
+                        "url": "https://langfuse.example/project/p/traces/trace_match_1",
+                    },
                 }
             ]
         )
@@ -125,8 +147,12 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(len(runs), 1)
         self.assertEqual(runs[0]["run_id"], "run_1")
         self.assertEqual(len(matches), 1)
-        self.assertEqual(matches[0]["classification"], "anticipatory_strong")
+        self.assertEqual(matches[0]["recovery_label"], "gold_recovered")
         self.assertEqual(matches[0]["idea_scores"]["importance"]["score"], 4)
+        self.assertEqual(matches[0]["gold_future_paper_id"], "p9")
+        self.assertEqual(matches[0]["assigned_target_id"], "cluster_pair_1_2")
+        self.assertEqual(runs[0]["observability"]["trace_id"], "trace_run_1")
+        self.assertEqual(matches[0]["trace_ref"]["trace_id"], "trace_match_1")
 
     def test_update_snapshot_metadata_merges_fields(self) -> None:
         payload = {
@@ -195,9 +221,10 @@ class KnowledgeStoreTests(unittest.TestCase):
                 "snapshot_id": "snap_cue",
                 "target_type": "gap",
                 "gap_id": "gap_0",
+                "profile": "focused_eval",
                 "exemplars": 2,
                 "boundary": 2,
-                "diverse": 0,
+                "diverse": 10,
                 "discovery_cue": {
                     "text": "Focus on folate liposome siRNA approaches in breast cancer",
                     "soft_constraints": {
@@ -212,6 +239,8 @@ class KnowledgeStoreTests(unittest.TestCase):
 
         self.assertEqual(evidence["papers"][0]["paper_id"], "p1")
         self.assertEqual(evidence["meta"]["discovery_cue"]["text"], "Focus on folate liposome siRNA approaches in breast cancer")
+        self.assertEqual(evidence["meta"]["profile"], "focused_eval")
+        self.assertEqual(evidence["stats"]["requested"]["diverse"], 0)
         self.assertGreater(
             float(evidence["papers"][0]["selection_meta"]["cue_alignment"]["score"]),
             float(evidence["papers"][1]["selection_meta"]["cue_alignment"]["score"]),

@@ -44,7 +44,7 @@ def page_embedding_processing():
         st.write("")
         if st.button("▶️ Run PCA"):
             with st.spinner("Running PCA..."):
-                pca = PCA(n_components=pca_components, random_state=42)
+                pca = PCA(n_components=pca_components, random_state=st.session_state.get("random_seed", 42))
                 X_pca = pca.fit_transform(st.session_state.X_primary)
                 st.session_state.X_pca = X_pca
                 explained_var = pca.explained_variance_ratio_.sum()
@@ -75,7 +75,7 @@ def page_embedding_processing():
                     n_neighbors=umap_neighbors,
                     min_dist=umap_min_dist,
                     n_components=2,
-                    random_state=42
+                    random_state=st.session_state.get("random_seed", 42)
                 )
                 X_umap_2d = reducer_2d.fit_transform(st.session_state.X_pca)
                 st.session_state.X_umap_2d = X_umap_2d
@@ -85,7 +85,14 @@ def page_embedding_processing():
     with col4:
         if st.session_state.X_umap_2d is not None:
             st.metric("UMAP Shape", f"{st.session_state.X_umap_2d.shape}")
-    
+
+    st.session_state.embedding_processing_config = {
+        "pca_components": int(pca_components),
+        "umap_neighbors": int(umap_neighbors),
+        "umap_min_dist": float(umap_min_dist),
+        "random_seed": int(st.session_state.get("random_seed", 42)),
+    }
+
     # Visualize UMAP
     if st.session_state.X_umap_2d is not None:
         st.subheader("📊 UMAP Visualization")

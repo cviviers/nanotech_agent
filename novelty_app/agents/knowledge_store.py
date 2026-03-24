@@ -295,6 +295,7 @@ class KnowledgeStore:
                 config_json TEXT NOT NULL,
                 summary_json TEXT NOT NULL,
                 metrics_json TEXT NOT NULL,
+                observability_json TEXT NOT NULL DEFAULT '{}',
                 status TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_evaluation_runs_snapshot_created ON evaluation_runs(snapshot_id, created_at);
@@ -320,7 +321,8 @@ class KnowledgeStore:
                 idea_scores_json TEXT NOT NULL DEFAULT '{}',
                 fingerprint_json TEXT NOT NULL,
                 historical_match_json TEXT NOT NULL,
-                future_match_json TEXT NOT NULL
+                future_match_json TEXT NOT NULL,
+                trace_ref_json TEXT NOT NULL DEFAULT '{}'
             );
             CREATE INDEX IF NOT EXISTS idx_evaluation_matches_run_method ON evaluation_matches(run_id, method_name, seed);
             CREATE INDEX IF NOT EXISTS idx_evaluation_matches_snapshot_target ON evaluation_matches(snapshot_id, target_id, classification);
@@ -342,6 +344,33 @@ class KnowledgeStore:
             "evaluation_matches",
             {
                 "idea_scores_json": "TEXT",
+                "trace_ref_json": "TEXT",
+                "recovery_label": "TEXT",
+                "future_neighbor_label": "TEXT",
+                "gold_future_paper_id": "TEXT",
+                "gold_future_title": "TEXT",
+                "gold_future_year": "INTEGER",
+                "assigned_target_id": "TEXT",
+                "assigned_target_score": "REAL",
+                "gold_rank": "INTEGER",
+                "gold_reciprocal_rank": "REAL",
+                "gold_hit_at_1": "INTEGER",
+                "gold_hit_at_5": "INTEGER",
+                "gold_hit_at_10": "INTEGER",
+                "cue_score": "REAL",
+                "cue_weighted_rr": "REAL",
+                "best_future_neighbor_paper_id": "TEXT",
+                "best_historical_confounder_id": "TEXT",
+                "evidence_pack_summary_json": "TEXT",
+                "historical_candidates_json": "TEXT",
+                "future_candidates_json": "TEXT",
+            },
+        )
+        self._ensure_table_columns(
+            cur,
+            "evaluation_runs",
+            {
+                "observability_json": "TEXT",
             },
         )
 
@@ -580,7 +609,12 @@ class KnowledgeStore:
     ) -> Dict[str, Any]:
         current = self.get_snapshot(snapshot_id)
         metadata = {} if replace else dict(current.get("metadata") or {})
-        metadata.update(dict(updates or {}))
+        update_payload = dict(updates or {})
+        if not replace and isinstance(metadata.get("extra"), dict) and isinstance(update_payload.get("extra"), dict):
+            merged_extra = dict(metadata.get("extra") or {})
+            merged_extra.update(dict(update_payload.get("extra") or {}))
+            update_payload["extra"] = merged_extra
+        metadata.update(update_payload)
         with self._connect() as conn:
             conn.execute(
                 "UPDATE snapshots SET metadata_json = ? WHERE snapshot_id = ?",
@@ -997,12 +1031,18 @@ class KnowledgeStore:
     def build_evidence_pack(self, req: Dict[str, Any]) -> Dict[str, Any]:
         snapshot_id = self.resolve_snapshot_id(req.get("snapshot_id"))
         target_type = str(req.get("target_type") or "")
+        profile = str(req.get("profile") or "default").strip().lower() or "default"
         exemplars = max(0, int(req.get("exemplars", 25)))
         boundary = max(0, int(req.get("boundary", 25)))
         diverse = max(0, int(req.get("diverse", 25)))
         counter_queries = [str(q).strip() for q in (req.get("counter_queries") or []) if str(q).strip()]
         discovery_cue = normalize_discovery_cue(req.get("discovery_cue"))
         cue_queries = discovery_cue_query_terms(discovery_cue, max_queries=8) if discovery_cue is not None else []
+
+        if profile == "focused_eval":
+            exemplars = min(exemplars, 8) if exemplars else 8
+            boundary = min(boundary, 8) if boundary else 8
+            diverse = 0
 
         if target_type not in {"gap", "cluster_pair"}:
             raise ValueError("target_type must be 'gap' or 'cluster_pair'")
@@ -1031,6 +1071,7 @@ class KnowledgeStore:
         meta: Dict[str, Any] = {
             "snapshot_id": snapshot_id,
             "target_type": target_type,
+            "profile": profile,
             "sampling": {
                 "cluster_exemplars": "centroid_if_embeddings_available_else_ranked_sql",
                 "cluster_pair_boundary": "embedding_margin_if_embeddings_available_else_gap_and_ranked_sql",
@@ -1175,10 +1216,47 @@ class KnowledgeStore:
             conn.commit()
         return {"artifact_id": artifact_id, "snapshot_id": sid, "kind": kind}
 
-    def list_artifacts(self, snapshot_id: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_artifact(self, artifact_id: str) -> Dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT artifact_id, snapshot_id, kind, created_at, target_json, payload_json
+                FROM artifacts
+                WHERE artifact_id = ?
+                """,
+                (str(artifact_id),),
+            ).fetchone()
+        if not row:
+            raise ValueError(f"Artifact not found: {artifact_id}")
+        return {
+            "artifact_id": row["artifact_id"],
+            "snapshot_id": row["snapshot_id"],
+            "kind": row["kind"],
+            "created_at": row["created_at"],
+            "target": _json_loads(row["target_json"], {}),
+            "payload": _json_loads(row["payload_json"], {}),
+        }
+
+    def list_artifacts(
+        self,
+        snapshot_id: Optional[str] = None,
+        limit: int = 50,
+        kind: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         sid = self.resolve_snapshot_id(snapshot_id) if snapshot_id else None
         with self._connect() as conn:
-            if sid:
+            if sid and kind:
+                rows = conn.execute(
+                    """
+                    SELECT artifact_id, snapshot_id, kind, created_at, target_json, payload_json
+                    FROM artifacts
+                    WHERE snapshot_id = ? AND kind = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (sid, str(kind), int(limit)),
+                ).fetchall()
+            elif sid:
                 rows = conn.execute(
                     """
                     SELECT artifact_id, snapshot_id, kind, created_at, target_json, payload_json
@@ -1188,6 +1266,17 @@ class KnowledgeStore:
                     LIMIT ?
                     """,
                     (sid, int(limit)),
+                ).fetchall()
+            elif kind:
+                rows = conn.execute(
+                    """
+                    SELECT artifact_id, snapshot_id, kind, created_at, target_json, payload_json
+                    FROM artifacts
+                    WHERE kind = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                    """,
+                    (str(kind), int(limit)),
                 ).fetchall()
             else:
                 rows = conn.execute(
@@ -1224,6 +1313,7 @@ class KnowledgeStore:
         config = payload.get("config") or {}
         summary = payload.get("summary") or {}
         metrics = payload.get("metrics") or {}
+        observability = payload.get("observability") or {}
         status = str(payload.get("status") or "completed")
 
         with self._connect() as conn:
@@ -1231,8 +1321,8 @@ class KnowledgeStore:
                 """
                 INSERT OR REPLACE INTO evaluation_runs(
                     run_id, snapshot_id, created_at, cutoff_date, future_window_start, future_window_end,
-                    method_names_json, config_json, summary_json, metrics_json, status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    method_names_json, config_json, summary_json, metrics_json, observability_json, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -1245,6 +1335,7 @@ class KnowledgeStore:
                     _json_dumps(config),
                     _json_dumps(summary),
                     _json_dumps(metrics),
+                    _json_dumps(observability),
                     status,
                 ),
             )
@@ -1262,7 +1353,7 @@ class KnowledgeStore:
                 rows = conn.execute(
                     """
                     SELECT run_id, snapshot_id, created_at, cutoff_date, future_window_start, future_window_end,
-                           method_names_json, config_json, summary_json, metrics_json, status
+                           method_names_json, config_json, summary_json, metrics_json, observability_json, status
                     FROM evaluation_runs
                     WHERE snapshot_id = ?
                     ORDER BY created_at DESC
@@ -1274,7 +1365,7 @@ class KnowledgeStore:
                 rows = conn.execute(
                     """
                     SELECT run_id, snapshot_id, created_at, cutoff_date, future_window_start, future_window_end,
-                           method_names_json, config_json, summary_json, metrics_json, status
+                           method_names_json, config_json, summary_json, metrics_json, observability_json, status
                     FROM evaluation_runs
                     ORDER BY created_at DESC
                     LIMIT ?
@@ -1298,6 +1389,7 @@ class KnowledgeStore:
                     "metrics": _json_loads(r["metrics_json"], {}),
                     "status": r["status"],
                     "discovery_cue": config.get("discovery_cue", {}),
+                    "observability": _json_loads(r["observability_json"], {}),
                 }
             )
         return out
@@ -1313,8 +1405,13 @@ class KnowledgeStore:
                         match_id, run_id, snapshot_id, created_at, target_id, target_type, method_name, seed,
                         hypothesis_id, classification, historical_label, future_label, first_future_year,
                         historical_best_paper_id, future_best_paper_id, support_citations_json, hypothesis_json,
-                        idea_scores_json, fingerprint_json, historical_match_json, future_match_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        idea_scores_json, fingerprint_json, historical_match_json, future_match_json,
+                        recovery_label, future_neighbor_label, gold_future_paper_id, gold_future_title, gold_future_year,
+                        assigned_target_id, assigned_target_score, gold_rank, gold_reciprocal_rank, gold_hit_at_1,
+                        gold_hit_at_5, gold_hit_at_10, cue_score, cue_weighted_rr, best_future_neighbor_paper_id,
+                        best_historical_confounder_id, evidence_pack_summary_json, historical_candidates_json,
+                        future_candidates_json, trace_ref_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         match_id,
@@ -1326,18 +1423,38 @@ class KnowledgeStore:
                         str(rec.get("method_name") or ""),
                         _to_int(rec.get("seed")),
                         str(rec.get("hypothesis_id") or ""),
-                        str(rec.get("classification") or ""),
+                        str(rec.get("recovery_label") or rec.get("classification") or ""),
                         _to_text(rec.get("historical_label")),
-                        _to_text(rec.get("future_label")),
-                        _to_int(rec.get("first_future_year")),
-                        _to_text(rec.get("historical_best_paper_id")),
-                        _to_text(rec.get("future_best_paper_id")),
+                        _to_text(rec.get("future_neighbor_label") or rec.get("future_label")),
+                        _to_int(rec.get("gold_future_year") or rec.get("first_future_year")),
+                        _to_text(rec.get("best_historical_confounder_id") or rec.get("historical_best_paper_id")),
+                        _to_text(rec.get("best_future_neighbor_paper_id") or rec.get("future_best_paper_id")),
                         _json_dumps(rec.get("support_citations") or []),
                         _json_dumps(rec.get("hypothesis") or {}),
                         _json_dumps(rec.get("idea_scores") or {}),
                         _json_dumps(rec.get("fingerprint") or {}),
                         _json_dumps(rec.get("historical_match") or {}),
                         _json_dumps(rec.get("future_match") or {}),
+                        str(rec.get("recovery_label") or rec.get("classification") or ""),
+                        _to_text(rec.get("future_neighbor_label") or rec.get("future_label")),
+                        str(rec.get("gold_future_paper_id") or rec.get("future_best_paper_id") or ""),
+                        _to_text(rec.get("gold_future_title")),
+                        _to_int(rec.get("gold_future_year") or rec.get("first_future_year")),
+                        str(rec.get("assigned_target_id") or rec.get("target_id") or ""),
+                        _to_float(rec.get("assigned_target_score")),
+                        _to_int(rec.get("gold_rank")),
+                        _to_float(rec.get("gold_reciprocal_rank")),
+                        int(bool(rec.get("gold_hit_at_1"))),
+                        int(bool(rec.get("gold_hit_at_5"))),
+                        int(bool(rec.get("gold_hit_at_10"))),
+                        _to_float(rec.get("cue_score")),
+                        _to_float(rec.get("cue_weighted_rr")),
+                        _to_text(rec.get("best_future_neighbor_paper_id") or rec.get("future_best_paper_id")),
+                        _to_text(rec.get("best_historical_confounder_id") or rec.get("historical_best_paper_id")),
+                        _json_dumps(rec.get("evidence_pack_summary") or {}),
+                        _json_dumps(rec.get("historical_candidates") or []),
+                        _json_dumps(rec.get("future_candidates") or []),
+                        _json_dumps(rec.get("trace_ref") or {}),
                     ),
                 )
                 inserted += 1
@@ -1368,7 +1485,12 @@ class KnowledgeStore:
                 SELECT match_id, run_id, snapshot_id, created_at, target_id, target_type, method_name, seed,
                        hypothesis_id, classification, historical_label, future_label, first_future_year,
                        historical_best_paper_id, future_best_paper_id, support_citations_json, hypothesis_json,
-                       idea_scores_json, fingerprint_json, historical_match_json, future_match_json
+                       idea_scores_json, fingerprint_json, historical_match_json, future_match_json,
+                       recovery_label, future_neighbor_label, gold_future_paper_id, gold_future_title, gold_future_year,
+                       assigned_target_id, assigned_target_score, gold_rank, gold_reciprocal_rank, gold_hit_at_1,
+                       gold_hit_at_5, gold_hit_at_10, cue_score, cue_weighted_rr, best_future_neighbor_paper_id,
+                       best_historical_confounder_id, evidence_pack_summary_json, historical_candidates_json,
+                       future_candidates_json, trace_ref_json
                 FROM evaluation_matches
                 {where_sql}
                 ORDER BY created_at DESC
@@ -1379,6 +1501,10 @@ class KnowledgeStore:
         out: List[Dict[str, Any]] = []
         for r in rows:
             hypothesis = _json_loads(r["hypothesis_json"], {})
+            historical_match = _json_loads(r["historical_match_json"], {})
+            future_match = _json_loads(r["future_match_json"], {})
+            historical_candidates = _json_loads(r["historical_candidates_json"], [])
+            future_candidates = _json_loads(r["future_candidates_json"], [])
             out.append(
                 {
                     "match_id": r["match_id"],
@@ -1390,19 +1516,34 @@ class KnowledgeStore:
                     "method_name": r["method_name"],
                     "seed": _to_int(r["seed"]) or 0,
                     "hypothesis_id": r["hypothesis_id"],
-                    "classification": r["classification"],
+                    "recovery_label": r["recovery_label"] or r["classification"] or "not_recovered",
                     "historical_label": r["historical_label"] or "no_match",
-                    "future_label": r["future_label"] or "no_match",
-                    "first_future_year": _to_int(r["first_future_year"]),
-                    "historical_best_paper_id": r["historical_best_paper_id"],
-                    "future_best_paper_id": r["future_best_paper_id"],
+                    "future_neighbor_label": r["future_neighbor_label"] or r["future_label"] or "no_match",
+                    "gold_future_paper_id": r["gold_future_paper_id"] or r["future_best_paper_id"] or "",
+                    "gold_future_title": r["gold_future_title"] or "",
+                    "gold_future_year": _to_int(r["gold_future_year"]) or _to_int(r["first_future_year"]),
+                    "assigned_target_id": r["assigned_target_id"] or r["target_id"],
+                    "assigned_target_score": _to_float(r["assigned_target_score"]) or 0.0,
+                    "gold_rank": _to_int(r["gold_rank"]),
+                    "gold_reciprocal_rank": _to_float(r["gold_reciprocal_rank"]) or 0.0,
+                    "gold_hit_at_1": bool(_to_int(r["gold_hit_at_1"])),
+                    "gold_hit_at_5": bool(_to_int(r["gold_hit_at_5"])),
+                    "gold_hit_at_10": bool(_to_int(r["gold_hit_at_10"])),
+                    "cue_score": _to_float(r["cue_score"]),
+                    "cue_weighted_rr": _to_float(r["cue_weighted_rr"]) or 0.0,
+                    "best_future_neighbor_paper_id": r["best_future_neighbor_paper_id"] or r["future_best_paper_id"],
+                    "best_historical_confounder_id": r["best_historical_confounder_id"] or r["historical_best_paper_id"],
                     "support_citations": _json_loads(r["support_citations_json"], []),
                     "hypothesis": hypothesis,
                     "idea_scores": _json_loads(r["idea_scores_json"], (hypothesis or {}).get("idea_scores", {})),
                     "fingerprint": _json_loads(r["fingerprint_json"], {}),
-                    "historical_match": _json_loads(r["historical_match_json"], {}),
-                    "future_match": _json_loads(r["future_match_json"], {}),
+                    "evidence_pack_summary": _json_loads(r["evidence_pack_summary_json"], {}),
+                    "historical_match": historical_match,
+                    "future_match": future_match,
+                    "historical_candidates": historical_candidates or ([historical_match] if historical_match else []),
+                    "future_candidates": future_candidates or ([future_match] if future_match else []),
                     "discovery_cue": (hypothesis or {}).get("discovery_cue", {}),
+                    "trace_ref": _json_loads(r["trace_ref_json"], (hypothesis or {}).get("trace_ref", {})),
                 }
             )
         return out

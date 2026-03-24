@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -325,30 +325,32 @@ def judge_candidate_match(
     }
 
 
-def classify_hypothesis_match(
+def normalize_cue_score(score: Optional[float]) -> float:
+    if score is None:
+        return 1.0
+    normalized = (float(score) + 1.0) / 2.5
+    return max(0.0, min(1.0, normalized))
+
+
+def classify_recovery_match(
     *,
     historical_best: Dict[str, Any],
-    future_best: Dict[str, Any],
-    support_citations: List[str],
-    grounding_summary: Dict[str, Any],
+    gold_rank: Optional[int],
+    best_future_neighbor: Dict[str, Any],
 ) -> Tuple[str, Dict[str, Any]]:
     historical_label = historical_best.get("judge", {}).get("label", "no_match")
-    future_label = future_best.get("judge", {}).get("label", "no_match")
-    supported_fraction = float(grounding_summary.get("supported_claim_fraction", 1.0) or 0.0)
+    future_neighbor_label = best_future_neighbor.get("judge", {}).get("label", "no_match")
 
     if historical_label == "strong_match":
-        classification = "already_present"
-    elif supported_fraction < 0.25 or not support_citations:
-        classification = "unsupported"
-    elif future_label == "strong_match":
-        classification = "anticipatory_strong"
-    elif future_label == "partial_match":
-        classification = "anticipatory_partial"
+        recovery_label = "historical_confound"
+    elif gold_rank is not None and gold_rank <= 10:
+        recovery_label = "gold_recovered"
+    elif future_neighbor_label in {"strong_match", "partial_match", "background_only"}:
+        recovery_label = "future_neighbor_only"
     else:
-        classification = "unrealized"
+        recovery_label = "not_recovered"
 
-    return classification, {
+    return recovery_label, {
         "historical_label": historical_label,
-        "future_label": future_label,
-        "supported_claim_fraction": supported_fraction,
+        "future_neighbor_label": future_neighbor_label,
     }

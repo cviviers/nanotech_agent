@@ -32,7 +32,7 @@ It provides endpoints for:
 - building evidence packs
 - storing generated artifacts
 - storing and listing retrospective evaluation runs
-- storing and listing retrospective hypothesis-match records
+- storing and listing retrospective recovery-match records
 
 This is the main boundary between the agents and the stored novelty-analysis state.
 
@@ -303,10 +303,10 @@ In that setting:
 1. a historical snapshot is built from pre-cutoff papers
 2. targets are selected from the historical snapshot
 3. generation methods call the same backend/orchestrator logic
-4. generated hypotheses are matched against later literature
+4. generated hypotheses are ranked against held-out future papers
 5. runs and matches are stored through the same backend
 
-This is how the project measures whether grounded ideas generated from historical evidence resemble ideas that later appeared in the literature.
+This is how the project measures whether grounded ideas generated from historical evidence recover held-out future papers anchored to historical frontiers.
 
 ## Typical Execution Paths
 

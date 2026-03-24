@@ -21,6 +21,23 @@ RERANK_MAX_LENGTH = int(os.getenv("QWEN_RERANK_MAX_LENGTH", "8192"))
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+
+def _resolve_torch_dtype() -> torch.dtype:
+    if DEVICE != "cuda":
+        return torch.float32
+    dtype_name = str(os.getenv("QWEN_TORCH_DTYPE", "float16")).strip().lower()
+    if dtype_name == "float16":
+        return torch.float16
+    if dtype_name == "bfloat16":
+        return torch.bfloat16
+    if dtype_name == "float32":
+        return torch.float32
+    raise ValueError(f"Unsupported QWEN_TORCH_DTYPE: {dtype_name!r}")
+
+
+TORCH_DTYPE = _resolve_torch_dtype()
+MODEL_LOAD_KWARGS = {"torch_dtype": TORCH_DTYPE} if DEVICE == "cuda" else {}
+
 # -------------------------------------------------------------------
 # Load models (Embedding + Reranker)
 # Implementation follows:
@@ -32,14 +49,14 @@ embed_tokenizer = AutoTokenizer.from_pretrained(
     EMBED_MODEL_NAME,
     padding_side="left",
 )
-embed_model = AutoModel.from_pretrained(EMBED_MODEL_NAME).to(DEVICE).eval()
+embed_model = AutoModel.from_pretrained(EMBED_MODEL_NAME, **MODEL_LOAD_KWARGS).to(DEVICE).eval()
 
 # Reranker model
 rerank_tokenizer = AutoTokenizer.from_pretrained(
     RERANK_MODEL_NAME,
     padding_side="left",
 )
-rerank_model = AutoModelForCausalLM.from_pretrained(RERANK_MODEL_NAME).to(DEVICE).eval()
+rerank_model = AutoModelForCausalLM.from_pretrained(RERANK_MODEL_NAME, **MODEL_LOAD_KWARGS).to(DEVICE).eval()
 
 # Tokens and prompts for reranking (adapted from official README)
 token_false_id = rerank_tokenizer.convert_tokens_to_ids("no")
@@ -110,7 +127,7 @@ def embed_texts(
     )
     batch_dict = {k: v.to(DEVICE) for k, v in batch_dict.items()}
 
-    with torch.no_grad():
+    with torch.inference_mode():
         outputs = embed_model(**batch_dict)
         embeddings = last_token_pool(outputs.last_hidden_state, batch_dict["attention_mask"])
         if normalize:
@@ -266,6 +283,7 @@ def read_root():
         "embedding_model": EMBED_MODEL_NAME,
         "reranker_model": RERANK_MODEL_NAME,
         "device": DEVICE,
+        "torch_dtype": str(TORCH_DTYPE),
         "embedding_dim": 1024,  # per Qwen3-Embedding-0.6B spec
     }
 

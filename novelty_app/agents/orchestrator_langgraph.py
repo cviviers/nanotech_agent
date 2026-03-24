@@ -20,6 +20,11 @@ except Exception:  # pragma: no cover
     from novelty_app.discovery_cue import cue_prompt_block, discovery_cue_to_dict
 
 try:
+    from agents.observability import current_trace_ref, observe_current, trace_attributes
+except Exception:  # pragma: no cover
+    from novelty_app.agents.observability import current_trace_ref, observe_current, trace_attributes
+
+try:
     from evaluation.judge import score_hypotheses
 except Exception:  # pragma: no cover
     from novelty_app.evaluation.judge import score_hypotheses
@@ -127,6 +132,9 @@ class OrchestratorState(TypedDict, total=False):
     idea_scores: Dict[str, Any]
     blueprint: Dict[str, Any]
     published: bool
+    published_artifact: Dict[str, Any]
+    run_trace_ref: Dict[str, Any]
+    observability: Dict[str, Any]
 
 
 SYSTEM_EXPLAIN = (
@@ -198,11 +206,76 @@ def _target_payload(state: OrchestratorState) -> Dict[str, Any]:
     return payload
 
 
+def _target_summary(state: OrchestratorState) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {
+        "snapshot_id": state.get("snapshot_id"),
+        "target_type": state.get("target_type"),
+    }
+    if state.get("target_type") == "gap":
+        summary["gap_id"] = state.get("gap_id")
+    else:
+        summary["cluster_a"] = state.get("cluster_a")
+        summary["cluster_b"] = state.get("cluster_b")
+    return {key: value for key, value in summary.items() if value is not None}
+
+
+def _trace_metadata(state: OrchestratorState) -> Dict[str, Any]:
+    return {
+        **_target_summary(state),
+        "has_discovery_cue": bool(discovery_cue_to_dict(state.get("discovery_cue"))),
+        "max_iters": state.get("max_iters"),
+    }
+
+
+def _trace_attribute_metadata(state: OrchestratorState) -> Dict[str, Any]:
+    summary = _target_summary(state)
+    return {key: str(value) for key, value in summary.items() if value is not None}
+
+
+def _trace_tags(state: OrchestratorState) -> List[str]:
+    tags = ["orchestrator", str(state.get("target_type") or "unknown")]
+    if state.get("snapshot_id"):
+        tags.append("snapshot")
+    if discovery_cue_to_dict(state.get("discovery_cue")):
+        tags.append("discovery_cue")
+    return tags
+
+
+def _llm_model_name(llm: ChatOpenAI) -> Optional[str]:
+    return getattr(llm, "model_name", None) or getattr(llm, "model", None)
+
+
+def _evidence_summary(papers: List[Dict[str, Any]], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    return {
+        "n_papers": len(papers),
+        "paper_ids": [paper.get("paper_id") for paper in papers[:5] if paper.get("paper_id")],
+        "profile": (meta or {}).get("profile"),
+    }
+
+
+def _initial_invoke_summary(state: OrchestratorState) -> Dict[str, Any]:
+    return {
+        **_target_summary(state),
+        "max_iters": state.get("max_iters"),
+        "exemplars": state.get("exemplars"),
+        "boundary": state.get("boundary"),
+        "diverse": state.get("diverse"),
+        "has_discovery_cue": bool(discovery_cue_to_dict(state.get("discovery_cue"))),
+    }
+
+
 def node_build_pack(state: OrchestratorState, backend: BackendClient) -> OrchestratorState:
     payload = _target_payload(state)
-    pack = backend.evidence_pack(payload)
-    state["evidence"] = pack.get("papers", [])
-    state["evidence_meta"] = pack.get("meta", {})
+    with observe_current(
+        name="build_pack",
+        as_type="retriever",
+        input_payload=payload,
+        metadata=_trace_metadata(state),
+    ) as observation:
+        pack = backend.evidence_pack(payload)
+        state["evidence"] = pack.get("papers", [])
+        state["evidence_meta"] = pack.get("meta", {})
+        observation.update(output=_evidence_summary(state["evidence"], state["evidence_meta"]))
     return state
 
 
@@ -238,13 +311,20 @@ EVIDENCE PACK (JSONL):
 Return JSON per schema.
 """
     structured = llm.with_structured_output(ContrastiveExplanation, method="function_calling")
-    out = structured.invoke(
-        [
-            {"role": "system", "content": SYSTEM_EXPLAIN},
-            {"role": "user", "content": user},
-        ]
-    )
-    state["explanation"] = out.model_dump()
+    messages = [
+        {"role": "system", "content": SYSTEM_EXPLAIN},
+        {"role": "user", "content": user},
+    ]
+    with observe_current(
+        name="explain",
+        as_type="generation",
+        input_payload=messages,
+        metadata=_trace_metadata(state),
+        model=_llm_model_name(llm),
+    ) as observation:
+        out = structured.invoke(messages)
+        state["explanation"] = out.model_dump()
+        observation.update(output=state["explanation"])
     return state
 
 
@@ -265,13 +345,20 @@ Audit the explanation: identify unsupported claims, missing facets, cue violatio
 Return JSON per schema.
 """
     structured = llm.with_structured_output(AuditReport, method="function_calling")
-    out = structured.invoke(
-        [
-            {"role": "system", "content": SYSTEM_AUDIT},
-            {"role": "user", "content": user},
-        ]
-    )
-    state["audit"] = out.model_dump()
+    messages = [
+        {"role": "system", "content": SYSTEM_AUDIT},
+        {"role": "user", "content": user},
+    ]
+    with observe_current(
+        name="audit",
+        as_type="evaluator",
+        input_payload=messages,
+        metadata=_trace_metadata(state),
+        model=_llm_model_name(llm),
+    ) as observation:
+        out = structured.invoke(messages)
+        state["audit"] = out.model_dump()
+        observation.update(output=state["audit"])
     return state
 
 
@@ -284,15 +371,30 @@ def node_patch_retrieve(state: OrchestratorState, backend: BackendClient) -> Orc
     payload["diverse"] = max(10, state.get("diverse", 25) // 2)
     payload["counter_queries"] = queries
 
-    papers = backend.evidence_pack(payload).get("papers", [])
-    seen = {p.get("paper_id") for p in state.get("evidence", [])}
-    merged = list(state.get("evidence", []))
-    for p in papers:
-        if p.get("paper_id") not in seen:
-            merged.append(p)
-            seen.add(p.get("paper_id"))
-    state["evidence"] = merged
-    state["iter"] = state.get("iter", 0) + 1
+    with observe_current(
+        name="patch_retrieve",
+        as_type="retriever",
+        input_payload={"payload": payload, "patch_queries": queries},
+        metadata=_trace_metadata(state),
+    ) as observation:
+        papers = backend.evidence_pack(payload).get("papers", [])
+        seen = {p.get("paper_id") for p in state.get("evidence", [])}
+        merged = list(state.get("evidence", []))
+        added = 0
+        for p in papers:
+            if p.get("paper_id") not in seen:
+                merged.append(p)
+                seen.add(p.get("paper_id"))
+                added += 1
+        state["evidence"] = merged
+        state["iter"] = state.get("iter", 0) + 1
+        observation.update(
+            output={
+                "patch_queries": queries,
+                "added_papers": added,
+                "evidence_size": len(state["evidence"]),
+            }
+        )
     return state
 
 
@@ -313,13 +415,20 @@ EVIDENCE PACK (JSONL):
 Return JSON per schema.
 """
     structured = llm.with_structured_output(HypothesesOut, method="function_calling")
-    out = structured.invoke(
-        [
-            {"role": "system", "content": SYSTEM_IDEATE},
-            {"role": "user", "content": user},
-        ]
-    )
-    state["hypotheses"] = out.model_dump()
+    messages = [
+        {"role": "system", "content": SYSTEM_IDEATE},
+        {"role": "user", "content": user},
+    ]
+    with observe_current(
+        name="ideate",
+        as_type="generation",
+        input_payload=messages,
+        metadata=_trace_metadata(state),
+        model=_llm_model_name(llm),
+    ) as observation:
+        out = structured.invoke(messages)
+        state["hypotheses"] = out.model_dump()
+        observation.update(output=state["hypotheses"])
     return state
 
 
@@ -330,30 +439,41 @@ def node_score(
     model_name: str | None = None,
 ) -> OrchestratorState:
     hypotheses = list((state.get("hypotheses") or {}).get("hypotheses") or [])
-    scores = score_hypotheses(
-        hypotheses,
-        evidence_pack={
-            "papers": state.get("evidence", []),
-            "meta": state.get("evidence_meta", {}),
+    with observe_current(
+        name="score",
+        as_type="evaluator",
+        input_payload={
+            "hypotheses": [{"id": hyp.get("id"), "title": hyp.get("title")} for hyp in hypotheses],
+            "target": _target_summary(state),
+            "evidence_size": len(state.get("evidence", [])),
         },
-        audit=state.get("audit", {}),
-        explanation=state.get("explanation", {}),
-        target={
-            "target_type": state.get("target_type"),
-            "gap_id": state.get("gap_id"),
-            "cluster_a": state.get("cluster_a"),
-            "cluster_b": state.get("cluster_b"),
-            "snapshot_id": state.get("snapshot_id"),
-        },
-        discovery_cue=discovery_cue_to_dict(state.get("discovery_cue")),
-        openai_api_key=openai_api_key,
-        model_name=model_name,
-    )
-    state["idea_scores"] = scores
-    for hyp in hypotheses:
-        hyp_id = str(hyp.get("id") or "")
-        hyp["idea_scores"] = dict(scores.get(hyp_id) or {})
-    state["hypotheses"] = {"hypotheses": hypotheses}
+        metadata=_trace_metadata(state),
+    ) as observation:
+        scores = score_hypotheses(
+            hypotheses,
+            evidence_pack={
+                "papers": state.get("evidence", []),
+                "meta": state.get("evidence_meta", {}),
+            },
+            audit=state.get("audit", {}),
+            explanation=state.get("explanation", {}),
+            target={
+                "target_type": state.get("target_type"),
+                "gap_id": state.get("gap_id"),
+                "cluster_a": state.get("cluster_a"),
+                "cluster_b": state.get("cluster_b"),
+                "snapshot_id": state.get("snapshot_id"),
+            },
+            discovery_cue=discovery_cue_to_dict(state.get("discovery_cue")),
+            openai_api_key=openai_api_key,
+            model_name=model_name,
+        )
+        state["idea_scores"] = scores
+        for hyp in hypotheses:
+            hyp_id = str(hyp.get("id") or "")
+            hyp["idea_scores"] = dict(scores.get(hyp_id) or {})
+        state["hypotheses"] = {"hypotheses": hypotheses}
+        observation.update(output={"scores": scores})
     return state
 
 
@@ -387,13 +507,20 @@ EVIDENCE PACK (JSONL):
 Return JSON per schema.
 """
     structured = llm.with_structured_output(BlueprintOut, method="function_calling")
-    out = structured.invoke(
-        [
-            {"role": "system", "content": SYSTEM_BLUEPRINT},
-            {"role": "user", "content": user},
-        ]
-    )
-    state["blueprint"] = out.model_dump()
+    messages = [
+        {"role": "system", "content": SYSTEM_BLUEPRINT},
+        {"role": "user", "content": user},
+    ]
+    with observe_current(
+        name="blueprint",
+        as_type="generation",
+        input_payload=messages,
+        metadata=_trace_metadata(state),
+        model=_llm_model_name(llm),
+    ) as observation:
+        out = structured.invoke(messages)
+        state["blueprint"] = out.model_dump()
+        observation.update(output=state["blueprint"])
     return state
 
 
@@ -417,9 +544,18 @@ def node_publish(state: OrchestratorState, backend: BackendClient) -> Orchestrat
         "idea_scores": state.get("idea_scores", {}),
         "blueprint": state.get("blueprint", {}),
         "iterations": state.get("iter", 0),
+        "trace_ref": dict(state.get("run_trace_ref") or {}),
     }
-    backend.store_artifact(kind="research_brief", target=target, payload=payload)
-    state["published"] = True
+    with observe_current(
+        name="publish",
+        as_type="tool",
+        input_payload={"target": target, "payload": {"evidence_size": payload["evidence_size"], "iterations": payload["iterations"]}},
+        metadata=_trace_metadata(state),
+    ) as observation:
+        artifact = backend.store_artifact(kind="research_brief", target=target, payload=payload)
+        state["published_artifact"] = artifact
+        state["published"] = True
+        observation.update(output={"artifact": artifact, "trace_ref": payload["trace_ref"]})
     return state
 
 
@@ -432,6 +568,52 @@ def route_after_audit(state: OrchestratorState) -> str:
     if (needs_patch or (cue_alignment is not None and float(cue_alignment) < 0.35)) and it < max_iters:
         return "patch"
     return "ideate"
+
+
+class InstrumentedOrchestrator:
+    def __init__(self, compiled: Any):
+        self._compiled = compiled
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._compiled, name)
+
+    def invoke(self, state: OrchestratorState, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        seeded_state = dict(state)
+        session_id = str(seeded_state.get("snapshot_id") or "") or None
+        tags = _trace_tags(seeded_state)
+        metadata = _trace_metadata(seeded_state)
+        with observe_current(
+            name="orchestrator_run",
+            as_type="agent",
+            input_payload=_initial_invoke_summary(seeded_state),
+            metadata=metadata,
+        ) as observation:
+            with trace_attributes(
+                session_id=session_id,
+                tags=tags,
+                trace_name="orchestrator_run",
+                metadata=_trace_attribute_metadata(seeded_state),
+            ):
+                seeded_state["run_trace_ref"] = current_trace_ref(
+                    session_id=session_id,
+                    tags=tags,
+                    metadata=metadata,
+                )
+                out = dict(self._compiled.invoke(seeded_state, *args, **kwargs))
+                out["observability"] = current_trace_ref(
+                    session_id=session_id,
+                    tags=tags,
+                    metadata=metadata,
+                )
+                observation.update(
+                    output={
+                        "published": bool(out.get("published")),
+                        "iterations": out.get("iter", 0),
+                        "evidence_size": len(out.get("evidence", [])),
+                        "artifact_id": (out.get("published_artifact") or {}).get("artifact_id"),
+                    }
+                )
+                return out
 
 
 def build_orchestrator(
@@ -473,7 +655,7 @@ def build_orchestrator(
     g.add_edge("blueprint", "publish")
     g.add_edge("publish", END)
 
-    return g.compile()
+    return InstrumentedOrchestrator(g.compile())
 
 
 __all__ = [

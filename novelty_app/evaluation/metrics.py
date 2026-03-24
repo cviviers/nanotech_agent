@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from statistics import median
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 
 IDEA_SCORE_FIELDS = (
@@ -14,7 +14,7 @@ IDEA_SCORE_FIELDS = (
 )
 
 
-def _safe_rate(num: int, den: int) -> float:
+def _safe_rate(num: float, den: int) -> float:
     return float(num) / float(den) if den else 0.0
 
 
@@ -22,104 +22,156 @@ def _extract_idea_scores(row: Dict[str, Any]) -> Dict[str, Any]:
     return dict(row.get("idea_scores") or (row.get("hypothesis") or {}).get("idea_scores") or {})
 
 
-def aggregate_match_metrics(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
-    rows = list(records)
-    total = len(rows)
-    counts: Dict[str, int] = {}
-    lead_times: List[int] = []
-    by_method: Dict[str, Dict[str, Any]] = {}
-    overall_score_sums = {field: 0.0 for field in IDEA_SCORE_FIELDS}
-    overall_score_counts = {field: 0 for field in IDEA_SCORE_FIELDS}
-    overall_average_sum = 0.0
-    overall_average_count = 0
+def _has_cue(row: Dict[str, Any]) -> bool:
+    cue = dict(row.get("discovery_cue") or {})
+    return any(
+        bool(cue.get(field))
+        for field in (
+            "text",
+            "goal",
+            "include_terms",
+            "avoid_terms",
+            "preferred_fields",
+            "hard_constraints",
+            "soft_constraints",
+            "counter_queries",
+        )
+    )
+
+
+def _task_key(row: Dict[str, Any]) -> Tuple[str, int, str]:
+    return (
+        str(row.get("method_name") or "unknown"),
+        int(row.get("seed") or 0),
+        str(row.get("gold_future_paper_id") or ""),
+    )
+
+
+def _select_best_task_rows(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    grouped: Dict[Tuple[str, int, str], List[Dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(_task_key(row), []).append(row)
+
+    best_rows: List[Dict[str, Any]] = []
+    for group_rows in grouped.values():
+        cue_active = any(_has_cue(row) for row in group_rows)
+
+        def sort_key(row: Dict[str, Any]) -> Tuple[float, float, int, int, int, float]:
+            primary_value = row.get("cue_weighted_rr") if cue_active else row.get("gold_reciprocal_rank")
+            primary = float(primary_value or 0.0)
+            return (
+                primary,
+                float(row.get("gold_reciprocal_rank") or 0.0),
+                int(bool(row.get("gold_hit_at_1"))),
+                int(bool(row.get("gold_hit_at_5"))),
+                int(bool(row.get("gold_hit_at_10"))),
+                float(_extract_idea_scores(row).get("average_score") or 0.0),
+            )
+
+        best_rows.append(max(group_rows, key=sort_key))
+    return best_rows
+
+
+def select_best_task_rows(rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return _select_best_task_rows(rows)
+
+
+def _aggregate_idea_scores(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    score_sums = {field: 0.0 for field in IDEA_SCORE_FIELDS}
+    score_counts = {field: 0 for field in IDEA_SCORE_FIELDS}
+    average_sum = 0.0
+    average_count = 0
 
     for row in rows:
-        classification = str(row.get("classification") or "unknown")
-        counts[classification] = counts.get(classification, 0) + 1
-        if row.get("first_future_year") is not None:
-            lead_times.append(int(row["first_future_year"]))
-        method = str(row.get("method_name") or "unknown")
-        method_counts = by_method.setdefault(
-            method,
-            {
-                "count": 0,
-                "classifications": {},
-                "n_scored_hypotheses": 0,
-                "average_idea_scores": {field: None for field in IDEA_SCORE_FIELDS},
-                "mean_average_idea_score": None,
-                "_score_sums": {field: 0.0 for field in IDEA_SCORE_FIELDS},
-                "_score_counts": {field: 0 for field in IDEA_SCORE_FIELDS},
-                "_average_sum": 0.0,
-                "_average_count": 0,
-            },
-        )
-        method_counts["count"] += 1
-        method_counts["classifications"][classification] = method_counts["classifications"].get(classification, 0) + 1
-
         idea_scores = _extract_idea_scores(row)
-        if idea_scores:
-            method_counts["n_scored_hypotheses"] += 1
-            average_score = idea_scores.get("average_score")
-            if average_score is not None:
-                method_counts["_average_sum"] += float(average_score)
-                method_counts["_average_count"] += 1
-                overall_average_sum += float(average_score)
-                overall_average_count += 1
-            for field in IDEA_SCORE_FIELDS:
-                criterion = idea_scores.get(field) or {}
-                score = criterion.get("score")
-                if score is None:
-                    continue
-                numeric = float(score)
-                method_counts["_score_sums"][field] += numeric
-                method_counts["_score_counts"][field] += 1
-                overall_score_sums[field] += numeric
-                overall_score_counts[field] += 1
-
-    already_present = counts.get("already_present", 0)
-    anticipatory_strong = counts.get("anticipatory_strong", 0)
-    anticipatory_partial = counts.get("anticipatory_partial", 0)
-    unsupported = counts.get("unsupported", 0)
-    unrealized = counts.get("unrealized", 0)
-
-    for method, data in by_method.items():
-        method_total = int(data["count"])
-        method_class = data["classifications"]
-        data["anticipatory_strong_rate"] = _safe_rate(method_class.get("anticipatory_strong", 0), method_total)
-        data["novelty_adjusted_hit_rate"] = _safe_rate(
-            method_class.get("anticipatory_strong", 0),
-            max(0, method_total - method_class.get("already_present", 0)),
-        )
-        if data["_average_count"]:
-            data["mean_average_idea_score"] = round(data["_average_sum"] / data["_average_count"], 3)
+        average_score = idea_scores.get("average_score")
+        if average_score is not None:
+            average_sum += float(average_score)
+            average_count += 1
         for field in IDEA_SCORE_FIELDS:
-            if data["_score_counts"][field]:
-                data["average_idea_scores"][field] = round(
-                    data["_score_sums"][field] / data["_score_counts"][field],
-                    3,
-                )
-        data.pop("_score_sums", None)
-        data.pop("_score_counts", None)
-        data.pop("_average_sum", None)
-        data.pop("_average_count", None)
+            criterion = idea_scores.get(field) or {}
+            score = criterion.get("score")
+            if score is None:
+                continue
+            score_sums[field] += float(score)
+            score_counts[field] += 1
 
     return {
-        "n_hypotheses": total,
-        "n_scored_hypotheses": overall_average_count,
-        "historical_leakage_rate": _safe_rate(already_present, total),
-        "anticipatory_strong_rate": _safe_rate(anticipatory_strong, total),
-        "anticipatory_partial_rate": _safe_rate(anticipatory_partial, total),
-        "unsupported_rate": _safe_rate(unsupported, total),
-        "unrealized_rate": _safe_rate(unrealized, total),
-        "novelty_adjusted_hit_rate": _safe_rate(anticipatory_strong, max(0, total - already_present)),
-        "median_time_to_first_future_match_year": median(lead_times) if lead_times else None,
-        "mean_average_idea_score": round(overall_average_sum / overall_average_count, 3) if overall_average_count else None,
+        "n_scored_tasks": average_count,
+        "mean_average_idea_score": round(average_sum / average_count, 3) if average_count else None,
         "average_idea_scores": {
-            field: round(overall_score_sums[field] / overall_score_counts[field], 3)
-            if overall_score_counts[field]
-            else None
+            field: round(score_sums[field] / score_counts[field], 3) if score_counts[field] else None
             for field in IDEA_SCORE_FIELDS
         },
-        "counts": counts,
-        "by_method": by_method,
     }
+
+
+def _aggregate_task_rows(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    total = len(rows)
+    counts: Dict[str, int] = {}
+    gold_ranks: List[int] = []
+    gold_rr_sum = 0.0
+    cue_weighted_rr_sum = 0.0
+    cue_scores: List[float] = []
+    cue_weighted_hit_1 = 0.0
+    cue_weighted_hit_5 = 0.0
+    cue_weighted_hit_10 = 0.0
+
+    for row in rows:
+        label = str(row.get("recovery_label") or "unknown")
+        counts[label] = counts.get(label, 0) + 1
+        gold_rank = row.get("gold_rank")
+        if gold_rank is not None:
+            gold_ranks.append(int(gold_rank))
+        gold_rr_sum += float(row.get("gold_reciprocal_rank") or 0.0)
+        cue_weighted_rr_sum += float(row.get("cue_weighted_rr") or 0.0)
+
+        cue_score = row.get("cue_score")
+        if cue_score is not None:
+            cue_scores.append(float(cue_score))
+            cue_norm = max(0.0, min(1.0, (float(cue_score) + 1.0) / 2.5))
+            cue_weighted_hit_1 += cue_norm * float(bool(row.get("gold_hit_at_1")))
+            cue_weighted_hit_5 += cue_norm * float(bool(row.get("gold_hit_at_5")))
+            cue_weighted_hit_10 += cue_norm * float(bool(row.get("gold_hit_at_10")))
+
+    idea_metrics = _aggregate_idea_scores(rows)
+    metrics = {
+        "n_task_evaluations": total,
+        "gold_recall_at_1": _safe_rate(sum(1 for row in rows if row.get("gold_hit_at_1")), total),
+        "gold_recall_at_5": _safe_rate(sum(1 for row in rows if row.get("gold_hit_at_5")), total),
+        "gold_recall_at_10": _safe_rate(sum(1 for row in rows if row.get("gold_hit_at_10")), total),
+        "gold_mrr": round(_safe_rate(gold_rr_sum, total), 6),
+        "future_neighbor_only_rate": _safe_rate(counts.get("future_neighbor_only", 0), total),
+        "historical_confound_rate": _safe_rate(counts.get("historical_confound", 0), total),
+        "gold_recovered_rate": _safe_rate(counts.get("gold_recovered", 0), total),
+        "not_recovered_rate": _safe_rate(counts.get("not_recovered", 0), total),
+        "median_gold_rank": median(gold_ranks) if gold_ranks else None,
+        "cue_weighted_recall_at_1": round(_safe_rate(cue_weighted_hit_1, total), 6) if cue_scores else None,
+        "cue_weighted_recall_at_5": round(_safe_rate(cue_weighted_hit_5, total), 6) if cue_scores else None,
+        "cue_weighted_recall_at_10": round(_safe_rate(cue_weighted_hit_10, total), 6) if cue_scores else None,
+        "cue_weighted_mrr": round(_safe_rate(cue_weighted_rr_sum, total), 6) if cue_scores else None,
+        "mean_hypothesis_cue_score": round(sum(cue_scores) / len(cue_scores), 6) if cue_scores else None,
+        "counts": counts,
+    }
+    metrics.update(idea_metrics)
+    return metrics
+
+
+def aggregate_match_metrics(records: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    rows = list(records)
+    best_rows = _select_best_task_rows(rows)
+
+    by_method: Dict[str, Dict[str, Any]] = {}
+    for method_name in sorted({str(row.get("method_name") or "unknown") for row in best_rows}):
+        method_rows = [row for row in best_rows if str(row.get("method_name") or "unknown") == method_name]
+        by_method[method_name] = _aggregate_task_rows(method_rows)
+
+    overall = _aggregate_task_rows(best_rows)
+    overall.update(
+        {
+            "n_hypotheses": len(rows),
+            "n_scored_hypotheses": sum(1 for row in rows if _extract_idea_scores(row)),
+            "by_method": by_method,
+        }
+    )
+    return overall

@@ -92,6 +92,47 @@ def _safe_neighbors(k: int, n_samples: int) -> int:
     return max(1, min(int(k), max(1, n_samples - 1)))
 
 
+def _community_detection_labels(graph: nx.Graph, config: AnalysisConfig) -> np.ndarray:
+    if config.community_detection_algorithm == "leiden":
+        try:
+            import igraph as ig  # type: ignore
+            import leidenalg as la  # type: ignore
+        except Exception as exc:  # pragma: no cover
+            raise RuntimeError(
+                "Leiden community detection requires `igraph` and `leidenalg` to be installed."
+            ) from exc
+
+        mapping = {node: idx for idx, node in enumerate(graph.nodes())}
+        edges = [(mapping[u], mapping[v]) for u, v in graph.edges()]
+        weights = [graph[u][v].get("weight", 1.0) for u, v in graph.edges()]
+        ig_graph = ig.Graph(n=len(mapping), edges=edges)
+        ig_graph.es["weight"] = weights
+        partition = la.find_partition(
+            ig_graph,
+            la.RBConfigurationVertexPartition,
+            weights="weight",
+            resolution_parameter=float(config.community_resolution),
+            seed=int(config.random_seed),
+        )
+        labels = np.zeros(len(graph), dtype=int)
+        for cluster_id, community in enumerate(partition):
+            labels[list(community)] = cluster_id
+        return labels.astype(int)
+
+    try:
+        import community as community_louvain  # type: ignore
+    except Exception as exc:  # pragma: no cover
+        raise RuntimeError("Louvain community detection requires the `community` package to be installed.") from exc
+
+    partition = community_louvain.best_partition(
+        graph,
+        weight="weight",
+        resolution=float(config.community_resolution),
+        random_state=int(config.random_seed),
+    )
+    return np.asarray([int(partition[idx]) for idx in range(len(graph))], dtype=int)
+
+
 def _cluster_embeddings(x: np.ndarray, config: AnalysisConfig) -> tuple[np.ndarray, str]:
     hdbscan_mod = None
     if config.clustering_method == "hdbscan":
@@ -99,6 +140,13 @@ def _cluster_embeddings(x: np.ndarray, config: AnalysisConfig) -> tuple[np.ndarr
             import hdbscan as hdbscan_mod  # type: ignore
         except Exception:  # pragma: no cover
             hdbscan_mod = None
+    if config.clustering_method == "leiden":
+        community_graph = _build_knn_graph(
+            x,
+            _safe_neighbors(config.community_graph_k, len(x)),
+            config.community_graph_metric,
+        )
+        return _community_detection_labels(community_graph, config), "leiden"
     if config.clustering_method == "hdbscan" and hdbscan_mod is not None and len(x) >= 5:
         clusterer = hdbscan_mod.HDBSCAN(
             min_cluster_size=max(2, min(config.hdbscan_min_cluster_size, len(x))),

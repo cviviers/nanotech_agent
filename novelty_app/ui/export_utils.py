@@ -3,7 +3,6 @@ Utility functions for exporting plotly figures to various formats
 """
 import streamlit as st
 from datetime import datetime
-import io
 import plotly.graph_objects as go
 
 def add_figure_export_button(fig, filename_prefix: str, key: str = None):
@@ -33,8 +32,12 @@ def add_figure_export_button(fig, filename_prefix: str, key: str = None):
         yaxis=dict(visible=False)
     )
     
-    # Export figure to SVG using kaleido
-    svg_bytes = fig_export.to_image(format="svg", width=1000, height=1000)
+    try:
+        # Export figure to SVG using kaleido
+        svg_bytes = fig_export.to_image(format="svg", width=1000, height=1000)
+    except Exception as exc:
+        st.warning(f"SVG export unavailable in this environment: {exc}")
+        return
     
     # Create download button
     st.download_button(
