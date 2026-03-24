@@ -96,13 +96,30 @@ This repository implements an end-to-end pipeline for discovering research gaps 
    pip install -r requirements.txt
    ```
 
-4. **Set up OpenAI API key** (optional, for LLM features & also available in the app) 
+4. **Set up OpenAI API key & model** (optional, for LLM features & also available in the app) 
    ```bash
    # Windows PowerShell
    $env:OPENAI_API_KEY="your-api-key-here"
+   $env:OPENAI_MODEL="your-api-key-here"
+   
    # Linux/Mac
    export OPENAI_API_KEY="your-api-key-here"
+   export OPENAI_MODEL="your-api-key-here"
    ```
+
+5. **Set up QWEN quantization** (optional for running embedding model on smaller GPU)
+  ```bash
+   # Windows PowerShell
+   $env:QWEN_TORCH_DTYPE = "float16"
+   # Linux/Mac
+   export QWEN_TORCH_DTYPE="float16"
+
+   cd embedding_models
+   uvicorn qwen:app --host 0.0.0.0 --port 8000
+   ```
+
+
+  
 
 ### Quick Start
 

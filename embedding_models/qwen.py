@@ -1,5 +1,7 @@
 # app/main.py
 import os
+import sys
+import traceback
 from typing import List, Optional
 
 import torch
@@ -20,6 +22,11 @@ EMBED_MAX_LENGTH = int(os.getenv("QWEN_EMBED_MAX_LENGTH", "8192"))
 RERANK_MAX_LENGTH = int(os.getenv("QWEN_RERANK_MAX_LENGTH", "8192"))
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _print_local_qwen_error(context: str, exc: Exception) -> None:
+    print(f"[Qwen API] {context}: {exc}", file=sys.stderr, flush=True)
+    traceback.print_exc(file=sys.stderr)
 
 
 def _resolve_torch_dtype() -> torch.dtype:
@@ -300,6 +307,7 @@ def create_embeddings(payload: EmbeddingRequest):
             normalize=payload.normalize,
         )
     except Exception as e:
+        _print_local_qwen_error("/embed failed", e)
         raise HTTPException(status_code=500, detail=str(e))
 
     return EmbeddingResponse(
@@ -330,6 +338,7 @@ def compute_similarity(payload: SimilarityRequest):
         )
         sims = cosine_similarity_matrix(emb_a, emb_b)
     except Exception as e:
+        _print_local_qwen_error("/similarity failed", e)
         raise HTTPException(status_code=500, detail=str(e))
 
     return SimilarityResponse(
@@ -352,6 +361,7 @@ def rank_documents(payload: RankRequest):
             instruction=payload.instruction,
         )
     except Exception as e:
+        _print_local_qwen_error("/rank reranker failed", e)
         raise HTTPException(status_code=500, detail=f"reranker error: {e}")
 
     # Optional embedding-based similarity scores
@@ -373,6 +383,7 @@ def rank_documents(payload: RankRequest):
             embedding_scores = sims.cpu().tolist()
         except Exception as e:
             # Do not fail the whole request if embedding similarity fails
+            _print_local_qwen_error("/rank embedding similarity failed", e)
             embedding_scores = None
 
     # Build result objects

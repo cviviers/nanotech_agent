@@ -44,3 +44,4 @@ requests
 langchain
 langchain-openai
 langgraph
+langfuse

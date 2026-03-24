@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import sys
 from typing import Any, Dict, List, Optional
 
 import requests
+
+
+def _print_local_qwen_error(message: str) -> None:
+    print(f"[QwenClient] {message}", file=sys.stderr, flush=True)
 
 
 class QwenClient:
@@ -13,19 +18,32 @@ class QwenClient:
         self.timeout_s = timeout_s
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        resp = requests.post(
-            f"{self.base_url}{path}",
-            json=payload,
-            timeout=self.timeout_s,
-        )
+        try:
+            resp = requests.post(
+                f"{self.base_url}{path}",
+                json=payload,
+                timeout=self.timeout_s,
+            )
+        except requests.RequestException as exc:
+            _print_local_qwen_error(f"POST {path} request error: {exc}")
+            raise
         if not resp.ok:
             detail = None
             try:
                 detail = resp.json()
             except Exception:
                 detail = resp.text.strip() or None
-            raise RuntimeError(f"POST {path} failed with HTTP {resp.status_code}: {detail}")
-        return resp.json()
+            message = f"POST {path} failed with HTTP {resp.status_code}: {detail}"
+            _print_local_qwen_error(message)
+            raise RuntimeError(message)
+        try:
+            return resp.json()
+        except ValueError as exc:
+            body = resp.text.strip()
+            body_preview = body[:500] + ("..." if len(body) > 500 else "")
+            message = f"POST {path} returned invalid JSON: {body_preview or '<empty response>'}"
+            _print_local_qwen_error(message)
+            raise RuntimeError(message) from exc
 
     def embed(
         self,
