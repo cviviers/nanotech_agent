@@ -43,7 +43,7 @@ def _resolve_torch_dtype() -> torch.dtype:
 
 
 TORCH_DTYPE = _resolve_torch_dtype()
-MODEL_LOAD_KWARGS = {"torch_dtype": TORCH_DTYPE} if DEVICE == "cuda" else {}
+MODEL_LOAD_KWARGS = {"dtype": TORCH_DTYPE} if DEVICE == "cuda" else {}
 
 # -------------------------------------------------------------------
 # Load models (Embedding + Reranker)
