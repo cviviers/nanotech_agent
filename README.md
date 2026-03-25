@@ -111,8 +111,10 @@ This repository implements an end-to-end pipeline for discovering research gaps 
   ```bash
    # Windows PowerShell
    $env:QWEN_TORCH_DTYPE = "float16"
+   $env:QWEN_RERANK_TORCH_DTYPE = "float16"
    # Linux/Mac
    export QWEN_TORCH_DTYPE="float16"
+   export QWEN_RERANK_TORCH_DTYPE="float16"
 
    cd embedding_models
    uvicorn qwen:app --host 0.0.0.0 --port 8000

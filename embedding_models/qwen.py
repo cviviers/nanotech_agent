@@ -29,21 +29,30 @@ def _print_local_qwen_error(context: str, exc: Exception) -> None:
     traceback.print_exc(file=sys.stderr)
 
 
-def _resolve_torch_dtype() -> torch.dtype:
+def _resolve_torch_dtype(env_var: str, default: str = "float16") -> torch.dtype:
     if DEVICE != "cuda":
         return torch.float32
-    dtype_name = str(os.getenv("QWEN_TORCH_DTYPE", "float16")).strip().lower()
+    dtype_name = str(os.getenv(env_var, default)).strip().lower()
     if dtype_name == "float16":
         return torch.float16
     if dtype_name == "bfloat16":
         return torch.bfloat16
     if dtype_name == "float32":
         return torch.float32
-    raise ValueError(f"Unsupported QWEN_TORCH_DTYPE: {dtype_name!r}")
+    raise ValueError(f"Unsupported {env_var}: {dtype_name!r}")
 
 
-TORCH_DTYPE = _resolve_torch_dtype()
-MODEL_LOAD_KWARGS = {"dtype": TORCH_DTYPE} if DEVICE == "cuda" else {}
+EMBED_TORCH_DTYPE = _resolve_torch_dtype(
+    "QWEN_EMBED_TORCH_DTYPE",
+    default=str(os.getenv("QWEN_TORCH_DTYPE", "float16")),
+)
+RERANK_TORCH_DTYPE = _resolve_torch_dtype(
+    "QWEN_RERANK_TORCH_DTYPE",
+    default=str(os.getenv("QWEN_TORCH_DTYPE", "float16")),
+)
+
+EMBED_MODEL_LOAD_KWARGS = {"torch_dtype": EMBED_TORCH_DTYPE} if DEVICE == "cuda" else {}
+RERANK_MODEL_LOAD_KWARGS = {"torch_dtype": RERANK_TORCH_DTYPE} if DEVICE == "cuda" else {}
 
 # -------------------------------------------------------------------
 # Load models (Embedding + Reranker)
@@ -56,14 +65,14 @@ embed_tokenizer = AutoTokenizer.from_pretrained(
     EMBED_MODEL_NAME,
     padding_side="left",
 )
-embed_model = AutoModel.from_pretrained(EMBED_MODEL_NAME, **MODEL_LOAD_KWARGS).to(DEVICE).eval()
+embed_model = AutoModel.from_pretrained(EMBED_MODEL_NAME, **EMBED_MODEL_LOAD_KWARGS).to(DEVICE).eval()
 
 # Reranker model
 rerank_tokenizer = AutoTokenizer.from_pretrained(
     RERANK_MODEL_NAME,
     padding_side="left",
 )
-rerank_model = AutoModelForCausalLM.from_pretrained(RERANK_MODEL_NAME, **MODEL_LOAD_KWARGS).to(DEVICE).eval()
+rerank_model = AutoModelForCausalLM.from_pretrained(RERANK_MODEL_NAME, **RERANK_MODEL_LOAD_KWARGS).to(DEVICE).eval()
 
 # Tokens and prompts for reranking (adapted from official README)
 token_false_id = rerank_tokenizer.convert_tokens_to_ids("no")
@@ -290,7 +299,8 @@ def read_root():
         "embedding_model": EMBED_MODEL_NAME,
         "reranker_model": RERANK_MODEL_NAME,
         "device": DEVICE,
-        "torch_dtype": str(TORCH_DTYPE),
+        "embed_torch_dtype": str(EMBED_TORCH_DTYPE),
+        "rerank_torch_dtype": str(RERANK_TORCH_DTYPE),
         "embedding_dim": 1024,  # per Qwen3-Embedding-0.6B spec
     }
 
