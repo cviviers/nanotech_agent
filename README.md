@@ -1,547 +1,264 @@
-# Nanotechnology Research Gap Discovery System
+# Nanotechnology Literature Mapping and Grounded Hypothesis Generation
 
-A comprehensive platform for analyzing scientific literature in nanotechnology and nanomedicine to identify research gaps, novelty opportunities, and unexplored areas using advanced NLP embeddings, clustering, and LLM-powered analysis.
+This repository is research code for mapping nanotechnology and nanomedicine literature, identifying sparse or weakly explored regions in embedding space, and testing whether retrieval-grounded LLM workflows can generate useful research hypotheses from those frontiers.
 
-## 🎯 Overview
+The repo is no longer just a single Streamlit explorer. It currently contains:
 
-This repository implements an end-to-end pipeline for discovering research gaps in nanotechnology literature by:
+- a notebook pipeline for PubMed extraction, preprocessing, and embedding generation
+- a Streamlit novelty-analysis workbench
+- a FastAPI backend plus SQLite knowledge store for published analysis snapshots
+- agentic and baseline hypothesis-generation workflows
+- retrospective and prospective evaluation runners
+- a separate human assessment app for blind-first review of generated ideas
+- local embedding and reranking services for Qwen and BioClinical ModernBERT
 
-1. **Data Collection**: Extracting scientific papers from PubMed
-2. **Preprocessing**: Cleaning and standardizing paper metadata and content
-3. **Embedding Generation**: Creating semantic embeddings using BERT and Qwen models
-4. **Novelty Analysis**: Identifying low-density regions in embedding space that represent potential research gaps
-5. **Interactive Exploration**: Streamlit-based application for visualizing and analyzing results
-6. **LLM-Powered Insights**: Using GPT models to explain and characterize research gaps
+## Main Components
 
-## 📁 Repository Structure
+```text
+1.pubmed_data_extraction.ipynb   PubMed collection workflow
+2.data_preprocessing.ipynb       Corpus cleaning / normalization
+3.create_bert_embeddings.ipynb   BioClinical ModernBERT embedding creation
+3.create_qwen_embeddings.ipynb   Qwen embedding creation
 
-```
-├── 1.pubmed_data_extraction.ipynb       # PubMed data extraction pipeline
-├── 2.data_preprocessing.ipynb           # Data cleaning and preprocessing
-├── 3.create_bert_embeddings.ipynb       # BERT embedding generation
-├── 3.create_qwen_embeddings.ipynb       # Qwen embedding generation
-├── requirements.txt                      # Python dependencies
-│
-├── data/                                 # Processed datasets
-│   ├── all_papers.json                  # Complete paper database
-│   ├── cleaned_dataset.json             # Preprocessed papers
-│   ├── bert_embeddings.npy              # BERT embeddings
-│   ├── bert_embeddings_metadata.json    # BERT metadata
-│   ├── qwen_embeddings.npy              # Qwen embeddings
-│   └── qwen_embeddings_metadata.json    # Qwen metadata
-│
-├── papers/                               # Individual paper JSON files (by PMID)
-│   ├── 10025624.json
-│   ├── 10080268.json
-│   └── ...
-│
-├── embedding_models/                     # Embedding model services
-│   ├── bert.py                          # BERT embedding service
-│   ├── qwen.py                          # Qwen embedding FastAPI service
-│   ├── eval.py                          # Model evaluation utilities
-│   ├── bert_eval_results.json           # BERT evaluation metrics
-│   ├── qwen_eval_results.json           # Qwen evaluation metrics
-│   └── README.md                        # Embedding models documentation
-│
-├── novelty_app/                         # Main app
-│   ├── app.py                           # App entry point
-│   ├── config.py                        # Configuration settings
-│   ├── core/                            # Core business logic
-│   │   ├── state.py                     # Session state management
-│   │   ├── data_loader.py               # Data loading utilities
-│   │   ├── entities.py                  # Entity extraction
-│   │   ├── density.py                   # Density computation
-│   │   ├── clustering.py                # Clustering algorithms
-│   │   ├── gap_detection.py             # Gap identification
-│   │   └── undo.py                      # Undo functionality
-│   ├── ui/                              # UI components 
-│   └── pages/                           # Page modules
-│
-└── utils/                                # Utility modules
-    ├── utils.py                         # General utilities & Paper class
-    ├── nanotech_discovery.py            # Core novelty discovery pipeline
-    ├── preprocessing.py                 # Preprocessing utilities
-    ├── data_utils.py                    # Data loading/export utilities
-    ├── cluster_utils.py                 # Clustering utilities
-    └── lda_utils.py                     # LDA topic modeling
+embedding_models/                FastAPI services for local embedding/reranking
+novelty_app/                     Main analysis app, agent backend, and evaluation code
+assement_app/                    Human review app for assessment bundles
+tests/                           Automated tests
+paper/                           Manuscript notes, figures, and writeup assets
+data/                            Local datasets, embeddings, SQLite DB, evaluation outputs
 ```
 
-## 🚀 Getting Started
+Useful subsystem docs:
 
-### Prerequisites
+- `embedding_models/README.md`
+- `novelty_app/agents/README.md`
+- `novelty_app/evaluation/README.md`
+- `assement_app/README.md`
+
+## What The Code Actually Does
+
+The current novelty-analysis path is centered on the `novelty_app` package and `novelty_app.evaluation.analysis_v1`.
+
+At a high level it:
+
+1. loads a paper corpus plus precomputed embeddings
+2. optionally applies PCA for downstream analysis
+3. clusters papers with K-means, HDBSCAN, or graph community detection
+4. builds a k-nearest-neighbor graph in embedding space
+5. computes density features as average k-NN distance across multiple `k` values
+6. averages z-scored density features into a `gap_score`
+7. identifies gap regions as connected components among papers above a chosen `gap_quantile`
+8. publishes those results as reusable snapshots for agent and evaluation workflows
+
+That means the current codebase is more about:
+
+- frontier mapping over embedding space
+- snapshot publishing and retrieval
+- evidence-pack construction
+- grounded ideation and blueprint generation
+- benchmarking generated ideas against held-out future papers
+
+It is less accurately described as the older monolithic `utils/` pipeline referenced by earlier README text.
+
+## Setup
+
+### Requirements
 
 - Python 3.10+
-- Virtual environment (recommended)
-- OpenAI API key (for LLM analysis features)
-- GPU recommended for embedding generation
+- local corpus files and embeddings under `data/`
+- optional GPU for local embedding services
+- `OPENAI_API_KEY` for LLM-backed pages and generation methods
 
-### Installation
+### Install
 
-1. **Clone the repository**
-   ```bash
-   cd "c:\Users\20195435\OneDrive - TU Eindhoven\TUe\Playground\Nanotechnology"
-   ```
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-2. **Create and activate virtual environment**
-   ```bash
-   python -m venv venv
-   # Windows
-   .\venv\Scripts\activate
-   # Linux/Mac
-   source venv/bin/activate
-   ```
+### Optional Environment Variables
 
-3. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+- `OPENAI_API_KEY`: required for LLM analysis, orchestrator, and LLM-backed evaluation methods
+- `OPENAI_MODEL`: optional override for generation/judging
+- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `LANGFUSE_TRACING_ENABLED`: optional tracing
+- `NOVELTY_AGENT_DB`: override the default SQLite path; otherwise the backend uses `data/novelty_agent_knowledge.sqlite`
+- `QWEN_TORCH_DTYPE`, `QWEN_EMBED_TORCH_DTYPE`, `QWEN_RERANK_TORCH_DTYPE`: optional dtype controls for the local Qwen service
 
-4. **Set up OpenAI and Langfuse environment variables** (optional, for LLM features and tracing)
-   ```bash
-   # Windows PowerShell
-   $env:OPENAI_API_KEY="your-api-key-here"
-   $env:OPENAI_MODEL="gpt-5-mini-2025-08-07"
-   $env:LANGFUSE_PUBLIC_KEY="your-langfuse-public-key"
-   $env:LANGFUSE_SECRET_KEY="your-langfuse-secret-key"
-   $env:LANGFUSE_BASE_URL="http://localhost:3000"  # Use your local Langfuse URL, or https://cloud.langfuse.com for Langfuse Cloud
-   $env:LANGFUSE_TRACING_ENABLED="true"
-   
-   # Linux/Mac
-   export OPENAI_API_KEY="your-api-key-here"
-   export OPENAI_MODEL="gpt-5-mini-2025-08-07"
-   export LANGFUSE_PUBLIC_KEY="your-langfuse-public-key"
-   export LANGFUSE_SECRET_KEY="your-langfuse-secret-key"
-   export LANGFUSE_BASE_URL="http://localhost:3000"  # Use your local Langfuse URL, or https://cloud.langfuse.com for Langfuse Cloud
-   export LANGFUSE_TRACING_ENABLED="true"
-   ```
+### Expected Local Data
 
-   If these variables are set before startup, Langfuse tracing is enabled automatically for:
-   - LangChain / LangGraph LLM calls
-   - retrospective evaluation runs
-   - local Qwen embed / rerank requests
-   - direct OpenAI-powered summaries in the app
+The repo code assumes data artifacts like these are available locally:
 
-   If `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are not set, tracing stays disabled with no code changes required.
-   The retrospective CLI does not load `.env` automatically, so these variables must be set in the same shell session that runs `python -m novelty_app.evaluation.run_retrospective`.
+- `data/cleaned_dataset.json`
+- `data/all_papers.json`
+- `data/bert_embeddings.npy`
+- `data/bert_embeddings_metadata.json`
+- `data/qwen_embeddings.npy`
+- `data/qwen_embeddings_metadata.json`
 
-5. **Set up QWEN quantization** (optional for running embedding model on smaller GPU)
-  ```bash
-   # Windows PowerShell
-   $env:QWEN_TORCH_DTYPE = "float16"
-   $env:QWEN_RERANK_TORCH_DTYPE = "float16"
-   # Linux/Mac
-   export QWEN_TORCH_DTYPE="float16"
-   export QWEN_RERANK_TORCH_DTYPE="float16"
+Large runtime artifacts are intentionally not tracked in git. The current `.gitignore` excludes `data/*`, `paper/*`, generated review workbooks, and SQLite databases, so a fresh clone will not be self-contained.
 
-   cd embedding_models
-   uvicorn qwen:app --host 0.0.0.0 --port 8000
-   ```
+## Run The Main Pieces
 
+### 1. Streamlit Novelty Workbench
 
-  
-
-### Quick Start
-
-**Download Sample Data:**
-
-We provide a preprocessed sample dataset for quick testing:
-
-1. **Download the sample dataset** (recommended for first-time users):
-   - [Sample Dataset (all_papers.json + embeddings)](https://drive.google.com/file/d/17s2DqYdRrUP3nuxPViFs5KFChtYc-xMJ/view?usp=sharing)
-   - Extract the ZIP file to your project root directory
-   - The ZIP contains:
-     - `data/all_papers.json` - Preprocessed papers with metadata
-     - `data/bert_embeddings.npy` - BERT embeddings
-     - `data/bert_embeddings_metadata.json` - BERT metadata
-     - `data/qwen_embeddings.npy` - Qwen embeddings
-     - `data/qwen_embeddings_metadata.json` - Qwen metadata
-
-2. **Optional: Download raw papers** (for full pipeline exploration):
-   - [Raw Papers (individual JSON files)](https://drive.google.com/file/d/1MP64I2MEPuNb5agwrJADemYer-ibAcfy/view?usp=sharing)
-   - Extract to `papers/` directory in project root
-
-**Run the Novelty Analysis App:**
-```bash
-# Run this in the same shell session where you exported OPENAI_* and LANGFUSE_* above
+```powershell
 streamlit run novelty_app/app.py
 ```
-**Run the Embeddings Models:**
-In two separate terminals
 
-```bash
-# If you want Qwen requests traced, start this from a shell that also has LANGFUSE_* set
+The app currently exposes pages for:
+
+- Data & Config
+- Embeddings
+- Filters
+- Clustering
+- Gap Analysis
+- Gap Regions
+- LLM Analysis
+- Agent Console
+- Database Explorer
+- Export
+
+The Agent Console is the bridge into the backend and evaluation stack. It can publish analyzed snapshots, inspect backend state, run the orchestrator, and launch retrospective or prospective evaluations from the UI.
+
+### 2. Local Embedding Services
+
+From `embedding_models/`:
+
+```powershell
 cd embedding_models
-
 uvicorn qwen:app --host 0.0.0.0 --port 8000
 ```
 
-```bash
+```powershell
 cd embedding_models
-
 uvicorn bert:app --host 0.0.0.0 --port 8001
 ```
 
+Notes:
 
-## 📊 Data Pipeline
+- the Qwen service provides both embeddings and reranking
+- the evaluation stack uses the Qwen service as its retrieval backbone
+- the BERT service is available for embedding experiments and simple ranking/similarity
 
-### 1. PubMed Data Extraction (`1.pubmed_data_extraction.ipynb`)
+### 3. Agent Backend
 
-Extracts scientific papers from PubMed database using Biopython:
-
-- **Input**: PubMed query or list of PMIDs
-- **Output**: Individual JSON files per paper in `papers/` directory
-- **Features**:
-  - Batch processing with chunking (10,000 papers per chunk)
-  - Duplicate detection
-  - Incremental updates based on revision dates
-  - Extracts: title, abstract, authors, journal, publication date, DOI, keywords, MeSH terms
-
-**Key Functions**:
-- `fetch_pubmed_data_given_ids_in_chunks()`: Batch fetching with error handling
-- `Paper` dataclass: Structured paper representation
-
-### 2. Data Preprocessing (`2.data_preprocessing.ipynb`)
-
-Cleans and standardizes the extracted data:
-
-- **Input**: JSON files from `papers/` directory
-- **Output**: `data/cleaned_dataset.json` and `data/all_papers.json`
-- **Processing Steps**:
-  - Text cleaning and normalization
-  - Abstract processing
-  - Metadata standardization
-  - Language detection
-  - Duplicate removal
-  - Missing value handling
-
-### 3. Embedding Generation
-
-#### BERT Embeddings (`3.create_bert_embeddings.ipynb`)
-
-Generates semantic embeddings using BioClinical-ModernBERT:
-
-- **Model**: `Lihuchen/BioClinical-ModernBERT-base` (768-dim)
-- **Output**: 
-  - `data/bert_embeddings.npy`: Embedding vectors
-  - `data/bert_embeddings_metadata.json`: Paper metadata
-- **Features**:
-  - Batch processing for efficiency
-  - GPU acceleration
-  - Content + processed content embeddings
-  - Dimensionality reduction evaluation (UMAP, PCA, t-SNE)
-  - Clustering quality metrics
-
-#### Qwen Embeddings (`3.create_qwen_embeddings.ipynb`)
-
-Alternative embeddings using Qwen3-Embedding:
-
-- **Model**: `Qwen/Qwen3-Embedding-0.6B` (1024-dim)
-- **Output**: 
-  - `data/qwen_embeddings.npy`: Embedding vectors
-  - `data/qwen_embeddings_metadata.json`: Paper metadata
-- **Features**:
-  - FastAPI service for embeddings
-  - Reranking capabilities
-  - Instruction-aware embeddings
-
-## 🔬 Novelty Discovery Pipeline
-
-The core novelty discovery is implemented in `utils/nanotech_discovery.py` following a 7-step process:
-
-### Step 1: Load Data
-- Load embeddings and metadata
-- Parse string representations of arrays
-- Prepare DataFrame with all features
-
-### Step 2: Dimensionality Reduction
-- **Methods**: UMAP, PCA, t-SNE
-- **Purpose**: Reduce high-dimensional embeddings (768/1024-D) to 2D/3D for visualization
-- **Evaluation**: Trustworthiness scores to validate reduction quality
-
-### Step 3: Nearest Neighbor Graph Construction
-- Build k-NN graph in high-dimensional space
-- Connect papers to their semantic neighbors
-- Basis for density estimation and gap detection
-
-### Step 4: Density Estimation
-- **Local Density**: Average distance to k-nearest neighbors
-- **Bootstrap Stability**: Repeated sampling to identify consistently low-density regions
-- **Gap Score**: Frequency of appearing in lowest-density quantile across bootstraps
-- **Output**: Papers ranked by "gap score" (higher = more novel/unexplored)
-
-### Step 5: Gap Region Identification
-- Connected components in gap subgraph
-- Identifies coherent regions of low density
-- Minimum region size filtering
-- Characterization of each gap region
-
-### Step 6: Temporal Analysis
-- Publication date patterns in gap regions
-- Identifies emerging vs. persistent gaps
-- Time-based evolution of research areas
-
-### Step 7: LLM-Powered Gap Explanation
-- Uses OpenAI GPT models to:
-  - Summarize papers in gap regions
-  - Explain why the gap exists
-  - Suggest potential research directions
-  - Compare gap regions to dense areas
-
-## 🎨 Novelty Analysis App Features
-
-The Streamlit application (`novelty_analysis_app.py`) provides an interactive interface with 9 main sections:
-
-### 📊 1. Data & Config
-- Load embeddings (BERT or Qwen)
-- Configure analysis parameters:
-  - Number of neighbors (k)
-  - Density quantile
-  - Bootstrap iterations
-  - Random seed
-- Data quality metrics and statistics
-
-### 🧬 2. Embeddings
-- Dimensionality reduction (UMAP, PCA, t-SNE)
-- Interactive 2D/3D visualizations
-- Parameter tuning and trustworthiness evaluation
-- Embedding quality metrics
-
-### 🎯 3. Filters
-- Filter papers by:
-  - Publication year range
-  - Keywords (AND/OR logic)
-  - Journals
-  - Authors
-  - Custom metadata fields
-- Apply filters with undo functionality
-- Visual feedback on filtering impact
-
-### 🔬 4. Clustering
-- **Algorithms**: 
-  - K-Means
-  - HDBSCAN
-  - Leiden (community detection)
-  - Louvain (community detection)
-- **Features**:
-  - Silhouette score evaluation
-  - Cluster visualization in reduced space
-  - TF-IDF analysis for cluster characterization
-  - Entity extraction (diseases, chemicals, genes)
-
-### 🔍 5. Gap Analysis
-- Compute local density scores
-- Bootstrap stability analysis
-- Gap score calculation
-- Identify top gap candidates
-- Interactive scatter plots with gap highlighting
-
-### 📍 6. Gap Regions
-- Connected component analysis
-- Region-based gap identification
-- Minimum size filtering
-- Region characterization:
-  - Size and density statistics
-  - Keyword analysis
-  - Temporal patterns
-  - Representative papers
-
-### 🤖 7. LLM Analysis
-- OpenAI GPT integration for:
-  - Gap region summarization
-  - Research direction suggestions
-  - Novelty assessment
-  - Comparative analysis
-- Configurable prompts and parameters
-- Batch processing multiple regions
-
-### 🗄️ 8. Database Explorer
-- Search and filter papers
-- View detailed paper information
-- Explore paper metadata
-- Export selected papers
-
-### 📤 9. Export
-- Export analysis results to Excel
-- Save filtered datasets
-- Export gap regions and candidates
-- Configuration export for reproducibility
-
-## 🛠️ Embedding Models
-
-### BERT Service (`embedding_models/bert.py`)
-
-Local BERT embedding service:
-- Model: `Lihuchen/BioClinical-ModernBERT-base`
-- 768-dimensional embeddings
-- Optimized for biomedical text
-
-### Qwen FastAPI Service (`embedding_models/qwen.py`)
-
-RESTful API for Qwen embeddings:
-
-**Start the service:**
-```bash
-cd embedding_models
-uvicorn qwen:app --port 8000 --reload
+```powershell
+uvicorn agents.backend_api:app --app-dir novelty_app --host 0.0.0.0 --port 8088
 ```
 
-**Endpoints:**
-- `GET /`: Health check and model info
-- `POST /embed`: Generate embeddings
-- `POST /similarity`: Compute cosine similarities
-- `POST /rerank`: Rerank documents by relevance
+The backend stores and serves:
 
-**API Documentation:**
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
+- published snapshots
+- papers, clusters, and gap membership
+- evidence packs
+- generated artifacts
+- retrospective evaluation runs and match records
 
-### Model Evaluation
+By default the persistence layer is SQLite-backed at `data/novelty_agent_knowledge.sqlite`.
 
-Evaluation results available in:
-- `embedding_models/bert_eval_results.json`
-- `embedding_models/qwen_eval_results.json`
+### 4. Interactive Agent Smoke Test
 
-Metrics include:
-- Embedding quality scores
-- Dimensionality reduction performance
-- Clustering quality (silhouette scores)
-- Trustworthiness metrics
-
-## 📊 Key Dependencies
-
-```
-streamlit>=1.28.0           # Interactive web application
-pandas>=2.0.0               # Data manipulation
-numpy>=1.24.0               # Numerical computing
-scikit-learn>=1.3.0         # Machine learning algorithms
-umap-learn>=0.5.4           # Dimensionality reduction
-plotly>=6.5.0               # Interactive visualizations
-networkx                    # Graph analysis
-hdbscan>=0.8.33             # Density-based clustering
-leidenalg                   # Community detection
-openai                      # LLM integration
-transformers>=4.51.0        # Hugging Face models
-torch                       # PyTorch for models
-biopython                   # PubMed data extraction
+```powershell
+python -m novelty_app.agents.run_interactive
 ```
 
-See `requirements.txt` for complete list.
+This is a CLI path for selecting a snapshot and target manually, then running the LangGraph orchestrator outside Streamlit.
 
-## 🎓 Methodology
+### 5. Retrospective Evaluation
 
-### Gap Discovery Algorithm
+The retrospective runner benchmarks whether historical frontier evidence can recover held-out future papers.
 
-The novelty discovery algorithm is based on identifying **low-density regions** in embedding space:
+Prerequisites:
 
-1. **Semantic Embeddings**: Papers represented as high-dimensional vectors capturing semantic meaning
-2. **k-NN Graph**: Connect papers to their k most similar neighbors
-3. **Local Density**: Papers with few nearby neighbors = potential gaps
-4. **Bootstrap Validation**: Repeated sampling identifies stable low-density regions
-5. **Gap Score**: Papers consistently in low-density areas across samples
-6. **Region Identification**: Connected components of gap candidates form coherent unexplored areas
+- backend running on `http://127.0.0.1:8088`
+- Qwen service running on `http://127.0.0.1:8000`
+- local corpus files under `data/`
 
-### Why This Works
+Smoke example:
 
-- **Dense regions** = well-studied topics with many similar papers
-- **Sparse regions** = understudied combinations of concepts
-- **Stable gaps** = persistent research opportunities (not just noise)
-- **Temporal analysis** = distinguish emerging from persistent gaps
-
-## 🔧 Configuration
-
-### Analysis Parameters
-
-Key parameters in the novelty analysis:
-
-- **n_neighbors** (k): Number of nearest neighbors (default: 20)
-  - Lower k = more sensitive to local gaps
-  - Higher k = more robust to noise
-  
-- **density_quantile**: Threshold for low-density (default: 0.10)
-  - Lower = stricter gap definition
-  - Higher = more gap candidates
-  
-- **n_bootstrap**: Bootstrap iterations (default: 100)
-  - More iterations = more stable results
-  - Computational cost increases linearly
-  
-- **gap_quantile**: Percentile for gap region identification (default: 0.90)
-  - Only papers in top 90% of gap scores
-  
-- **min_gap_region_size**: Minimum papers per gap region (default: 3)
-  - Filters out singleton gaps
-
-### UMAP Parameters
-
-- **n_neighbors**: Local neighborhood size (default: 15)
-- **min_dist**: Minimum distance in low-D space (default: 0.1)
-- **metric**: Distance metric (default: 'cosine')
-
-## 📈 Use Cases
-
-1. **Literature Review**: Identify unexplored research areas
-2. **Grant Writing**: Find novel research directions with evidence
-3. **Research Planning**: Discover interdisciplinary opportunities
-4. **Technology Transfer**: Identify gaps between basic research and applications
-5. **Trend Analysis**: Track evolution of research areas over time
-
-## 🚧 Development Status
-
-### Current Status
-- ✅ Complete data pipeline (extraction, preprocessing, embeddings)
-- ✅ Fully functional Streamlit application
-- ✅ Core novelty discovery algorithm
-- ✅ LLM integration for gap explanation
-- ✅ Multiple embedding models (BERT, Qwen)
-- 🚧 Modular app refactoring in progress (`novelty_app/`)
-
-### Future Enhancements
-- [ ] Complete modular app migration
-- [ ] Additional embedding models
-- [ ] Enhanced entity recognition
-- [ ] Citation network analysis
-- [ ] Collaborative filtering features
-- [ ] API for programmatic access
-- [ ] Docker containerization
-
-## 📝 Citation
-
-If you use this repository in your research, please cite:
-
-```bibtex
-@software{nanotech_gap_discovery,
-  title = {Nanotechnology Research Gap Discovery System},
-  author = {[Your Name]},
-  year = {2026},
-  url = {https://github.com/yourusername/nanotechnology}
-}
+```powershell
+python -m novelty_app.evaluation.run_retrospective `
+  --backend-url http://127.0.0.1:8088 `
+  --qwen-base-url http://127.0.0.1:8000 `
+  --n-gap-targets 2 `
+  --n-cluster-pair-targets 2 `
+  --n-gold-future-papers 10 `
+  --methods orchestrator single_shot_llm heuristic_bridge pack_query_baseline random_target_control `
+  --seeds 1 `
+  --hypotheses-per-target 1 `
+  --analysis-clustering-method kmeans `
+  --analysis-pca-components 16 `
+  --output-dir data/retrospective_eval_smoke
 ```
 
-## 🤝 Contributing
+Outputs include:
 
-Contributions are welcome! Areas for contribution:
-- Additional embedding models
-- New clustering algorithms
-- Improved gap detection methods
-- UI/UX enhancements
-- Documentation improvements
+- an evaluation run record
+- raw hypothesis-level match records
+- a review packet CSV/JSON
+- an `assessment_bundle_v1` JSON export for manual review
 
-## 📄 License
+### 6. Prospective Generation
 
-This project is for academic and research purposes. Please check with your institution regarding data usage policies for PubMed data.
+The prospective runner reuses the same generator registry and snapshot-backed target selection, but does not do time splitting or future-paper recovery evaluation.
 
-## 🙏 Acknowledgments
+```powershell
+python -m novelty_app.evaluation.run_prospective `
+  --backend-url http://127.0.0.1:8088 `
+  --snapshot-id <snapshot_id> `
+  --n-gap-targets 2 `
+  --n-cluster-pair-targets 2 `
+  --methods orchestrator single_shot_llm heuristic_bridge pack_query_baseline `
+  --seeds 1 `
+  --hypotheses-per-target 1 `
+  --output-dir data/prospective_eval_smoke
+```
 
-- **PubMed/NCBI**: For providing access to biomedical literature
-- **Hugging Face**: For pre-trained transformer models
-- **BioClinical-ModernBERT**: Biomedical text embeddings
-- **Qwen3-Embedding**: Advanced embedding and reranking models
-- **Streamlit**: For the interactive web application framework
+Outputs include:
 
-## 📧 Contact
+- `<run_id>_summary.json`
+- `<run_id>_hypotheses.json`
+- `<run_id>_hypotheses.csv`
 
-For questions, issues, or collaboration opportunities, please open an issue on the repository.
+### 7. Human Assessment App
 
----
+```powershell
+streamlit run assement_app/app.py
+```
 
-**Built with ❤️ for advancing nanotechnology research**
+This app is for blind-first human review of generated ideas. It expects an `assessment_bundle_v1` JSON file produced by the retrospective runner and writes reviewer state to an Excel workbook.
+
+Workbook sheets:
+
+- `meta`
+- `ideas`
+- `assessments`
+- `summary`
+
+## Notebook Pipeline
+
+The top-level notebooks still matter. They are the corpus-building side of the project:
+
+- `1.pubmed_data_extraction.ipynb`: PubMed retrieval and raw paper collection
+- `2.data_preprocessing.ipynb`: corpus cleanup and normalization
+- `3.create_bert_embeddings.ipynb`: BioClinical ModernBERT embeddings
+- `3.create_qwen_embeddings.ipynb`: Qwen embeddings
+
+Those notebooks feed the local `data/` artifacts consumed by the app and evaluation code.
+
+## Testing
+
+Run the test suite with:
+
+```powershell
+pytest
+```
+
+The current tests cover core backend, evaluation, assessment, and agent-support utilities.
+
+## Notes
+
+- The directory name is `assement_app/` in the current repo. The spelling is preserved here because that is the actual import/run path.
+- `paper/` contains manuscript and figure assets, not runtime application code.
+- If you want subsystem-specific details, the most accurate docs are the package READMEs inside `embedding_models/`, `novelty_app/agents/`, `novelty_app/evaluation/`, and `assement_app/`.

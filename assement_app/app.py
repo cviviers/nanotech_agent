@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import sys
+import tempfile
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -41,6 +44,7 @@ from assement_app.workbook_store import get_assessment, load_or_create_workbook,
 
 DEFAULT_REVIEWS_DIR = APP_DIR / "reviews"
 DISCOVERED_BUNDLE_LIMIT = 50
+WORKBOOK_DOWNLOAD_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def _set_flash(level: str, message: str) -> None:
@@ -261,8 +265,20 @@ def _uploaded_bundle_file():
     return st.session_state.get("bundle_upload")
 
 
+def _uploaded_workbook_file():
+    return st.session_state.get("workbook_upload")
+
+
 def _workbook_path() -> str:
     return str(st.session_state.get("workbook_path") or "").strip()
+
+
+def _workbook_source() -> str:
+    return str(st.session_state.get("workbook_source") or _workbook_path()).strip()
+
+
+def _workbook_download_name() -> str:
+    return str(st.session_state.get("workbook_download_name") or "").strip()
 
 
 def _bundle_ideas() -> List[Dict[str, Any]]:
@@ -270,9 +286,35 @@ def _bundle_ideas() -> List[Dict[str, Any]]:
     return list(bundle.get("ideas") or [])
 
 
+def _basename(value: str) -> str:
+    return str(value or "").replace("\\", "/").split("/")[-1].strip()
+
+
+def _xlsx_filename(name: str, fallback: str) -> str:
+    candidate = _basename(name) or fallback
+    if not candidate.lower().endswith(".xlsx"):
+        candidate = f"{candidate}.xlsx"
+    return candidate
+
+
 def _default_workbook_path(bundle: Dict[str, Any]) -> str:
     DEFAULT_REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
     return str(DEFAULT_REVIEWS_DIR / f"{bundle.get('bundle_id')}_assessments.xlsx")
+
+
+def _default_workbook_filename(bundle: Dict[str, Any]) -> str:
+    bundle_id = str(bundle.get("bundle_id") or "assessment_bundle").strip() or "assessment_bundle"
+    return _xlsx_filename(f"{bundle_id}_assessments.xlsx", "assessment_bundle_assessments.xlsx")
+
+
+def _session_runtime_dir() -> Path:
+    session_id = str(st.session_state.get("runtime_session_id") or "")
+    if not session_id:
+        session_id = uuid.uuid4().hex
+        st.session_state["runtime_session_id"] = session_id
+    runtime_dir = Path(tempfile.gettempdir()) / "agent_idea_assessment" / session_id
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return runtime_dir
 
 
 def _load_selected_bundle() -> tuple[Dict[str, Any], str]:
@@ -285,6 +327,46 @@ def _load_selected_bundle() -> tuple[Dict[str, Any], str]:
     if not bundle_path:
         raise ValueError("Provide an assessment bundle JSON path or upload a local bundle file.")
     return load_assessment_bundle(bundle_path), bundle_path
+
+
+def _resolve_workbook_target(bundle: Dict[str, Any]) -> tuple[str, str, str]:
+    default_name = _default_workbook_filename(bundle)
+    uploaded_workbook = _uploaded_workbook_file()
+    if uploaded_workbook is not None:
+        workbook_bytes = uploaded_workbook.getvalue()
+        download_name = _xlsx_filename(str(getattr(uploaded_workbook, "name", "") or ""), default_name)
+        workbook_source = f"uploaded://{download_name}"
+        storage_path = _session_runtime_dir() / "uploaded_workbook.xlsx"
+        fingerprint = hashlib.sha256(workbook_bytes).hexdigest()
+        existing_fingerprint = str(st.session_state.get("workbook_upload_fingerprint") or "")
+        if existing_fingerprint != fingerprint or not storage_path.exists():
+            storage_path.write_bytes(workbook_bytes)
+            st.session_state["workbook_upload_fingerprint"] = fingerprint
+        return str(storage_path), workbook_source, download_name
+
+    workbook_path = _workbook_path()
+    if workbook_path:
+        st.session_state.pop("workbook_upload_fingerprint", None)
+        download_name = _xlsx_filename(workbook_path, default_name)
+        return workbook_path, workbook_path, download_name
+
+    st.session_state.pop("workbook_upload_fingerprint", None)
+    session_path = _session_runtime_dir() / default_name
+    return str(session_path), f"session://{default_name}", default_name
+
+
+def _render_workbook_download_button(*, key: str, label: str = "Download workbook") -> None:
+    workbook = _workbook()
+    if not workbook or not workbook.path.exists():
+        st.caption("The workbook becomes downloadable after it is loaded.")
+        return
+    st.download_button(
+        label,
+        data=workbook.path.read_bytes(),
+        file_name=_workbook_download_name() or _default_workbook_filename(_bundle() or {}),
+        mime=WORKBOOK_DOWNLOAD_MIME,
+        key=key,
+    )
 
 
 def _current_assessment() -> Dict[str, Any] | None:
@@ -804,9 +886,11 @@ def _render_progress_tab() -> None:
         st.caption("No submitted assessments are available for disagreement analysis yet.")
 
     st.markdown("### Workbook Status")
-    st.write(f"Workbook: `{_workbook_path()}`")
+    st.write(f"Workbook source: `{_workbook_source()}`")
+    st.write(f"Download name: `{_workbook_download_name() or _default_workbook_filename(bundle)}`")
     st.write(f"Bundle: `{_bundle_path()}`")
     st.write(f"Schema: `{bundle.get('schema_version')}`")
+    _render_workbook_download_button(key="download_progress_tab")
 
 
 def _load_bundle_and_workbook() -> None:
@@ -819,11 +903,8 @@ def _load_bundle_and_workbook() -> None:
         return
     try:
         bundle, bundle_source = _load_selected_bundle()
-        workbook_path = _workbook_path()
-        if not workbook_path:
-            workbook_path = _default_workbook_path(bundle)
-            st.session_state["workbook_path"] = workbook_path
-        workbook = load_or_create_workbook(workbook_path, bundle, bundle_path=bundle_source)
+        workbook_storage_path, workbook_source, workbook_download_name = _resolve_workbook_target(bundle)
+        workbook = load_or_create_workbook(workbook_storage_path, bundle, bundle_path=bundle_source)
     except Exception as exc:
         st.error(str(exc))
         return
@@ -831,6 +912,8 @@ def _load_bundle_and_workbook() -> None:
     st.session_state["assessment_bundle"] = bundle
     st.session_state["assessment_workbook"] = workbook
     st.session_state["bundle_path"] = bundle_source
+    st.session_state["workbook_source"] = workbook_source
+    st.session_state["workbook_download_name"] = workbook_download_name
     queue = filter_ideas(bundle.get("ideas") or [], workbook.assessments, reviewer_id, status_filter="all")
     current_idea_id = next_incomplete_idea_id(queue, workbook.assessments, reviewer_id) or (
         str(queue[0].get("idea_id") or "") if queue else ""
@@ -843,6 +926,7 @@ def _load_bundle_and_workbook() -> None:
 
 def _render_load_tab() -> None:
     st.markdown("### Bundle Input")
+    st.caption("Workbook upload is optional. If you do not upload or select one, the app creates a session workbook automatically and you can download it later.")
     discovered_bundles = _discover_bundle_files()
     discovered_workbooks = _discover_workbooks()
 
@@ -881,7 +965,21 @@ def _render_load_tab() -> None:
         if selected_workbook:
             st.session_state["workbook_path"] = selected_workbook
 
-    st.text_input("Workbook path", key="workbook_path", placeholder=str(DEFAULT_REVIEWS_DIR / "my_review.xlsx"))
+    uploaded_workbook = st.file_uploader(
+        "Upload local workbook",
+        type=["xlsx"],
+        key="workbook_upload",
+        help="Upload an existing review workbook when the app is deployed remotely. If present, the upload takes precedence.",
+    )
+    if uploaded_workbook is not None:
+        st.caption(f"Using uploaded workbook: `{uploaded_workbook.name}`")
+
+    st.text_input(
+        "Workbook path",
+        key="workbook_path",
+        placeholder=str(DEFAULT_REVIEWS_DIR / "my_review.xlsx"),
+        help="Optional server-side workbook path. If left empty, the app creates a session workbook that you can download.",
+    )
     reviewer_candidates = reviewer_ids(_workbook()) if _workbook() else []
     if reviewer_candidates:
         st.caption(f"Existing reviewers in this workbook: {', '.join(reviewer_candidates)}")
@@ -896,9 +994,12 @@ def _render_load_tab() -> None:
         st.markdown("### Active Session")
         st.write(f"Bundle id: `{bundle.get('bundle_id')}`")
         st.write(f"Ideas in bundle: `{len(bundle.get('ideas') or [])}`")
-        st.write(f"Workbook: `{workbook.path}`")
+        st.write(f"Workbook source: `{_workbook_source()}`")
+        st.write(f"Download name: `{_workbook_download_name() or _default_workbook_filename(bundle)}`")
         st.write(f"Reviewer: `{_reviewer_id()}`")
         st.write("Blind mode: model scores and retrieval labels remain hidden until submission.")
+        st.caption("Download the current workbook before closing the session if you want to keep your progress locally.")
+        _render_workbook_download_button(key="download_load_tab")
 
 
 def _render_review_tab() -> None:
@@ -955,6 +1056,11 @@ def _render_review_tab() -> None:
     status_cols[1].metric("Review status", status)
     status_cols[2].metric("Reviewer", reviewer_id)
     status_cols[3].metric("Dirty form", "Yes" if _is_form_dirty(assessment) else "No")
+    review_action_cols = st.columns([1, 1.4])
+    with review_action_cols[0]:
+        _render_workbook_download_button(key="download_review_tab", label="Download workbook now")
+    with review_action_cols[1]:
+        st.caption("Use this at any point to save the current Excel workbook, including in-session workbooks created without an upload.")
 
     context_col, scoring_col = st.columns([1.35, 1.0], gap="large")
     with context_col:
@@ -983,5 +1089,6 @@ if __name__ == "__main__":
 
 # example usage:
 # 1. Run this Streamlit app: `streamlit run app.py`
-# 2. In the "Load" tab, provide the path to an `assessment_bundlev1.json` file and a reviewer id, then click "Load / Resume Review".
+# 2. In the "Load" tab, upload or select an `assessment_bundle_v1.json`, optionally upload a workbook, set a reviewer id, then click "Load / Resume Review".
 # 3. In the "Review" tab, assess the ideas using the provided form, and navigate through the queue using the buttons or jump selectbox.
+# 4. Download the workbook from the "Load" or "Progress" tab when you want to save the completed review locally.
