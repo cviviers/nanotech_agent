@@ -10,6 +10,11 @@ import plotly.express as px
 import plotly.graph_objects as go
 from sklearn.metrics import pairwise
 
+try:
+    from agents.observability import observe_current
+except Exception:  # pragma: no cover
+    from novelty_app.agents.observability import observe_current
+
 from ui.export_utils import display_figure_with_export
 
 # Check for OpenAI
@@ -661,16 +666,36 @@ def send_llm_prompt(api_key, model, system_prompt, user_prompt, region_id, clust
     try:
         with st.spinner(f"🤖 Sending prompt to {model}..."):
             client = OpenAI(api_key=api_key)
-            response = client.chat.completions.create(
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            with observe_current(
+                name="llm_gap_analysis_prompt",
+                as_type="generation",
+                input_payload={
+                    "region_id": region_id,
+                    "cluster_A": cluster_A,
+                    "cluster_B": cluster_B,
+                    "cluster_C": cluster_C,
+                    "region_size": region_size,
+                },
+                metadata={
+                    "region_id": region_id,
+                    "cluster_A": cluster_A,
+                    "cluster_B": cluster_B,
+                    "cluster_C": cluster_C,
+                    "region_size": region_size,
+                },
                 model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                response_format={"type": "json_object"}
-            )
-            
-            result = json.loads(response.choices[0].message.content)
+            ) as observation:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    response_format={"type": "json_object"}
+                )
+                result = json.loads(response.choices[0].message.content)
+                observation.update(output={"region_id": region_id, "result_keys": sorted(result.keys())})
             
             # Store results in session state for persistence
             st.session_state.llm_results = {

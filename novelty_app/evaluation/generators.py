@@ -32,7 +32,11 @@ except Exception:  # pragma: no cover
     from novelty_app.agents.schemas import GeneratedHypothesis
 
 from novelty_app.discovery_cue import cue_prompt_block, discovery_cue_to_dict, normalize_discovery_cue
-from novelty_app.agents.observability import current_trace_ref, observe_current
+from novelty_app.agents.observability import (
+    current_trace_ref,
+    langchain_config_with_observability,
+    observe_current,
+)
 
 from .idea_fingerprint import fingerprint_hypothesis, fingerprint_text
 
@@ -207,6 +211,25 @@ def _llm_name(llm: ChatOpenAI) -> Optional[str]:
     return getattr(llm, "model_name", None) or getattr(llm, "model", None)
 
 
+def _langchain_config(
+    context: GenerationContext,
+    *,
+    method_name: str,
+    target: Optional[Dict[str, Any]] = None,
+    trace_name: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    effective_target = dict(target or context.target)
+    target_tags = [method_name, str(effective_target.get("target_type") or "unknown")]
+    return langchain_config_with_observability(
+        config,
+        session_id=context.snapshot_id,
+        tags=target_tags,
+        trace_name=trace_name or method_name,
+        metadata=_trace_metadata(context, method_name=method_name, target=effective_target),
+    )
+
+
 def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[GeneratedHypothesis], Dict[str, Any]]:
     app = build_orchestrator(
         context.backend,
@@ -239,6 +262,7 @@ def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[Generat
     meta = {
         "audit": out.get("audit", {}),
         "explanation": out.get("explanation", {}),
+        "blueprint": out.get("blueprint", {}),
         "evidence_pack": {
             "snapshot_id": context.snapshot_id,
             "target_type": context.target["target_type"],
@@ -246,6 +270,10 @@ def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[Generat
             "meta": out.get("evidence_meta", {}),
         },
         "effective_target": dict(context.target),
+        "published": bool(out.get("published")),
+        "published_artifact": dict(out.get("published_artifact") or {}),
+        "observability": dict(out.get("observability") or {}),
+        "iterations": int(out.get("iter", 0) or 0),
     }
     return generated, meta
 
@@ -292,7 +320,15 @@ EVIDENCE PACK (JSONL):
         metadata=_trace_metadata(context, method_name=method_name, target=target_override),
         model=_llm_name(llm),
     ) as generation_observation:
-        out = structured.invoke(messages)
+        out = structured.invoke(
+            messages,
+            config=_langchain_config(
+                context,
+                method_name=method_name,
+                target=target_override,
+                trace_name=method_name,
+            ),
+        )
         generation_observation.update(output=out.model_dump())
     generated = _as_generated_hypotheses(
         out.model_dump().get("hypotheses", []),
@@ -346,7 +382,14 @@ EVIDENCE PACK (JSONL):
         metadata=_trace_metadata(context, method_name="retrieval_summary_direct"),
         model=_llm_name(llm),
     ) as generation_observation:
-        summary = llm.invoke(messages).content
+        summary = llm.invoke(
+            messages,
+            config=_langchain_config(
+                context,
+                method_name="retrieval_summary_direct",
+                trace_name="retrieval_summary_direct_summary",
+            ),
+        ).content
         generation_observation.update(output={"summary": summary})
     return _single_shot_from_pack(
         context,

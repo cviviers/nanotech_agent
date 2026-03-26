@@ -67,6 +67,7 @@ Each run writes:
 - raw hypothesis-level match records
 - `<run_id>_review_packet.csv`
 - `<run_id>_review_packet.json`
+- `<run_id>_assessment_bundle_v1.json`
 
 The review packet is built from the best hypothesis per `(method, seed, gold_future_paper_id)` task and includes:
 
@@ -78,6 +79,16 @@ The review packet is built from the best hypothesis per `(method, seed, gold_fut
 - top historical retrievals
 - cue text and cue score
 - blank manual review fields
+
+The assessment bundle is built from all generated hypotheses and includes the full ideation context needed for blind human review:
+
+- discovery cue
+- effective target
+- evidence papers used for ideation
+- explanation and audit payloads
+- raw and normalized hypothesis payloads
+- model judge output for post-submit reveal
+- retrospective benchmark rows per idea
 
 ## Primary Outcome Labels
 
@@ -132,6 +143,8 @@ python -m novelty_app.evaluation.run_retrospective `
   --output-dir data/retrospective_eval_smoke
 ```
 
+For faster smoke runs, you can add `--disable-leakage-check` to skip only the initial historical near-duplicate screen used when selecting gold future papers. This does not disable later historical-confound scoring for generated hypotheses.
+
 Cue-aware smoke run:
 
 ```powershell
@@ -147,6 +160,49 @@ python -m novelty_app.evaluation.run_retrospective `
   --discovery-cue-text "Focus on folate-targeted RNA delivery for breast cancer" `
   --output-dir data/retrospective_eval_cued
 ```
+
+## Prospective Generation
+
+`run_prospective.py` reuses the same generation registry and snapshot-backed target selection, but does not do time-splitting, future-paper assignment, or recovery evaluation.
+
+It is intended for:
+
+- running the orchestrator or baselines against an already published snapshot
+- generating across the top gap and cluster-pair targets for that snapshot
+- exporting a local bundle of generated hypotheses for review
+
+Explicit target smoke run:
+
+```powershell
+python -m novelty_app.evaluation.run_prospective `
+  --backend-url http://127.0.0.1:8088 `
+  --snapshot-id your_snapshot_id `
+  --gap-id gap_0 `
+  --methods orchestrator `
+  --seeds 1 `
+  --hypotheses-per-target 2 `
+  --output-dir data/prospective_eval_smoke
+```
+
+Auto-target smoke run:
+
+```powershell
+python -m novelty_app.evaluation.run_prospective `
+  --backend-url http://127.0.0.1:8088 `
+  --snapshot-id your_snapshot_id `
+  --n-gap-targets 2 `
+  --n-cluster-pair-targets 2 `
+  --methods orchestrator single_shot_llm heuristic_bridge pack_query_baseline `
+  --seeds 1 `
+  --hypotheses-per-target 1 `
+  --output-dir data/prospective_eval_smoke
+```
+
+Each run writes:
+
+- `<run_id>_summary.json`
+- `<run_id>_hypotheses.json`
+- `<run_id>_hypotheses.csv`
 
 ## Practical Notes
 

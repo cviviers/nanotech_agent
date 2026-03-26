@@ -12,6 +12,11 @@ import networkx as nx
 import hdbscan
 from sklearn.cluster import KMeans
 
+try:
+    from agents.observability import observe_current
+except Exception:  # pragma: no cover
+    from novelty_app.agents.observability import observe_current
+
 from core.state_management import save_state_for_undo, undo_last_action
 from core.graph_utils import build_knn_graph, explore_cluster
 from ui.export_utils import display_figure_with_export
@@ -464,15 +469,34 @@ def page_clustering():
                         try:
                             # Call OpenAI API
                             client = OpenAI(api_key=summary_api_key)
-                            response = client.chat.completions.create(
+                            messages = [
+                               {"role": "system", "content": "You are a research analyst specializing in nanomedicine literature analysis."},
+                               {"role": "user", "content": prompt}
+                            ]
+                            with observe_current(
+                                name="community_summary_llm",
+                                as_type="generation",
+                                input_payload={
+                                    "community_id": int(community_id),
+                                    "n_titles": len(titles),
+                                },
+                                metadata={
+                                    "community_id": int(community_id),
+                                    "n_titles": len(titles),
+                                },
                                 model=summary_model,
-                                messages=[
-                                   {"role": "system", "content": "You are a research analyst specializing in nanomedicine literature analysis."},
-                                   {"role": "user", "content": prompt}
-                                ]
-                            )
-                            
-                            summary = response.choices[0].message.content.strip()
+                            ) as observation:
+                                response = client.chat.completions.create(
+                                    model=summary_model,
+                                    messages=messages
+                                )
+                                summary = response.choices[0].message.content.strip()
+                                observation.update(
+                                    output={
+                                        "community_id": int(community_id),
+                                        "summary_preview": summary[:200],
+                                    }
+                                )
                             st.session_state.community_summaries[community_id] = {
                                 'summary': summary,
                                 'n_papers': len(titles),

@@ -11,6 +11,8 @@ try:
 except Exception:  # pragma: no cover
     ChatOpenAI = None  # type: ignore
 
+from novelty_app.agents.observability import langchain_config_with_observability, observe_current
+
 from .idea_fingerprint import fingerprint_text
 
 
@@ -199,6 +201,24 @@ def _llm_api_key(explicit_api_key: str | None = None) -> str | None:
     return explicit_api_key or os.getenv("OPENAI_API_KEY")
 
 
+def _judge_trace_metadata(
+    *,
+    target: Dict[str, Any] | None,
+    discovery_cue: Dict[str, Any] | None,
+    n_hypotheses: int,
+) -> Dict[str, Any]:
+    target_payload = dict(target or {})
+    return {
+        "snapshot_id": target_payload.get("snapshot_id"),
+        "target_type": target_payload.get("target_type"),
+        "gap_id": target_payload.get("gap_id"),
+        "cluster_a": target_payload.get("cluster_a"),
+        "cluster_b": target_payload.get("cluster_b"),
+        "n_hypotheses": n_hypotheses,
+        "has_discovery_cue": bool((discovery_cue or {}).get("text")),
+    }
+
+
 def score_hypotheses(
     hypotheses: Sequence[Dict[str, Any]],
     *,
@@ -264,12 +284,41 @@ Return a brief rationale per criterion and an average_score for each hypothesis.
     try:
         llm = ChatOpenAI(model=model, api_key=api_key, temperature=0.0)
         structured = llm.with_structured_output(HypothesisIdeaScoresOut, method="function_calling")
-        out = structured.invoke(
-            [
-                {"role": "system", "content": SYSTEM_IDEA_SCORER},
-                {"role": "user", "content": prompt},
-            ]
+        messages = [
+            {"role": "system", "content": SYSTEM_IDEA_SCORER},
+            {"role": "user", "content": prompt},
+        ]
+        trace_metadata = _judge_trace_metadata(
+            target=target,
+            discovery_cue=discovery_cue,
+            n_hypotheses=len(compact_hypotheses),
         )
+        with observe_current(
+            name="judge_hypotheses",
+            as_type="evaluator",
+            input_payload={
+                "target": target or {},
+                "n_hypotheses": len(compact_hypotheses),
+                "evidence_size": len((evidence_pack or {}).get("papers") or []),
+            },
+            metadata=trace_metadata,
+            model=model,
+        ) as observation:
+            out = structured.invoke(
+                messages,
+                config=langchain_config_with_observability(
+                    session_id=str((target or {}).get("snapshot_id") or "") or None,
+                    tags=["judge", str((target or {}).get("target_type") or "unknown")],
+                    trace_name="judge_hypotheses",
+                    metadata=trace_metadata,
+                ),
+            )
+            observation.update(
+                output={
+                    "n_scored_hypotheses": len(out.scored_hypotheses),
+                    "judge_model": model,
+                }
+            )
         scored: Dict[str, Dict[str, Any]] = {}
         for item in out.scored_hypotheses:
             payload = item.model_dump()

@@ -48,11 +48,13 @@ from novelty_app.agents.observability import (
     current_trace_ref,
     deterministic_trace_id,
     flush_langfuse,
+    langfuse_status,
     observe_current,
     trace_attributes,
 )
 
 from .analysis_v1 import run_analysis_v1
+from .assessment_bundle import write_assessment_bundle
 from .candidate_match import (
     best_candidate,
     best_non_excluded_candidate,
@@ -84,6 +86,7 @@ class RetrospectiveResult:
     matches: List[Dict[str, Any]]
     review_packet_csv: str
     review_packet_json: str
+    assessment_bundle_json: str
 
 
 @dataclass
@@ -622,6 +625,7 @@ def _select_gold_future_papers(
     target_pool: Sequence[Dict[str, Any]],
     discovery_cue: Optional[Dict[str, Any]],
     n_gold_future_papers: int,
+    disable_leakage_check: bool = False,
     progress_callback: Optional[Callable[[int, int, Dict[str, int]], None]] = None,
 ) -> tuple[List[GoldFutureAssignment], Dict[str, int]]:
     selected: List[GoldFutureAssignment] = []
@@ -639,20 +643,21 @@ def _select_gold_future_papers(
 
             query_text = f"{paper['title']}\n{paper['abstract']}".strip()
             fingerprint = fingerprint_text(query_text)
-            historical_candidates = retrieve_candidates_for_hypothesis(
-                query_text=query_text,
-                fingerprint=fingerprint,
-                corpus=historical_index,
-                qwen_client=qwen_client,
-                top_k_keyword=40,
-                top_k_semantic=80,
-                top_k_final=10,
-                rerank_max_docs=24,
-            )
-            historical_best = best_candidate(historical_candidates)
-            if (historical_best.get("judge") or {}).get("label") == "strong_match":
-                leakage_filtered += 1
-                continue
+            if not disable_leakage_check:
+                historical_candidates = retrieve_candidates_for_hypothesis(
+                    query_text=query_text,
+                    fingerprint=fingerprint,
+                    corpus=historical_index,
+                    qwen_client=qwen_client,
+                    top_k_keyword=40,
+                    top_k_semantic=80,
+                    top_k_final=10,
+                    rerank_max_docs=24,
+                )
+                historical_best = best_candidate(historical_candidates)
+                if (historical_best.get("judge") or {}).get("label") == "strong_match":
+                    leakage_filtered += 1
+                    continue
 
             paper_cue = _paper_to_pseudo_cue(paper)
             best_target_score = float("-inf")
@@ -900,6 +905,7 @@ def run_retrospective(
     model_name: Optional[str] = None,
     existing_snapshot_id: Optional[str] = None,
     discovery_cue: Optional[Dict[str, Any] | str] = None,
+    disable_leakage_check: bool = False,
     future_title_exclude: Optional[Sequence[str]] = None,
     future_abstract_exclude: Optional[Sequence[str]] = None,
     future_semantic_query: Optional[str] = None,
@@ -928,6 +934,7 @@ def run_retrospective(
         model_name=model_name,
         existing_snapshot_id=existing_snapshot_id,
         discovery_cue=discovery_cue,
+        disable_leakage_check=disable_leakage_check,
         future_title_exclude=future_title_exclude,
         future_abstract_exclude=future_abstract_exclude,
         future_semantic_query=future_semantic_query,
@@ -959,6 +966,7 @@ def _run_retrospective_progress_core_v2(
     model_name: Optional[str] = None,
     existing_snapshot_id: Optional[str] = None,
     discovery_cue: Optional[Dict[str, Any] | str] = None,
+    disable_leakage_check: bool = False,
     future_title_exclude: Optional[Sequence[str]] = None,
     future_abstract_exclude: Optional[Sequence[str]] = None,
     future_semantic_query: Optional[str] = None,
@@ -979,6 +987,7 @@ def _run_retrospective_progress_core_v2(
     generation_failures: List[Dict[str, Any]] = []
     run_trace_ref: Dict[str, Any] = {}
     run_output_state: Dict[str, Any] = {}
+    tracing_status = langfuse_status()
 
     with observe_current(
         name="retrospective_run",
@@ -989,6 +998,7 @@ def _run_retrospective_progress_core_v2(
             "method_names": list(methods),
             "seeds": seeds,
             "n_gold_future_papers": n_gold_future_papers,
+            "disable_leakage_check": bool(disable_leakage_check),
             "future_prefilter": dict(future_prefilter),
         },
         metadata={
@@ -1044,6 +1054,28 @@ def _run_retrospective_progress_core_v2(
                 return progress
 
             try:
+                if tracing_status.get("enabled"):
+                    _emit_progress(
+                        "observability",
+                        message=(
+                            "Langfuse tracing enabled"
+                            + (
+                                f" ({tracing_status.get('base_url')})"
+                                if tracing_status.get("base_url")
+                                else ""
+                            )
+                        ),
+                    )
+                else:
+                    _emit_progress(
+                        "observability",
+                        message=(
+                            "Langfuse tracing disabled: "
+                            f"{str(tracing_status.get('reason') or 'unknown')}. "
+                            "Set LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY, "
+                            "and LANGFUSE_BASE_URL in the shell running this command."
+                        ),
+                    )
                 _emit_progress("loading_inputs", message="Loading dataset and embeddings")
                 raw_df, raw_embeddings = load_dataset_and_embeddings(data_json, data_dir, embedding_names=["qwen", "bert"])
 
@@ -1208,6 +1240,7 @@ def _run_retrospective_progress_core_v2(
                     target_pool=target_pool,
                     discovery_cue=normalized_cue,
                     n_gold_future_papers=n_gold_future_papers,
+                    disable_leakage_check=disable_leakage_check,
                     progress_callback=_on_gold_selection_progress if future_total > 0 else None,
                 )
                 if future_total == 0:
@@ -1405,6 +1438,10 @@ def _run_retrospective_progress_core_v2(
                                     hypothesis=hyp_payload,
                                     idea_scores=hypothesis.idea_scores,
                                     fingerprint=fingerprint,
+                                    effective_target=effective_target,
+                                    evidence_pack=evidence_pack,
+                                    explanation=dict(gen_meta.get("explanation") or {}),
+                                    audit=dict(gen_meta.get("audit") or {}),
                                     evidence_pack_summary=_summarize_evidence_pack(evidence_pack),
                                     historical_match=historical_best,
                                     future_match=best_future_neighbor,
@@ -1524,6 +1561,7 @@ def _run_retrospective_progress_core_v2(
                         "n_gold_future_papers": n_gold_future_papers,
                         "qwen_base_url": qwen_base_url,
                         "resumed_existing_snapshot": bool(existing_snapshot_id),
+                        "disable_leakage_check": bool(disable_leakage_check),
                         "discovery_cue": normalized_cue or {},
                         "future_prefilter": future_prefilter_stats,
                         "target_pool_profile": "focused_eval",
@@ -1536,15 +1574,21 @@ def _run_retrospective_progress_core_v2(
                 ).model_dump(exclude_none=True)
                 backend.store_evaluation_run(run_payload)
 
-                _emit_progress("exporting_review_packet", message="Writing review packet files")
+                _emit_progress("exporting_review_packet", message="Writing review packet and assessment bundle files")
                 csv_path, json_path = _export_review_packets(Path(output_dir), run_payload, all_match_records)
-                _update_run_output(review_packet_csv=csv_path, review_packet_json=json_path)
+                assessment_bundle_path = write_assessment_bundle(Path(output_dir), run_payload, all_match_records)
+                _update_run_output(
+                    review_packet_csv=csv_path,
+                    review_packet_json=json_path,
+                    assessment_bundle_json=assessment_bundle_path,
+                )
                 _emit_progress("completed", status="completed", message="Retrospective evaluation completed")
                 return RetrospectiveResult(
                     run=run_payload,
                     matches=all_match_records,
                     review_packet_csv=csv_path,
                     review_packet_json=json_path,
+                    assessment_bundle_json=assessment_bundle_path,
                 )
             except Exception as exc:
                 _emit_progress("failed", status="failed", message=f"Retrospective evaluation failed: {exc}")
@@ -1582,6 +1626,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--existing-snapshot-id", default=None)
     parser.add_argument("--discovery-cue-text", default=None)
     parser.add_argument("--discovery-cue-goal", default=None)
+    parser.add_argument(
+        "--disable-leakage-check",
+        action="store_true",
+        help="Skip only the initial historical near-duplicate filter used when selecting gold future papers.",
+    )
     parser.add_argument("--future-title-exclude", nargs="+", default=None)
     parser.add_argument("--future-abstract-exclude", nargs="+", default=None)
     parser.add_argument("--future-semantic-query", default=None)
@@ -1631,6 +1680,7 @@ def main() -> None:
             }
             if args.discovery_cue_text or args.discovery_cue_goal
             else None,
+            disable_leakage_check=bool(args.disable_leakage_check),
             future_title_exclude=args.future_title_exclude,
             future_abstract_exclude=args.future_abstract_exclude,
             future_semantic_query=args.future_semantic_query,
@@ -1645,6 +1695,7 @@ def main() -> None:
                 "run": result.run,
                 "review_packet_csv": result.review_packet_csv,
                 "review_packet_json": result.review_packet_json,
+                "assessment_bundle_json": result.assessment_bundle_json,
                 "observability": result.run.get("observability", {}),
             },
             indent=2,

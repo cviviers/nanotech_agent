@@ -102,6 +102,7 @@ def main() -> None:
             "- Audit unsupported claims",
             "- Patch retrieval if evidence is weak",
             "- Generate grounded hypotheses",
+            "- Score ideas before selecting one",
             "- Create a blueprint for the top idea",
         ],
         "#FFFFFF",
@@ -116,7 +117,7 @@ def main() -> None:
         "4. Research brief output",
         [
             "- Persisted artifact",
-            "- Includes evidence, explanation, audit, hypotheses, and blueprint",
+            "- Includes evidence, explanation, audit, hypotheses, idea scores, and blueprint",
             "- Reusable for inspection and follow-up",
         ],
         "#FFFFFF",

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+from enum import Enum
 from typing import Any, Dict, List, Literal, TypedDict
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 try:
     from agents.backend_client import BackendClient
@@ -20,9 +21,19 @@ except Exception:  # pragma: no cover
     from novelty_app.discovery_cue import cue_prompt_block, discovery_cue_to_dict
 
 try:
-    from agents.observability import current_trace_ref, observe_current, trace_attributes
+    from agents.observability import (
+        current_trace_ref,
+        langchain_config_with_observability,
+        observe_current,
+        trace_attributes,
+    )
 except Exception:  # pragma: no cover
-    from novelty_app.agents.observability import current_trace_ref, observe_current, trace_attributes
+    from novelty_app.agents.observability import (
+        current_trace_ref,
+        langchain_config_with_observability,
+        observe_current,
+        trace_attributes,
+    )
 
 try:
     from evaluation.judge import score_hypotheses
@@ -68,11 +79,54 @@ class ContrastiveExplanation(BaseModel):
     insufficient_evidence: bool = False
 
 
+class ClaimSupportStatus(str, Enum):
+    supported = "supported"
+    partial = "partial"
+    unsupported = "unsupported"
+
+
+def _normalize_claim_support_status(value: Any) -> ClaimSupportStatus:
+    if isinstance(value, ClaimSupportStatus):
+        return value
+    if isinstance(value, bool):
+        return ClaimSupportStatus.supported if value else ClaimSupportStatus.unsupported
+    text = str(value or "").strip().lower()
+    if text in {"supported", "support", "true", "yes", "y"}:
+        return ClaimSupportStatus.supported
+    if text in {"partial", "partially", "partially supported", "mixed", "somewhat supported"}:
+        return ClaimSupportStatus.partial
+    if text in {"unsupported", "not supported", "false", "no", "n"}:
+        return ClaimSupportStatus.unsupported
+    raise ValueError(
+        "claim support status must be one of supported, partial, unsupported, or a legacy boolean value"
+    )
+
+
+def _claim_support_weight(value: ClaimSupportStatus) -> float:
+    if value == ClaimSupportStatus.supported:
+        return 1.0
+    if value == ClaimSupportStatus.partial:
+        return 0.5
+    return 0.0
+
+
 class AuditClaim(BaseModel):
     claim: str
-    supported: bool
+    support_status: ClaimSupportStatus
     missing_evidence_queries: List[str] = Field(default_factory=list)
     notes: str = ""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_support_status(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        payload = dict(data)
+        raw_status = payload.get("support_status", payload.get("supported"))
+        if raw_status is not None:
+            payload["support_status"] = _normalize_claim_support_status(raw_status)
+        payload.pop("supported", None)
+        return payload
 
 
 class AuditReport(BaseModel):
@@ -85,6 +139,26 @@ class AuditReport(BaseModel):
     cue_violations: List[str] = Field(default_factory=list)
     missing_cue_facets: List[str] = Field(default_factory=list)
     respects_hard_constraints: bool = True
+
+    @model_validator(mode="after")
+    def _normalize_from_claims(self) -> AuditReport:
+        if self.claims:
+            self.supported_claim_fraction = sum(
+                _claim_support_weight(claim.support_status) for claim in self.claims
+            ) / float(len(self.claims))
+        has_unsupported_or_partial = any(
+            claim.support_status != ClaimSupportStatus.supported for claim in self.claims
+        )
+        derived_needs_patch = bool(
+            has_unsupported_or_partial
+            or self.missing_facets
+            or self.patch_queries
+            or self.cue_violations
+            or self.missing_cue_facets
+            or not self.respects_hard_constraints
+        )
+        self.needs_patch = bool(self.needs_patch or derived_needs_patch)
+        return self
 
 
 class Hypothesis(BaseModel):
@@ -148,6 +222,9 @@ SYSTEM_AUDIT = (
     "You are a strict scientific auditor. You receive an explanation and an evidence pack. "
     "A RESEARCH DIRECTION CUE may also be provided. The cue is not evidence, but the output should be checked for alignment with it. "
     "Your job is to identify unsupported claims, missing facets, and propose retrieval queries to patch gaps. "
+    "For each audited claim, use `support_status` with exactly one of: `supported`, `partial`, `unsupported`. "
+    "Use `partial` when only part of a claim is directly supported or the support is indirect. "
+    "Set `supported_claim_fraction` consistently, counting `partial` as 0.5 support. "
     "Be conservative. Output strictly valid JSON matching the schema."
 )
 
@@ -245,6 +322,22 @@ def _llm_model_name(llm: ChatOpenAI) -> Optional[str]:
     return getattr(llm, "model_name", None) or getattr(llm, "model", None)
 
 
+def _langchain_config_for_state(
+    state: OrchestratorState,
+    *,
+    trace_name: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    session_id = str(state.get("snapshot_id") or "") or None
+    return langchain_config_with_observability(
+        config,
+        session_id=session_id,
+        tags=_trace_tags(state),
+        trace_name=trace_name,
+        metadata=_trace_metadata(state),
+    )
+
+
 def _evidence_summary(papers: List[Dict[str, Any]], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return {
         "n_papers": len(papers),
@@ -322,7 +415,7 @@ Return JSON per schema.
         metadata=_trace_metadata(state),
         model=_llm_model_name(llm),
     ) as observation:
-        out = structured.invoke(messages)
+        out = structured.invoke(messages, config=_langchain_config_for_state(state, trace_name="explain"))
         state["explanation"] = out.model_dump()
         observation.update(output=state["explanation"])
     return state
@@ -356,8 +449,8 @@ Return JSON per schema.
         metadata=_trace_metadata(state),
         model=_llm_model_name(llm),
     ) as observation:
-        out = structured.invoke(messages)
-        state["audit"] = out.model_dump()
+        out = structured.invoke(messages, config=_langchain_config_for_state(state, trace_name="audit"))
+        state["audit"] = out.model_dump(mode="json")
         observation.update(output=state["audit"])
     return state
 
@@ -426,7 +519,7 @@ Return JSON per schema.
         metadata=_trace_metadata(state),
         model=_llm_model_name(llm),
     ) as observation:
-        out = structured.invoke(messages)
+        out = structured.invoke(messages, config=_langchain_config_for_state(state, trace_name="ideate"))
         state["hypotheses"] = out.model_dump()
         observation.update(output=state["hypotheses"])
     return state
@@ -518,7 +611,7 @@ Return JSON per schema.
         metadata=_trace_metadata(state),
         model=_llm_model_name(llm),
     ) as observation:
-        out = structured.invoke(messages)
+        out = structured.invoke(messages, config=_langchain_config_for_state(state, trace_name="blueprint"))
         state["blueprint"] = out.model_dump()
         observation.update(output=state["blueprint"])
     return state
@@ -536,6 +629,7 @@ def node_publish(state: OrchestratorState, backend: BackendClient) -> Orchestrat
 
     payload = {
         "evidence_size": len(state.get("evidence", [])),
+        "evidence": list(state.get("evidence", [])),
         "discovery_cue": discovery_cue_to_dict(state.get("discovery_cue")),
         "evidence_meta": state.get("evidence_meta", {}),
         "explanation": state.get("explanation", {}),
@@ -599,7 +693,13 @@ class InstrumentedOrchestrator:
                     tags=tags,
                     metadata=metadata,
                 )
-                out = dict(self._compiled.invoke(seeded_state, *args, **kwargs))
+                graph_kwargs = dict(kwargs)
+                graph_kwargs["config"] = _langchain_config_for_state(
+                    seeded_state,
+                    trace_name="orchestrator_run",
+                    config=graph_kwargs.get("config"),
+                )
+                out = dict(self._compiled.invoke(seeded_state, *args, **graph_kwargs))
                 out["observability"] = current_trace_ref(
                     session_id=session_id,
                     tags=tags,
@@ -630,9 +730,12 @@ def build_orchestrator(
 
     model = model_name or os.getenv("OPENAI_MODEL", "gpt-5")
     llm_kwargs: Dict[str, Any] = {"model": model, "temperature": 0.2}
+    ideate_llm_kwargs: Dict[str, Any] = {"model": "gpt-5.4-2026-03-05", "reasoning": {"effort": "medium"}}
     if openai_api_key:
         llm_kwargs["api_key"] = openai_api_key
+        ideate_llm_kwargs["api_key"] = openai_api_key
     llm = ChatOpenAI(**llm_kwargs)
+    ideate_llm = ChatOpenAI(**ideate_llm_kwargs)
     # type: ignore[arg-type]
     g = StateGraph(OrchestratorState)
 
@@ -640,7 +743,7 @@ def build_orchestrator(
     g.add_node("explain", lambda s: node_explain(s, llm))
     g.add_node("audit", lambda s: node_audit(s, llm))
     g.add_node("patch_retrieve", lambda s: node_patch_retrieve(s, backend))
-    g.add_node("ideate", lambda s: node_ideate(s, llm))
+    g.add_node("ideate", lambda s: node_ideate(s, ideate_llm))
     g.add_node("score", lambda s: node_score(s, openai_api_key=openai_api_key, model_name=model))
     g.add_node("blueprint", lambda s: node_blueprint(s, llm))
     g.add_node("publish", lambda s: node_publish(s, backend))

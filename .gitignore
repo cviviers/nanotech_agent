@@ -5,6 +5,7 @@
 *.pptx
 *.npy
 *.csv
+*.sqlite
 
 old/*
 lda_visualizations/*
@@ -13,3 +14,7 @@ output/*
 venv/*
 .gradio/*
 .streamlit/*
+
+data/*
+assement_app/reviews/*
+paper/*

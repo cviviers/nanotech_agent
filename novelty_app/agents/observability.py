@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from functools import lru_cache
+from types import MethodType
 from typing import Any, Dict, Iterator, List, Optional
 
 try:
@@ -13,8 +15,19 @@ except Exception:  # pragma: no cover
     Langfuse = None  # type: ignore
     propagate_attributes = None  # type: ignore
 
+try:
+    from langfuse.langchain import CallbackHandler as LangfuseLangchainCallbackHandler
+except Exception:  # pragma: no cover
+    try:
+        from langfuse.callback import CallbackHandler as LangfuseLangchainCallbackHandler  # type: ignore
+    except Exception:  # pragma: no cover
+        LangfuseLangchainCallbackHandler = None  # type: ignore
+
 
 _TRUTHY = {"1", "true", "yes", "on"}
+_LANGFUSE_TRACE_ATTRIBUTE_KEYS = frozenset(
+    {"langfuse_session_id", "langfuse_user_id", "langfuse_tags"}
+)
 
 
 def _env_enabled(name: str, default: bool = False) -> bool:
@@ -37,13 +50,62 @@ def _stringify_trace_metadata(metadata: Optional[Dict[str, Any]]) -> Dict[str, s
     return out
 
 
+def _sanitize_propagated_callback_metadata(metadata: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if metadata is None or not isinstance(metadata, dict):
+        return metadata
+    preserved: Dict[str, Any] = {}
+    to_stringify: Dict[str, Any] = {}
+    for key, value in metadata.items():
+        if key in _LANGFUSE_TRACE_ATTRIBUTE_KEYS:
+            preserved[key] = value
+            continue
+        to_stringify[key] = value
+    sanitized = _stringify_trace_metadata(to_stringify)
+    sanitized.update(preserved)
+    return sanitized
+
+
+def _patch_langfuse_callback_for_propagation(callback: Any) -> Any:
+    parser = getattr(callback, "_parse_langfuse_trace_attributes", None)
+    if not callable(parser) or getattr(callback, "_novelty_trace_attrs_sanitized", False):
+        return callback
+
+    def _patched_parse_langfuse_trace_attributes(
+        self,
+        *,
+        metadata: Optional[Dict[str, Any]],
+        tags: Optional[List[str]],
+    ) -> Dict[str, Any]:
+        return parser(
+            metadata=_sanitize_propagated_callback_metadata(metadata),
+            tags=tags,
+        )
+
+    try:
+        callback._parse_langfuse_trace_attributes = MethodType(  # type: ignore[attr-defined]
+            _patched_parse_langfuse_trace_attributes,
+            callback,
+        )
+        callback._novelty_trace_attrs_sanitized = True  # type: ignore[attr-defined]
+    except Exception:
+        return callback
+    return callback
+
+
+def _langfuse_base_url() -> Optional[str]:
+    return os.getenv("LANGFUSE_BASE_URL") or os.getenv("LANGFUSE_HOST") or None
+
+
 def _langfuse_constructor_kwargs() -> Dict[str, Any]:
+    tracing_enabled = _env_enabled("LANGFUSE_TRACING_ENABLED", default=True)
     kwargs: Dict[str, Any] = {
         "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
         "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
-        "base_url": os.getenv("LANGFUSE_BASE_URL") or None,
+        "base_url": _langfuse_base_url(),
         "environment": os.getenv("LANGFUSE_TRACING_ENVIRONMENT") or None,
-        "enabled": _env_enabled("LANGFUSE_TRACING_ENABLED", default=True),
+        # Support both old and new SDK parameter names; unsupported fields are filtered at call time.
+        "tracing_enabled": tracing_enabled,
+        "enabled": tracing_enabled,
     }
     sample_rate = os.getenv("LANGFUSE_SAMPLE_RATE")
     if sample_rate not in {None, ""}:
@@ -61,13 +123,64 @@ def get_langfuse_client() -> Any:
     if not os.getenv("LANGFUSE_PUBLIC_KEY") or not os.getenv("LANGFUSE_SECRET_KEY"):
         return None
     try:
-        return Langfuse(**_langfuse_constructor_kwargs())
+        return Langfuse(**_filter_callable_kwargs(Langfuse, _langfuse_constructor_kwargs()))
     except Exception:
         return None
 
 
+def _filter_callable_kwargs(target: Any, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        signature = inspect.signature(target)
+    except (TypeError, ValueError):
+        return kwargs
+    accepts_var_kwargs = any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+    if accepts_var_kwargs:
+        return kwargs
+    return {
+        key: value
+        for key, value in kwargs.items()
+        if key in signature.parameters and value not in (None, "", [], {})
+    }
+
+
 def langfuse_enabled() -> bool:
     return get_langfuse_client() is not None
+
+
+def langfuse_status() -> Dict[str, Any]:
+    base_url = _langfuse_base_url()
+    tracing_enabled = _env_enabled("LANGFUSE_TRACING_ENABLED", default=True)
+    has_public_key = bool(os.getenv("LANGFUSE_PUBLIC_KEY"))
+    has_secret_key = bool(os.getenv("LANGFUSE_SECRET_KEY"))
+    status: Dict[str, Any] = {
+        "enabled": False,
+        "sdk_available": Langfuse is not None,
+        "callback_available": LangfuseLangchainCallbackHandler is not None,
+        "tracing_enabled_env": tracing_enabled,
+        "has_public_key": has_public_key,
+        "has_secret_key": has_secret_key,
+    }
+    if base_url:
+        status["base_url"] = base_url
+    if Langfuse is None:
+        status["reason"] = "langfuse_sdk_unavailable"
+        return status
+    if not tracing_enabled:
+        status["reason"] = "tracing_disabled_by_env"
+        return status
+    if not has_public_key or not has_secret_key:
+        status["reason"] = "missing_langfuse_keys"
+        return status
+    client = get_langfuse_client()
+    if client is None:
+        status["reason"] = "langfuse_client_init_failed"
+        return status
+    status["enabled"] = True
+    status["reason"] = "ok"
+    return status
 
 
 @dataclass
@@ -79,6 +192,60 @@ class _NullObservation:
 
     def score(self, *_args: Any, **_kwargs: Any) -> None:
         return None
+
+
+def get_langfuse_langchain_callback(
+    *,
+    session_id: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    trace_name: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Any:
+    if LangfuseLangchainCallbackHandler is None:
+        return None
+    if get_langfuse_client() is None:
+        return None
+
+    kwargs: Dict[str, Any] = {
+        "public_key": os.getenv("LANGFUSE_PUBLIC_KEY"),
+        "secret_key": os.getenv("LANGFUSE_SECRET_KEY"),
+        "host": _langfuse_base_url(),
+        "session_id": session_id,
+        "trace_name": trace_name,
+        "tags": list(tags or []),
+        "metadata": _stringify_trace_metadata(metadata),
+        "enabled": _env_enabled("LANGFUSE_TRACING_ENABLED", default=True),
+    }
+    filtered_kwargs = _filter_callable_kwargs(LangfuseLangchainCallbackHandler, kwargs)
+    try:
+        callback = LangfuseLangchainCallbackHandler(**filtered_kwargs)
+    except Exception:
+        return None
+    return _patch_langfuse_callback_for_propagation(callback)
+
+
+def langchain_config_with_observability(
+    config: Optional[Dict[str, Any]] = None,
+    *,
+    session_id: Optional[str] = None,
+    tags: Optional[List[str]] = None,
+    trace_name: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    callback = get_langfuse_langchain_callback(
+        session_id=session_id,
+        tags=tags,
+        trace_name=trace_name,
+        metadata=metadata,
+    )
+    if callback is None:
+        return dict(config) if config else None
+
+    merged = dict(config or {})
+    callbacks = list(merged.get("callbacks") or [])
+    callbacks.append(callback)
+    merged["callbacks"] = callbacks
+    return merged
 
 
 def deterministic_trace_id(seed: str) -> str:

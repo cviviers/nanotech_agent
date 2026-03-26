@@ -173,6 +173,10 @@ def init_session_state():
         st.session_state.agent_split_publish_result = None
     if 'agent_publish_drop_post_cutoff' not in st.session_state:
         st.session_state.agent_publish_drop_post_cutoff = False
+    if 'agent_evaluation_result' not in st.session_state:
+        st.session_state.agent_evaluation_result = None
+    if 'agent_evaluation_progress' not in st.session_state:
+        st.session_state.agent_evaluation_progress = None
     if 'load_drop_post_cutoff' not in st.session_state:
         st.session_state.load_drop_post_cutoff = False
     if 'load_cutoff_date' not in st.session_state:

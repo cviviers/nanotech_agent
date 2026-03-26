@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from novelty_app.agents.observability import observe_current
+
 
 def _print_local_qwen_error(message: str) -> None:
     print(f"[QwenClient] {message}", file=sys.stderr, flush=True)
@@ -18,32 +20,71 @@ class QwenClient:
         self.timeout_s = timeout_s
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        try:
-            resp = requests.post(
-                f"{self.base_url}{path}",
-                json=payload,
-                timeout=self.timeout_s,
+        input_summary: Dict[str, Any] = {
+            "path": path,
+            "base_url": self.base_url,
+        }
+        if path == "/embed":
+            input_summary.update(
+                {
+                    "n_texts": len(payload.get("texts") or []),
+                    "instruction": payload.get("instruction"),
+                    "normalize": payload.get("normalize"),
+                }
             )
-        except requests.RequestException as exc:
-            _print_local_qwen_error(f"POST {path} request error: {exc}")
-            raise
-        if not resp.ok:
-            detail = None
+        else:
+            input_summary.update(
+                {
+                    "query": str(payload.get("query") or "")[:500],
+                    "n_documents": len(payload.get("documents") or []),
+                    "top_k": payload.get("top_k"),
+                }
+            )
+
+        observation_type = "embedding" if path == "/embed" else "retriever"
+        observation_name = "qwen_embed" if path == "/embed" else "qwen_rank"
+
+        with observe_current(
+            name=observation_name,
+            as_type=observation_type,
+            input_payload=input_summary,
+            metadata={"path": path},
+            model="qwen-local",
+        ) as observation:
             try:
-                detail = resp.json()
-            except Exception:
-                detail = resp.text.strip() or None
-            message = f"POST {path} failed with HTTP {resp.status_code}: {detail}"
-            _print_local_qwen_error(message)
-            raise RuntimeError(message)
-        try:
-            return resp.json()
-        except ValueError as exc:
-            body = resp.text.strip()
-            body_preview = body[:500] + ("..." if len(body) > 500 else "")
-            message = f"POST {path} returned invalid JSON: {body_preview or '<empty response>'}"
-            _print_local_qwen_error(message)
-            raise RuntimeError(message) from exc
+                resp = requests.post(
+                    f"{self.base_url}{path}",
+                    json=payload,
+                    timeout=self.timeout_s,
+                )
+            except requests.RequestException as exc:
+                _print_local_qwen_error(f"POST {path} request error: {exc}")
+                raise
+            if not resp.ok:
+                detail = None
+                try:
+                    detail = resp.json()
+                except Exception:
+                    detail = resp.text.strip() or None
+                message = f"POST {path} failed with HTTP {resp.status_code}: {detail}"
+                _print_local_qwen_error(message)
+                raise RuntimeError(message)
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                body = resp.text.strip()
+                body_preview = body[:500] + ("..." if len(body) > 500 else "")
+                message = f"POST {path} returned invalid JSON: {body_preview or '<empty response>'}"
+                _print_local_qwen_error(message)
+                raise RuntimeError(message) from exc
+
+            output_summary = {"path": path}
+            if path == "/embed":
+                output_summary["n_embeddings"] = len(data.get("embeddings") or [])
+            else:
+                output_summary["n_results"] = len(data.get("results") or [])
+            observation.update(output=output_summary)
+            return data
 
     def embed(
         self,

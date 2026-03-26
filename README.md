@@ -96,16 +96,33 @@ This repository implements an end-to-end pipeline for discovering research gaps 
    pip install -r requirements.txt
    ```
 
-4. **Set up OpenAI API key & model** (optional, for LLM features & also available in the app) 
+4. **Set up OpenAI and Langfuse environment variables** (optional, for LLM features and tracing)
    ```bash
    # Windows PowerShell
    $env:OPENAI_API_KEY="your-api-key-here"
-   $env:OPENAI_MODEL="your-api-key-here"
+   $env:OPENAI_MODEL="gpt-5-mini-2025-08-07"
+   $env:LANGFUSE_PUBLIC_KEY="your-langfuse-public-key"
+   $env:LANGFUSE_SECRET_KEY="your-langfuse-secret-key"
+   $env:LANGFUSE_BASE_URL="http://localhost:3000"  # Use your local Langfuse URL, or https://cloud.langfuse.com for Langfuse Cloud
+   $env:LANGFUSE_TRACING_ENABLED="true"
    
    # Linux/Mac
    export OPENAI_API_KEY="your-api-key-here"
-   export OPENAI_MODEL="your-api-key-here"
+   export OPENAI_MODEL="gpt-5-mini-2025-08-07"
+   export LANGFUSE_PUBLIC_KEY="your-langfuse-public-key"
+   export LANGFUSE_SECRET_KEY="your-langfuse-secret-key"
+   export LANGFUSE_BASE_URL="http://localhost:3000"  # Use your local Langfuse URL, or https://cloud.langfuse.com for Langfuse Cloud
+   export LANGFUSE_TRACING_ENABLED="true"
    ```
+
+   If these variables are set before startup, Langfuse tracing is enabled automatically for:
+   - LangChain / LangGraph LLM calls
+   - retrospective evaluation runs
+   - local Qwen embed / rerank requests
+   - direct OpenAI-powered summaries in the app
+
+   If `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are not set, tracing stays disabled with no code changes required.
+   The retrospective CLI does not load `.env` automatically, so these variables must be set in the same shell session that runs `python -m novelty_app.evaluation.run_retrospective`.
 
 5. **Set up QWEN quantization** (optional for running embedding model on smaller GPU)
   ```bash
@@ -143,12 +160,14 @@ We provide a preprocessed sample dataset for quick testing:
 
 **Run the Novelty Analysis App:**
 ```bash
+# Run this in the same shell session where you exported OPENAI_* and LANGFUSE_* above
 streamlit run novelty_app/app.py
 ```
 **Run the Embeddings Models:**
 In two separate terminals
 
 ```bash
+# If you want Qwen requests traced, start this from a shell that also has LANGFUSE_* set
 cd embedding_models
 
 uvicorn qwen:app --host 0.0.0.0 --port 8000

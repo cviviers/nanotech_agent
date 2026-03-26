@@ -9,6 +9,11 @@ import streamlit as st
 import networkx as nx
 from sklearn.neighbors import NearestNeighbors
 
+try:
+    from agents.observability import observe_current
+except Exception:  # pragma: no cover
+    from novelty_app.agents.observability import observe_current
+
 # Check for OpenAI availability
 try:
     from openai import OpenAI
@@ -277,16 +282,32 @@ OUTPUT: Provide your analysis as a JSON object with the following structure:
         
         # Call LLM
         client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        with observe_current(
+            name="cluster_summary_llm",
+            as_type="generation",
+            input_payload={
+                "cluster_id": cluster_id,
+                "n_cluster_papers": len(cluster_df),
+                "n_sampled_papers": len(sample_df),
+            },
+            metadata={
+                "cluster_id": cluster_id,
+                "n_cluster_papers": len(cluster_df),
+                "n_sampled_papers": len(sample_df),
+            },
             model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            response_format={"type": "json_object"}
-        )
-        
-        result = json.loads(response.choices[0].message.content)
+        ) as observation:
+            response = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                response_format={"type": "json_object"}
+            )
+            result = json.loads(response.choices[0].message.content)
+            observation.update(output={"cluster_id": cluster_id, "result_keys": sorted(result.keys())})
         return result
         
     except Exception as e:

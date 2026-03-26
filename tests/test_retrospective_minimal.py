@@ -266,6 +266,19 @@ def _fake_generation(_method_name, context):
     )
     return [hyp], {
         "effective_target": context.target,
+        "explanation": {
+            "cluster_A_summary": {"one_line": "cluster a", "bullets": ["liposome"], "salient_entities": {}, "citations": ["h1"]},
+            "cluster_B_summary": {"one_line": "cluster b", "bullets": ["folate"], "salient_entities": {}, "citations": ["h2"]},
+            "axes_of_separation": [],
+            "bridge_seeds": [],
+        },
+        "audit": {
+            "supported_claim_fraction": 1.0,
+            "needs_patch": False,
+            "missing_facets": [],
+            "patch_queries": [],
+            "claims": [],
+        },
         "evidence_pack": context.backend.evidence_pack(
             {
                 "snapshot_id": context.snapshot_id,
@@ -404,6 +417,9 @@ class RetrospectiveMinimalTests(unittest.TestCase):
             ), patch(
                 "novelty_app.agents.observability.get_langfuse_client",
                 return_value=fake_langfuse,
+            ), patch(
+                "novelty_app.evaluation.run_retrospective.langfuse_status",
+                return_value={"enabled": True, "reason": "ok", "base_url": "http://localhost:3000"},
             ):
                 result = run_retrospective(
                     backend=backend,
@@ -458,6 +474,7 @@ class RetrospectiveMinimalTests(unittest.TestCase):
             self.assertEqual(
                 phases,
                 [
+                    "observability",
                     "loading_inputs",
                     "preparing_snapshot",
                     "selecting_targets",
@@ -485,6 +502,23 @@ class RetrospectiveMinimalTests(unittest.TestCase):
             self.assertEqual(review_packet["rows"][0]["trace_id"], expected_trace_id)
             csv_header = Path(result.review_packet_csv).read_text(encoding="utf-8").splitlines()[0]
             self.assertIn("trace_id", csv_header)
+            assessment_bundle = json.loads(Path(result.assessment_bundle_json).read_text(encoding="utf-8"))
+            self.assertEqual(assessment_bundle["schema_version"], "assessment_bundle_v1")
+            self.assertEqual(len(assessment_bundle["ideas"]), 1)
+            self.assertTrue(assessment_bundle["ideas"][0]["is_review_packet_winner"])
+            self.assertEqual(
+                assessment_bundle["ideas"][0]["ideation_context"]["effective_target"]["target_type"],
+                "cluster_pair",
+            )
+            self.assertTrue(assessment_bundle["ideas"][0]["ideation_context"]["evidence_papers"])
+            self.assertEqual(
+                assessment_bundle["ideas"][0]["ideation_context"]["audit"]["supported_claim_fraction"],
+                1.0,
+            )
+            self.assertEqual(
+                assessment_bundle["ideas"][0]["hypothesis"]["title"],
+                "Folate liposome siRNA bridge",
+            )
 
     def test_apply_future_prefilter_filters_df_and_embeddings_in_lockstep(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -675,6 +709,86 @@ class RetrospectiveMinimalTests(unittest.TestCase):
             self.assertTrue(selecting_events)
             self.assertIn("cue_scored=2", selecting_events[-1].message)
             self.assertIn("cue_positive=0", selecting_events[-1].message)
+
+    def test_disable_leakage_check_skips_only_initial_gold_filter(self) -> None:
+        def _fake_candidate(*, paper_id: str, label: str) -> dict:
+            return {
+                "paper_id": paper_id,
+                "title": paper_id,
+                "abstract": paper_id,
+                "publication_year": 2023,
+                "keyword_score": 1.0,
+                "embedding_score": 1.0,
+                "reranker_score": 0.95 if label == "strong_match" else 0.10,
+                "judge": {"label": label, "combined_score": 0.90 if label == "strong_match" else 0.10},
+            }
+
+        def _run_once(tmp: Path, *, disable_leakage_check: bool) -> tuple[dict, list[str]]:
+            tmp.mkdir(parents=True, exist_ok=True)
+            data_json, data_dir = _write_fixture_dataset(tmp)
+            backend = _FakeBackend()
+            startup_leakage_queries: list[str] = []
+
+            def _fake_retrieve_candidates(
+                *,
+                query_text,
+                fingerprint,
+                corpus,
+                qwen_client,
+                required_paper_ids=None,
+                top_k_keyword=25,
+                top_k_semantic=40,
+                top_k_final=10,
+                rerank_max_docs=16,
+                doc_char_limit=2500,
+            ):
+                del fingerprint, corpus, qwen_client, top_k_keyword, top_k_semantic, rerank_max_docs, doc_char_limit
+                if top_k_final == 10:
+                    startup_leakage_queries.append(str(query_text))
+                    if "gold antibody lung imaging" in str(query_text).lower():
+                        return [_fake_candidate(paper_id="historical_leak", label="strong_match")]
+                    return [_fake_candidate(paper_id="historical_safe", label="no_match")]
+                if required_paper_ids:
+                    return [_fake_candidate(paper_id=str(required_paper_ids[0]), label="strong_match")]
+                return [_fake_candidate(paper_id="historical_safe", label="no_match")]
+
+            with patch("novelty_app.evaluation.run_retrospective.QwenClient", _FakeQwen), patch(
+                "novelty_app.evaluation.run_retrospective.run_generation_method",
+                _fake_generation,
+            ), patch(
+                "novelty_app.evaluation.run_retrospective.retrieve_candidates_for_hypothesis",
+                side_effect=_fake_retrieve_candidates,
+            ):
+                result = run_retrospective(
+                    backend=backend,
+                    data_json=str(data_json),
+                    data_dir=str(data_dir),
+                    qwen_base_url="http://fake",
+                    analysis_config=AnalysisConfig(clustering_method="kmeans", pca_components=2),
+                    n_gap_targets=0,
+                    n_cluster_pair_targets=1,
+                    n_gold_future_papers=1,
+                    methods=["dummy"],
+                    seeds=1,
+                    hypotheses_per_target=1,
+                    output_dir=str(tmp / ("out_no_leak_check" if disable_leakage_check else "out_with_leak_check")),
+                    disable_leakage_check=disable_leakage_check,
+                )
+            return result, startup_leakage_queries
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            result_enabled, startup_queries_enabled = _run_once(tmp / "enabled", disable_leakage_check=False)
+            result_disabled, startup_queries_disabled = _run_once(tmp / "disabled", disable_leakage_check=True)
+
+        self.assertTrue(result_enabled.matches)
+        self.assertTrue(result_disabled.matches)
+        self.assertFalse(result_enabled.run["config"]["disable_leakage_check"])
+        self.assertTrue(result_disabled.run["config"]["disable_leakage_check"])
+        self.assertEqual(result_enabled.run["summary"]["n_leakage_filtered"], 1)
+        self.assertEqual(result_disabled.run["summary"]["n_leakage_filtered"], 0)
+        self.assertGreater(len(startup_queries_enabled), 0)
+        self.assertEqual(startup_queries_disabled, [])
 
     def test_run_retrospective_reuses_existing_snapshot_manifest_and_ignores_cli_dates(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
