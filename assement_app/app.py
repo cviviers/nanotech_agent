@@ -261,6 +261,10 @@ def _bundle_path() -> str:
     return str(st.session_state.get("bundle_path") or "").strip()
 
 
+def _bundle_source() -> str:
+    return str(st.session_state.get("bundle_source") or _bundle_path()).strip()
+
+
 def _uploaded_bundle_file():
     return st.session_state.get("bundle_upload")
 
@@ -490,7 +494,7 @@ def _persist_current_form(*, submit: bool = False, reason: str = "") -> bool:
     if not submit and not _is_form_dirty(existing):
         return False
 
-    save_assessment(workbook, candidate, bundle=bundle, bundle_path=_bundle_path())
+    save_assessment(workbook, candidate, bundle=bundle, bundle_path=_bundle_source())
     if submit:
         _set_flash("success", "Assessment submitted.")
     elif reason:
@@ -888,7 +892,7 @@ def _render_progress_tab() -> None:
     st.markdown("### Workbook Status")
     st.write(f"Workbook source: `{_workbook_source()}`")
     st.write(f"Download name: `{_workbook_download_name() or _default_workbook_filename(bundle)}`")
-    st.write(f"Bundle: `{_bundle_path()}`")
+    st.write(f"Bundle: `{_bundle_source()}`")
     st.write(f"Schema: `{bundle.get('schema_version')}`")
     _render_workbook_download_button(key="download_progress_tab")
 
@@ -911,7 +915,7 @@ def _load_bundle_and_workbook() -> None:
 
     st.session_state["assessment_bundle"] = bundle
     st.session_state["assessment_workbook"] = workbook
-    st.session_state["bundle_path"] = bundle_source
+    st.session_state["bundle_source"] = bundle_source
     st.session_state["workbook_source"] = workbook_source
     st.session_state["workbook_download_name"] = workbook_download_name
     queue = filter_ideas(bundle.get("ideas") or [], workbook.assessments, reviewer_id, status_filter="all")
