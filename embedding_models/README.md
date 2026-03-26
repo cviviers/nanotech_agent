@@ -77,10 +77,17 @@ QWEN_EMBED_MAX_LENGTH (default: 8192)
 
 QWEN_RERANK_MAX_LENGTH (default: 8192)
 
+QWEN_TORCH_DTYPE (default: float16, fallback for both models on CUDA)
+
+QWEN_EMBED_TORCH_DTYPE (optional override for the embedding model on CUDA)
+
+QWEN_RERANK_TORCH_DTYPE (optional override for the reranker model on CUDA)
+
 Example:
 ```bash
 export QWEN_EMBEDDING_MODEL="Qwen/Qwen3-Embedding-0.6B"
 export QWEN_RERANKER_MODEL="Qwen/Qwen3-Reranker-0.6B"
+export QWEN_RERANK_TORCH_DTYPE="float16"
 ```
 
 ## 5. Running the server
@@ -106,6 +113,8 @@ Returns basic metadata:
   "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
   "reranker_model": "Qwen/Qwen3-Reranker-0.6B",
   "device": "cuda",
+  "embed_torch_dtype": "torch.float16",
+  "rerank_torch_dtype": "torch.float16",
   "embedding_dim": 1024
 }
 ```
