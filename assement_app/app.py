@@ -18,6 +18,7 @@ from novelty_app.evaluation.assessment_bundle import (
     ASSESSMENT_BUNDLE_SCHEMA_VERSION,
     ASSESSMENT_RUBRIC,
     load_assessment_bundle,
+    load_assessment_bundle_bytes,
 )
 
 from assement_app.review_logic import (
@@ -256,6 +257,10 @@ def _bundle_path() -> str:
     return str(st.session_state.get("bundle_path") or "").strip()
 
 
+def _uploaded_bundle_file():
+    return st.session_state.get("bundle_upload")
+
+
 def _workbook_path() -> str:
     return str(st.session_state.get("workbook_path") or "").strip()
 
@@ -268,6 +273,18 @@ def _bundle_ideas() -> List[Dict[str, Any]]:
 def _default_workbook_path(bundle: Dict[str, Any]) -> str:
     DEFAULT_REVIEWS_DIR.mkdir(parents=True, exist_ok=True)
     return str(DEFAULT_REVIEWS_DIR / f"{bundle.get('bundle_id')}_assessments.xlsx")
+
+
+def _load_selected_bundle() -> tuple[Dict[str, Any], str]:
+    uploaded_bundle = _uploaded_bundle_file()
+    if uploaded_bundle is not None:
+        upload_name = str(getattr(uploaded_bundle, "name", "") or "assessment_bundle.json")
+        return load_assessment_bundle_bytes(uploaded_bundle.getvalue()), f"uploaded://{upload_name}"
+
+    bundle_path = _bundle_path()
+    if not bundle_path:
+        raise ValueError("Provide an assessment bundle JSON path or upload a local bundle file.")
+    return load_assessment_bundle(bundle_path), bundle_path
 
 
 def _current_assessment() -> Dict[str, Any] | None:
@@ -793,27 +810,27 @@ def _render_progress_tab() -> None:
 
 
 def _load_bundle_and_workbook() -> None:
-    bundle_path = _bundle_path()
     reviewer_id = _reviewer_id()
-    if not bundle_path:
-        st.error("Provide an assessment bundle JSON path.")
+    if not _bundle_path() and _uploaded_bundle_file() is None:
+        st.error("Provide an assessment bundle JSON path or upload a local bundle file.")
         return
     if not reviewer_id:
         st.error("Provide a reviewer id.")
         return
     try:
-        bundle = load_assessment_bundle(bundle_path)
+        bundle, bundle_source = _load_selected_bundle()
         workbook_path = _workbook_path()
         if not workbook_path:
             workbook_path = _default_workbook_path(bundle)
             st.session_state["workbook_path"] = workbook_path
-        workbook = load_or_create_workbook(workbook_path, bundle, bundle_path=bundle_path)
+        workbook = load_or_create_workbook(workbook_path, bundle, bundle_path=bundle_source)
     except Exception as exc:
         st.error(str(exc))
         return
 
     st.session_state["assessment_bundle"] = bundle
     st.session_state["assessment_workbook"] = workbook
+    st.session_state["bundle_path"] = bundle_source
     queue = filter_ideas(bundle.get("ideas") or [], workbook.assessments, reviewer_id, status_filter="all")
     current_idea_id = next_incomplete_idea_id(queue, workbook.assessments, reviewer_id) or (
         str(queue[0].get("idea_id") or "") if queue else ""
@@ -839,7 +856,20 @@ def _render_load_tab() -> None:
         if selected_bundle:
             st.session_state["bundle_path"] = selected_bundle
 
-    st.text_input("Assessment bundle path", key="bundle_path")
+    uploaded_bundle = st.file_uploader(
+        "Upload local assessment bundle",
+        type=["json"],
+        key="bundle_upload",
+        help="Use this when the app is deployed remotely and the bundle JSON lives on your machine.",
+    )
+    if uploaded_bundle is not None:
+        st.caption(f"Using uploaded bundle: `{uploaded_bundle.name}`")
+
+    st.text_input(
+        "Assessment bundle path",
+        key="bundle_path",
+        help="Optional server-side path. If an uploaded JSON is present, the upload takes precedence.",
+    )
 
     if discovered_workbooks:
         selected_workbook = st.selectbox(

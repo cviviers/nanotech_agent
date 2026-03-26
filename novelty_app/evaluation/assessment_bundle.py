@@ -269,9 +269,9 @@ def write_assessment_bundle(output_dir: Path, run_payload: Dict[str, Any], match
     return str(json_path)
 
 
-def load_assessment_bundle(path: str | Path) -> Dict[str, Any]:
-    bundle_path = Path(path)
-    payload = json.loads(bundle_path.read_text(encoding="utf-8"))
+def _validate_assessment_bundle_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Assessment bundle JSON must contain an object at the top level.")
     schema_version = str(payload.get("schema_version") or "")
     if schema_version != ASSESSMENT_BUNDLE_SCHEMA_VERSION:
         raise ValueError(
@@ -279,9 +279,31 @@ def load_assessment_bundle(path: str | Path) -> Dict[str, Any]:
         )
     if not isinstance(payload.get("ideas"), list):
         raise ValueError("Assessment bundle is missing `ideas`.")
-    computed_hash = bundle_hash({key: value for key, value in payload.items() if key != "bundle_sha256"})
-    embedded_hash = str(payload.get("bundle_sha256") or "")
+    normalized = dict(payload)
+    computed_hash = bundle_hash({key: value for key, value in normalized.items() if key != "bundle_sha256"})
+    embedded_hash = str(normalized.get("bundle_sha256") or "")
     if embedded_hash and embedded_hash != computed_hash:
         raise ValueError("Assessment bundle hash does not match the file contents.")
-    payload["bundle_sha256"] = computed_hash
-    return payload
+    normalized["bundle_sha256"] = computed_hash
+    return normalized
+
+
+def load_assessment_bundle_text(text: str) -> Dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Assessment bundle is not valid JSON.") from exc
+    return _validate_assessment_bundle_payload(payload)
+
+
+def load_assessment_bundle_bytes(data: bytes) -> Dict[str, Any]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Assessment bundle must be UTF-8 encoded JSON.") from exc
+    return load_assessment_bundle_text(text)
+
+
+def load_assessment_bundle(path: str | Path) -> Dict[str, Any]:
+    bundle_path = Path(path)
+    return load_assessment_bundle_text(bundle_path.read_text(encoding="utf-8"))

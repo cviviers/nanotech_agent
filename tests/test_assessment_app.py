@@ -12,6 +12,7 @@ from novelty_app.evaluation.assessment_bundle import (
     ASSESSMENT_RUBRIC,
     bundle_hash,
     load_assessment_bundle,
+    load_assessment_bundle_text,
 )
 
 
@@ -114,6 +115,13 @@ class AssessmentAppTests(unittest.TestCase):
             path.write_text(json.dumps({"run": {}, "rows": []}), encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "assessment_bundle_v1"):
                 load_assessment_bundle(path)
+
+    def test_load_assessment_bundle_text_supports_uploaded_json(self) -> None:
+        bundle = _sample_bundle()
+        loaded = load_assessment_bundle_text(json.dumps(bundle))
+        self.assertEqual(loaded["bundle_id"], bundle["bundle_id"])
+        self.assertEqual(len(loaded["ideas"]), len(bundle["ideas"]))
+        self.assertEqual(loaded["bundle_sha256"], bundle["bundle_sha256"])
 
     def test_workbook_roundtrip_supports_resume_and_multi_reviewer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
