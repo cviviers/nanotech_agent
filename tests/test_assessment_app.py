@@ -5,7 +5,13 @@ from pathlib import Path
 
 import pandas as pd
 
-from assement_app.review_logic import build_assessment_record, filter_ideas, model_context_visible, next_incomplete_idea_id
+from assement_app.review_logic import (
+    build_assessment_record,
+    filter_ideas,
+    model_context_visible,
+    next_incomplete_idea_id,
+    validate_submission,
+)
 from assement_app.workbook_store import get_assessment, load_or_create_workbook, save_assessment
 from novelty_app.evaluation.assessment_bundle import (
     ASSESSMENT_BUNDLE_SCHEMA_VERSION,
@@ -109,6 +115,26 @@ def _sample_bundle() -> dict:
 
 
 class AssessmentAppTests(unittest.TestCase):
+    def test_validate_submission_allows_missing_overall_rationale(self) -> None:
+        record = build_assessment_record(
+            bundle_id="assessment_test_bundle",
+            reviewer_id="alice",
+            idea_id="idea_1",
+            values={
+                "importance": 5,
+                "novelty": 4,
+                "plausibility": 4,
+                "feasibility": 4,
+                "evaluability": 5,
+                "likely_impact": 4,
+            },
+            existing=None,
+            submit=True,
+            saved_at="2026-03-25T00:00:00+00:00",
+        )
+
+        self.assertEqual(validate_submission(record), [])
+
     def test_load_assessment_bundle_rejects_legacy_review_packet(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "legacy_review_packet.json"

@@ -246,6 +246,74 @@ class KnowledgeStoreTests(unittest.TestCase):
             float(evidence["papers"][1]["selection_meta"]["cue_alignment"]["score"]),
         )
 
+    def test_build_evidence_pack_compiles_freeform_cue_and_reserves_cue_slots(self) -> None:
+        payload = {
+            "snapshot_id": "snap_freeform_cue",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Folate liposome siRNA for breast cancer",
+                    "abstract": "folate liposome sirna gene silencing in breast cancer",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.9,
+                    "embedding": [1.0, 0.0, 0.0],
+                },
+                {
+                    "paper_id": "p2",
+                    "title": "Gold imaging in melanoma",
+                    "abstract": "gold nanoparticle imaging in melanoma",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.6,
+                    "embedding": [0.0, 1.0, 0.0],
+                },
+                {
+                    "paper_id": "p3",
+                    "title": "Surface coating design for inorganic nanoparticles in biofilms",
+                    "abstract": "A polymer coating improves inorganic nanoparticle penetration into bacterial biofilms.",
+                    "publication_year": 2021,
+                    "cluster_id": 2,
+                    "gap_score": 0.4,
+                    "embedding": [0.0, 0.5, 0.5],
+                },
+            ],
+            "clusters": [
+                {"cluster_id": 1, "size": 2, "metadata": {}},
+                {"cluster_id": 2, "size": 1, "metadata": {}},
+            ],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 2, "avg_gap_score": 0.8, "max_gap_score": 0.9, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [
+                {"gap_id": "gap_0", "paper_id": "p1", "rank": 0, "gap_score": 0.9},
+                {"gap_id": "gap_0", "paper_id": "p2", "rank": 1, "gap_score": 0.6},
+            ],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(payload)
+
+        evidence = self.store.build_evidence_pack(
+            {
+                "snapshot_id": "snap_freeform_cue",
+                "target_type": "gap",
+                "gap_id": "gap_0",
+                "profile": "focused_eval",
+                "exemplars": 2,
+                "boundary": 1,
+                "diverse": 0,
+                "discovery_cue": {
+                    "text": "What characteristics should a coating for inorganic nanoparticles have to overcome biofilms?"
+                },
+            }
+        )
+
+        self.assertTrue(evidence["meta"]["discovery_cue_queries"])
+        self.assertIn("biofilm", evidence["meta"]["discovery_cue_queries"])
+        self.assertEqual(evidence["papers"][0]["paper_id"], "p3")
+        self.assertGreater(float(evidence["papers"][0]["selection_meta"]["cue_score"]), 0.0)
+        self.assertEqual(evidence["meta"]["cue_stats"]["reserved_slots_applied"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

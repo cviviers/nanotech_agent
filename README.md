@@ -2,7 +2,7 @@
 
 This repository is research code for mapping nanotechnology and nanomedicine literature, identifying sparse or weakly explored regions in embedding space, and testing whether retrieval-grounded LLM workflows can generate useful research hypotheses from those frontiers.
 
-The repo is no longer just a single Streamlit explorer. It currently contains:
+It currently contains:
 
 - a notebook pipeline for PubMed extraction, preprocessing, and embedding generation
 - a Streamlit novelty-analysis workbench

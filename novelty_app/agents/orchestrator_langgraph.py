@@ -136,6 +136,8 @@ class AuditReport(BaseModel):
     patch_queries: List[str] = Field(default_factory=list)
     claims: List[AuditClaim] = Field(default_factory=list)
     cue_alignment_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    cue_usage_summary: str = ""
+    cue_terms_addressed: List[str] = Field(default_factory=list)
     cue_violations: List[str] = Field(default_factory=list)
     missing_cue_facets: List[str] = Field(default_factory=list)
     respects_hard_constraints: bool = True
@@ -166,6 +168,8 @@ class Hypothesis(BaseModel):
     title: str
     bridge_type: str
     mechanistic_rationale: str
+    cue_alignment_rationale: str = ""
+    cue_terms_addressed: List[str] = Field(default_factory=list)
     novel_elements: List[str] = Field(default_factory=list)
     risk_flags: List[str] = Field(default_factory=list)
     unknowns: List[str] = Field(default_factory=list)
@@ -222,6 +226,7 @@ SYSTEM_AUDIT = (
     "You are a strict scientific auditor. You receive an explanation and an evidence pack. "
     "A RESEARCH DIRECTION CUE may also be provided. The cue is not evidence, but the output should be checked for alignment with it. "
     "Your job is to identify unsupported claims, missing facets, and propose retrieval queries to patch gaps. "
+    "When a cue is present, briefly explain how the explanation uses it and list which cue terms or facets are actually addressed. "
     "For each audited claim, use `support_status` with exactly one of: `supported`, `partial`, `unsupported`. "
     "Use `partial` when only part of a claim is directly supported or the support is indirect. "
     "Set `supported_claim_fraction` consistently, counting `partial` as 0.5 support. "
@@ -232,6 +237,7 @@ SYSTEM_IDEATE = (
     "You propose testable nanomedicine hypotheses. Use only the evidence pack. "
     "A RESEARCH DIRECTION CUE may be provided to steer direction, but it is not evidence and must not be cited. "
     "Every hypothesis must be testable in 6-12 months by an academic lab. "
+    "For each hypothesis, explicitly state how it addresses the cue and list the cue terms or facets it covers. "
     "Cite by paper_id. Output strictly valid JSON matching the schema."
 )
 
@@ -435,6 +441,7 @@ EVIDENCE PACK (JSONL):
 {pack}
 ```
 Audit the explanation: identify unsupported claims, missing facets, cue violations, and propose patch retrieval queries.
+Also state briefly how the cue is reflected in the explanation and which cue terms or facets are addressed versus still missing.
 Return JSON per schema.
 """
     structured = llm.with_structured_output(AuditReport, method="function_calling")
@@ -505,6 +512,7 @@ EVIDENCE PACK (JSONL):
 ```jsonl
 {pack}
 ```
+For each hypothesis, include `cue_alignment_rationale` and `cue_terms_addressed`.
 Return JSON per schema.
 """
     structured = llm.with_structured_output(HypothesesOut, method="function_calling")

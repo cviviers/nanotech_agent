@@ -574,16 +574,16 @@ def _render_scoring_readiness() -> None:
     has_rationale = bool(str(values.get("overall_rationale") or "").strip())
     progress_cols = st.columns(3)
     progress_cols[0].metric("Criteria scored", f"{scored_count} / {len(CRITERION_FIELDS)}")
-    progress_cols[1].metric("Rationale", "Ready" if has_rationale else "Missing")
+    progress_cols[1].metric("Overall rationale", "Added" if has_rationale else "Optional")
     progress_cols[2].metric(
         "Flags",
         int(bool(values.get("insufficient_context"))) + int(bool(values.get("needs_follow_up"))),
     )
     st.progress(scored_count / float(len(CRITERION_FIELDS)))
-    if scored_count < len(CRITERION_FIELDS) or not has_rationale:
-        st.caption("Submission becomes available once all six criteria are scored and the overall rationale is written.")
+    if scored_count < len(CRITERION_FIELDS):
+        st.caption("Submission becomes available once all six criteria are scored. The overall rationale is optional.")
     else:
-        st.caption("Submission requirements are satisfied.")
+        st.caption("Submission requirements are satisfied. The overall rationale is optional.")
 
 
 def _render_idea_context(idea: Dict[str, Any]) -> None:
@@ -770,10 +770,10 @@ def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | N
                 )
 
     st.text_area(
-        "Overall rationale",
+        "Overall rationale (optional)",
         key="form_overall_rationale",
         height=140,
-        help="Required before submission.",
+        help="Optional summary of your overall judgment.",
     )
     flags_col_1, flags_col_2, flags_col_3 = st.columns(3)
     flags_col_1.selectbox("Confidence", options=["", "low", "medium", "high"], key="form_confidence")

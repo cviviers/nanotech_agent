@@ -149,8 +149,6 @@ def validate_submission(record: Dict[str, Any]) -> List[str]:
     errors: List[str] = []
     if missing_scores:
         errors.append("All six judge criteria must be scored before submission.")
-    if not normalized.get("overall_rationale"):
-        errors.append("Overall rationale is required before submission.")
     return errors
 
 

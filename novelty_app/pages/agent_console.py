@@ -6,13 +6,23 @@ import calendar
 import hashlib
 import json
 import os
+import sys
 import traceback
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
+
+# Keep both the repo root and `novelty_app/` importable when Streamlit loads
+# this page from different working directories.
+_APP_DIR = Path(__file__).resolve().parents[1]
+_PROJECT_ROOT = _APP_DIR.parent
+for _path in (str(_PROJECT_ROOT), str(_APP_DIR)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 try:
     from agents.backend_client import BackendClient

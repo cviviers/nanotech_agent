@@ -1,0 +1,1 @@
+"""Novelty analysis application package."""

@@ -4,10 +4,21 @@ Main entry point for the refactored Novelty Analysis App
 Usage:
     streamlit run novelty_app/app.py
 """
+import sys
 import warnings
+from pathlib import Path
+
 warnings.filterwarnings("ignore", message=".*narwhals.*", category=UserWarning)
 
 import streamlit as st
+
+# Support both `streamlit run novelty_app/app.py` and package-style imports used
+# deeper in the evaluation stack.
+_APP_DIR = Path(__file__).resolve().parent
+_PROJECT_ROOT = _APP_DIR.parent
+for _path in (str(_PROJECT_ROOT), str(_APP_DIR)):
+    if _path not in sys.path:
+        sys.path.insert(0, _path)
 
 # Import core utilities
 from core.state_management import init_session_state, save_state_for_undo, undo_last_action

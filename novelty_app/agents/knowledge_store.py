@@ -1168,11 +1168,34 @@ class KnowledgeStore:
                 ),
                 reverse=True,
             )
+            cue_query_records: List[Dict[str, Any]] = []
+            for rec in selected:
+                sources = rec.get("selection_sources") or []
+                if not isinstance(sources, list):
+                    sources = [str(sources)]
+                if "discovery_cue_query" in sources:
+                    cue_query_records.append(rec)
+            reserved_slots_applied = 0
+            reserved_slots_requested = 0
+            if cue_query_records:
+                requested_total = max(1, exemplars + boundary + diverse)
+                reserved_slots_requested = max(2, min(6, (requested_total + 3) // 4))
+                reserved_slots_applied = min(len(cue_query_records), reserved_slots_requested)
+                reserved_ids = {
+                    str(rec.get("paper_id") or "") for rec in cue_query_records[:reserved_slots_applied] if rec.get("paper_id")
+                }
+                if reserved_ids:
+                    # Keep cue-query papers near the front so freeform cue hits are not washed out by structural papers.
+                    selected = [rec for rec in cue_query_records[:reserved_slots_applied]] + [
+                        rec for rec in selected if str(rec.get("paper_id") or "") not in reserved_ids
+                    ]
             meta["cue_stats"] = {
                 "n_scored_papers": len(cue_scores),
                 "n_positive_cue_matches": cue_positive,
                 "max_cue_score": max(cue_scores) if cue_scores else 0.0,
                 "avg_cue_score": (sum(cue_scores) / len(cue_scores)) if cue_scores else 0.0,
+                "reserved_slots_requested": reserved_slots_requested,
+                "reserved_slots_applied": reserved_slots_applied,
             }
 
         return {

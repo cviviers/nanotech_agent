@@ -88,6 +88,8 @@ class OrchestratorAuditTests(unittest.TestCase):
                 {
                     "supported_claim_fraction": 1.0,
                     "needs_patch": False,
+                    "cue_usage_summary": "The explanation focuses on the requested biofilm surface problem.",
+                    "cue_terms_addressed": ["biofilm", "coating"],
                     "claims": [{"claim": "indirectly supported", "support_status": "partial"}],
                 }
             )
@@ -106,7 +108,13 @@ class OrchestratorAuditTests(unittest.TestCase):
         self.assertEqual(llm.structured_method, "function_calling")
         self.assertEqual(out["audit"]["claims"][0]["support_status"], "partial")
         self.assertNotIn("supported", out["audit"]["claims"][0])
+        self.assertEqual(
+            out["audit"]["cue_usage_summary"],
+            "The explanation focuses on the requested biofilm surface problem.",
+        )
+        self.assertEqual(out["audit"]["cue_terms_addressed"], ["biofilm", "coating"])
         self.assertTrue(out["audit"]["needs_patch"])
+        self.assertIn("which cue terms or facets are addressed", llm.structured.calls[0]["messages"][1]["content"])
 
 
 if __name__ == "__main__":

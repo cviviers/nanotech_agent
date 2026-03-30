@@ -81,6 +81,69 @@ OUTCOME_HINTS = [
     "response",
 ]
 
+FREEFORM_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "have",
+    "how",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "of",
+    "on",
+    "or",
+    "should",
+    "that",
+    "the",
+    "their",
+    "these",
+    "this",
+    "to",
+    "what",
+    "which",
+    "with",
+}
+
+FREEFORM_GENERIC_TERMS = {
+    "approach",
+    "approaches",
+    "characteristic",
+    "characteristics",
+    "design",
+    "develop",
+    "development",
+    "feature",
+    "features",
+    "focus",
+    "focusing",
+    "improve",
+    "improved",
+    "improvement",
+    "optimize",
+    "optimization",
+    "overcome",
+    "problem",
+    "problems",
+    "property",
+    "properties",
+    "strategy",
+    "strategies",
+    "system",
+    "systems",
+    "use",
+    "using",
+}
+
 
 def _normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "").lower()).strip()
@@ -88,6 +151,57 @@ def _normalize_text(text: str) -> str:
 
 def _tokens(text: str) -> List[str]:
     return re.findall(r"[a-z0-9][a-z0-9\-']+", _normalize_text(text))
+
+
+def _simple_stem(token: str) -> str:
+    normalized = _normalize_text(token)
+    if normalized.endswith("s") and len(normalized) > 3 and not normalized.endswith(("ss", "us", "is", "ous")):
+        return normalized[:-1]
+    return normalized
+
+
+def _is_informative_token(token: str) -> bool:
+    normalized = _normalize_text(token)
+    stemmed = _simple_stem(normalized)
+    return (
+        len(stemmed) >= 3
+        and normalized not in FREEFORM_STOPWORDS
+        and stemmed not in FREEFORM_STOPWORDS
+        and normalized not in FREEFORM_GENERIC_TERMS
+        and stemmed not in FREEFORM_GENERIC_TERMS
+    )
+
+
+def _stemmed_token_set(values: Iterable[str]) -> set[str]:
+    return {_simple_stem(value) for value in values if _normalize_text(value)}
+
+
+def _extract_freeform_terms(text: str, *, max_terms: int = 8) -> List[str]:
+    terms = [_simple_stem(token) for token in _tokens(text) if _is_informative_token(token)]
+    return _dedupe_texts(terms)[:max_terms]
+
+
+def _extract_freeform_phrases(text: str, *, max_phrases: int = 6) -> List[str]:
+    tokens = _tokens(text)
+    candidates: List[tuple[int, str]] = []
+    seen: set[str] = set()
+    for span_size in (3, 2):
+        for start in range(max(0, len(tokens) - span_size + 1)):
+            informative = [_simple_stem(token) for token in tokens[start : start + span_size] if _is_informative_token(token)]
+            if len(informative) < 2:
+                continue
+            phrase = " ".join(informative)
+            if phrase in seen:
+                continue
+            seen.add(phrase)
+            candidates.append((len(informative) * 10 + span_size, phrase))
+    candidates.sort(key=lambda item: (item[0], len(item[1])), reverse=True)
+    return [phrase for _, phrase in candidates[:max_phrases]]
+
+
+def _format_field_mapping(mapping: Dict[str, List[str]]) -> str:
+    parts = [f"{field}: {', '.join(values[:3])}" for field, values in mapping.items() if values]
+    return "; ".join(parts)
 
 
 def _find_terms(text: str, terms: Iterable[str]) -> List[str]:
@@ -216,9 +330,18 @@ def normalize_discovery_cue(value: Any) -> Optional[DiscoveryCue]:
         parts.append(cue.text)
     parts.extend(cue.include_terms)
     fp = fingerprint_text(" ".join(parts))
+    for field in FIELD_NAMES:
+        values = list(fp.get(field) or [])
+        if values and field not in cue.soft_constraints and field not in cue.hard_constraints:
+            cue.soft_constraints[field] = values[:3]
     for mapping in (cue.preferred_fields, cue.hard_constraints, cue.soft_constraints):
         for field, values in mapping.items():
             fp[field] = sorted(set(fp.get(field, []) + list(values)))
+    freeform_source = " ".join(part for part in parts if part).strip()
+    fp["freeform_terms"] = _extract_freeform_terms(freeform_source)
+    fp["freeform_phrases"] = _extract_freeform_phrases(freeform_source)
+    if fp["freeform_terms"]:
+        fp["lexical_query"] = " ".join(fp["freeform_terms"][:6])
     cue.fingerprint = fp
     return cue
 
@@ -244,6 +367,11 @@ def discovery_cue_query_terms(value: Any, *, max_queries: int = 8) -> List[str]:
             if values:
                 queries.append(" ".join(values[:3]))
     fp = cue.fingerprint or {}
+    queries.extend(list(fp.get("freeform_terms") or [])[:6])
+    queries.extend(list(fp.get("freeform_phrases") or [])[:4])
+    lexical_query = str(fp.get("lexical_query") or "").strip()
+    if lexical_query:
+        queries.append(lexical_query)
     merged_terms: List[str] = []
     for field in FIELD_NAMES:
         merged_terms.extend(list(fp.get(field) or [])[:2])
@@ -260,6 +388,28 @@ def _field_overlap(query_terms: Sequence[str], candidate_terms: Sequence[str]) -
     return len(q & c) / float(max(1, len(q)))
 
 
+def _token_overlap(query_terms: Sequence[str], candidate_terms: Sequence[str]) -> float:
+    if not query_terms:
+        return 0.0
+    q = _stemmed_token_set(query_terms)
+    c = _stemmed_token_set(candidate_terms)
+    if not q:
+        return 0.0
+    return len(q & c) / float(len(q))
+
+
+def _phrase_matches(phrases: Sequence[str], candidate_terms: Sequence[str]) -> List[str]:
+    if not phrases:
+        return []
+    candidate = _stemmed_token_set(candidate_terms)
+    matches: List[str] = []
+    for phrase in phrases:
+        phrase_terms = _stemmed_token_set(_tokens(phrase))
+        if phrase_terms and phrase_terms.issubset(candidate):
+            matches.append(phrase)
+    return matches
+
+
 def score_fingerprint_against_cue(candidate_fingerprint: Dict[str, Any], value: Any) -> Dict[str, Any]:
     cue = normalize_discovery_cue(value)
     if cue is None:
@@ -273,6 +423,9 @@ def score_fingerprint_against_cue(candidate_fingerprint: Dict[str, Any], value: 
             "hard_constraint_misses": [],
             "soft_constraint_matches": {},
             "preferred_field_matches": {},
+            "lexical_term_overlap": 0.0,
+            "lexical_phrase_overlap": 0.0,
+            "lexical_phrase_matches": [],
         }
 
     cue_fp = cue.fingerprint or {}
@@ -284,8 +437,16 @@ def score_fingerprint_against_cue(candidate_fingerprint: Dict[str, Any], value: 
         field_overlap += weight * score
 
     normalized_text = str(candidate_fingerprint.get("normalized_text") or "")
+    candidate_tokens = list(candidate_fingerprint.get("tokens") or _tokens(normalized_text))
     include_matches = [term for term in cue.include_terms if term in normalized_text]
     avoid_matches = [term for term in cue.avoid_terms if term in normalized_text]
+    lexical_term_overlap = _token_overlap(cue_fp.get("freeform_terms", []), candidate_tokens)
+    lexical_phrase_matches = _phrase_matches(cue_fp.get("freeform_phrases", []), candidate_tokens)
+    lexical_phrase_overlap = (
+        len(lexical_phrase_matches) / float(max(1, len(cue_fp.get("freeform_phrases", []) or [])))
+        if cue_fp.get("freeform_phrases")
+        else 0.0
+    )
 
     hard_matches: Dict[str, List[str]] = {}
     hard_misses: List[str] = []
@@ -314,7 +475,8 @@ def score_fingerprint_against_cue(candidate_fingerprint: Dict[str, Any], value: 
     hard_penalty = 0.30 * (len(hard_misses) / max(1, len(cue.hard_constraints))) if cue.hard_constraints else 0.0
     soft_bonus = 0.10 * (len(soft_matches) / max(1, len(cue.soft_constraints))) if cue.soft_constraints else 0.0
     preferred_bonus = 0.07 * (len(preferred_matches) / max(1, len(cue.preferred_fields))) if cue.preferred_fields else 0.0
-    score = field_overlap + include_bonus + hard_bonus + soft_bonus + preferred_bonus - hard_penalty - avoid_penalty
+    lexical_bonus = 0.18 * lexical_term_overlap + 0.12 * lexical_phrase_overlap
+    score = field_overlap + include_bonus + hard_bonus + soft_bonus + preferred_bonus + lexical_bonus - hard_penalty - avoid_penalty
     score = max(-1.0, min(1.5, float(score)))
 
     return {
@@ -327,6 +489,9 @@ def score_fingerprint_against_cue(candidate_fingerprint: Dict[str, Any], value: 
         "hard_constraint_misses": hard_misses,
         "soft_constraint_matches": soft_matches,
         "preferred_field_matches": preferred_matches,
+        "lexical_term_overlap": lexical_term_overlap,
+        "lexical_phrase_overlap": lexical_phrase_overlap,
+        "lexical_phrase_matches": lexical_phrase_matches,
         "candidate_fingerprint": candidate_fingerprint,
         "cue_fingerprint": cue_fp,
     }
@@ -345,12 +510,28 @@ def cue_prompt_block(value: Any) -> str:
     cue = normalize_discovery_cue(value)
     if cue is None:
         return ""
-    return (
-        "RESEARCH DIRECTION CUE (STEERING ONLY, NOT EVIDENCE):\n"
-        f"{cue.model_dump_json(indent=2)}\n"
-        "Follow hard_constraints where feasible, treat soft_constraints and preferred_fields as preferences, "
-        "and do not cite the cue as evidence.\n"
-    )
+    cue_fp = cue.fingerprint or {}
+    key_terms = _dedupe_texts([*(cue.include_terms or []), *(cue_fp.get("freeform_terms") or [])])[:8]
+    lines = ["RESEARCH DIRECTION CUE (STEERING ONLY, NOT EVIDENCE):"]
+    if cue.goal:
+        lines.append(f"Primary goal: {cue.goal}")
+    if cue.text:
+        lines.append(f"User cue: {cue.text}")
+    if key_terms:
+        lines.append(f"Actively address these cue terms when supported: {', '.join(key_terms)}.")
+    hard_constraints = _format_field_mapping(cue.hard_constraints)
+    if hard_constraints:
+        lines.append(f"Hard constraints: {hard_constraints}.")
+    soft_constraints = _format_field_mapping(cue.soft_constraints)
+    if soft_constraints:
+        lines.append(f"Preferred cue facets: {soft_constraints}.")
+    preferred_fields = _format_field_mapping(cue.preferred_fields)
+    if preferred_fields:
+        lines.append(f"Additional preferences: {preferred_fields}.")
+    if cue.avoid_terms:
+        lines.append(f"Avoid drifting toward: {', '.join(cue.avoid_terms[:6])}.")
+    lines.append("Use the cue to steer retrieval and framing, but do not cite it as evidence. If a cue facet is unsupported, say 'unknown'.")
+    return "\n".join(lines) + "\n"
 
 
 __all__ = [
