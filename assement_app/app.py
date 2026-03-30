@@ -45,6 +45,7 @@ from assement_app.workbook_store import get_assessment, load_or_create_workbook,
 DEFAULT_REVIEWS_DIR = APP_DIR / "reviews"
 DISCOVERED_BUNDLE_LIMIT = 50
 WORKBOOK_DOWNLOAD_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+MAIN_VIEWS = ("Load", "Review", "Progress")
 
 
 def _set_flash(level: str, message: str) -> None:
@@ -254,6 +255,10 @@ def _workbook():
 
 
 def _reviewer_id() -> str:
+    return str(st.session_state.get("active_reviewer_id") or st.session_state.get("reviewer_id") or "").strip()
+
+
+def _entered_reviewer_id() -> str:
     return str(st.session_state.get("reviewer_id") or "").strip()
 
 
@@ -386,6 +391,35 @@ def _current_assessment() -> Dict[str, Any] | None:
         reviewer_id=reviewer_id,
         idea_id=idea_id,
     )
+
+
+def _normalize_main_view(value: Any) -> str:
+    candidate = str(value or "").strip()
+    return candidate if candidate in MAIN_VIEWS else MAIN_VIEWS[0]
+
+
+def _active_main_view() -> str:
+    return _normalize_main_view(st.session_state.get("active_main_view"))
+
+
+def _set_main_view(view: str) -> None:
+    st.session_state["active_main_view"] = _normalize_main_view(view)
+
+
+def _render_main_view_nav() -> str:
+    active_view = _active_main_view()
+    nav_cols = st.columns(len(MAIN_VIEWS))
+    for idx, view in enumerate(MAIN_VIEWS):
+        if nav_cols[idx].button(
+            view,
+            key=f"main_view_{view.lower()}",
+            use_container_width=True,
+            type="primary" if active_view == view else "secondary",
+        ):
+            if view != active_view:
+                _set_main_view(view)
+                st.rerun()
+    return _active_main_view()
 
 
 def _current_form_values() -> Dict[str, Any]:
@@ -550,6 +584,7 @@ def _navigate_to(idea_id: str, *, reason: str) -> None:
     if _is_form_dirty(existing):
         _persist_current_form(reason=reason)
     _schedule_current_idea(idea_id)
+    _set_main_view("Review")
     st.rerun()
 
 
@@ -898,7 +933,7 @@ def _render_progress_tab() -> None:
 
 
 def _load_bundle_and_workbook() -> None:
-    reviewer_id = _reviewer_id()
+    reviewer_id = _entered_reviewer_id()
     if not _bundle_path() and _uploaded_bundle_file() is None:
         st.error("Provide an assessment bundle JSON path or upload a local bundle file.")
         return
@@ -918,6 +953,7 @@ def _load_bundle_and_workbook() -> None:
     st.session_state["bundle_source"] = bundle_source
     st.session_state["workbook_source"] = workbook_source
     st.session_state["workbook_download_name"] = workbook_download_name
+    st.session_state["active_reviewer_id"] = reviewer_id
     queue = filter_ideas(bundle.get("ideas") or [], workbook.assessments, reviewer_id, status_filter="all")
     current_idea_id = next_incomplete_idea_id(queue, workbook.assessments, reviewer_id) or (
         str(queue[0].get("idea_id") or "") if queue else ""
@@ -925,7 +961,9 @@ def _load_bundle_and_workbook() -> None:
     st.session_state["current_idea_id"] = current_idea_id
     st.session_state["jump_idea_id"] = current_idea_id
     _load_form_state(current_idea_id)
-    st.success("Assessment bundle loaded.")
+    _set_flash("success", "Assessment bundle loaded.")
+    _set_main_view("Review")
+    st.rerun()
 
 
 def _render_load_tab() -> None:
@@ -933,6 +971,8 @@ def _render_load_tab() -> None:
     st.caption("Workbook upload is optional. If you do not upload or select one, the app creates a session workbook automatically and you can download it later.")
     discovered_bundles = _discover_bundle_files()
     discovered_workbooks = _discover_workbooks()
+    if "reviewer_id" not in st.session_state and st.session_state.get("active_reviewer_id"):
+        st.session_state["reviewer_id"] = str(st.session_state.get("active_reviewer_id") or "")
 
     if discovered_bundles:
         selected_bundle = st.selectbox(
@@ -1079,12 +1119,13 @@ def main() -> None:
     _render_header()
     _render_flash()
 
-    tabs = st.tabs(["Load", "Review", "Progress"])
-    with tabs[0]:
+    active_view = _render_main_view_nav()
+
+    if active_view == "Load":
         _render_load_tab()
-    with tabs[1]:
+    elif active_view == "Review":
         _render_review_tab()
-    with tabs[2]:
+    else:
         _render_progress_tab()
 
 
