@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from assement_app.overlap_analysis import analyze_winner_overlap
 from assement_app.review_logic import (
     build_assessment_record,
     filter_ideas,
@@ -112,6 +113,171 @@ def _sample_bundle() -> dict:
     }
     bundle["bundle_sha256"] = bundle_hash(bundle)
     return bundle
+
+
+def _criterion_score_card(
+    *,
+    importance: int = 0,
+    novelty: int = 0,
+    plausibility: int = 0,
+    feasibility: int = 0,
+    evaluability: int = 0,
+    likely_impact: int = 0,
+    average_score: float | None = None,
+) -> dict:
+    fields = {
+        "importance": importance,
+        "novelty": novelty,
+        "plausibility": plausibility,
+        "feasibility": feasibility,
+        "evaluability": evaluability,
+        "likely_impact": likely_impact,
+    }
+    payload = {field: {"score": score} for field, score in fields.items() if score}
+    if average_score is not None:
+        payload["average_score"] = average_score
+    return payload
+
+
+def _make_overlap_idea(
+    idea_id: str,
+    *,
+    winner: bool,
+    target_id: str,
+    effective_target: dict,
+    title: str,
+    text: str,
+    queue_position: int,
+    support_citations: list[str] | None = None,
+    evidence_paper_ids: list[str] | None = None,
+    idea_fingerprint: dict | None = None,
+    average_score: float | None = None,
+    criterion_scores: dict | None = None,
+    winner_task_count: int = 1,
+) -> dict:
+    evidence_paper_ids = evidence_paper_ids or []
+    judge_scores = dict(criterion_scores or {})
+    if average_score is not None:
+        judge_scores["average_score"] = average_score
+    return {
+        "idea_id": idea_id,
+        "is_review_packet_winner": winner,
+        "winner_task_count": winner_task_count,
+        "run_context": {
+            "run_id": "run_overlap",
+            "snapshot_id": "snap_overlap",
+            "method_name": "orchestrator",
+            "seed": 0,
+            "target_id": target_id,
+            "hypothesis_id": idea_id.upper(),
+            "queue_sort_key": ["run_overlap", "orchestrator", 0, target_id, queue_position],
+        },
+        "target": {
+            "target_id": target_id,
+            "target_type": effective_target.get("target_type"),
+            "effective_target": effective_target,
+        },
+        "discovery_cue": {},
+        "ideation_context": {
+            "effective_target": effective_target,
+            "evidence_papers": [
+                {"paper_id": paper_id, "title": f"Paper {paper_id}", "abstract": f"Evidence for {paper_id}"}
+                for paper_id in evidence_paper_ids
+            ],
+            "explanation": {},
+            "audit": {},
+        },
+        "hypothesis": {
+            "hypothesis_id": idea_id.upper(),
+            "title": title,
+            "text": text,
+            "support_citations": list(support_citations or []),
+            "idea_fingerprint": dict(idea_fingerprint or {}),
+        },
+        "judge_context": {"idea_scores": judge_scores},
+        "benchmark_context": {"evaluations": []},
+    }
+
+
+def _overlap_test_ideas() -> list[dict]:
+    shared_target = {"target_type": "cluster_pair", "cluster_a": 0, "cluster_b": 1}
+    return [
+        _make_overlap_idea(
+            "idea_1",
+            winner=True,
+            target_id="cluster_pair_0_1",
+            effective_target=shared_target,
+            title="Folate Liposome siRNA",
+            text="Liposome folate siRNA delivery for cancer cells",
+            queue_position=1,
+            support_citations=["p1", "p2"],
+            evidence_paper_ids=["p1", "p2", "p3"],
+            idea_fingerprint={
+                "disease": ["cancer"],
+                "material": ["liposome"],
+                "payload": ["sirna"],
+                "targeting": ["folate"],
+                "mechanism": ["delivery"],
+                "tokens": ["liposome", "folate", "sirna", "delivery", "cancer"],
+            },
+            average_score=4.7,
+            criterion_scores=_criterion_score_card(importance=5, novelty=4, plausibility=4, feasibility=4, evaluability=5, likely_impact=4),
+            winner_task_count=2,
+        ),
+        _make_overlap_idea(
+            "idea_2",
+            winner=True,
+            target_id="cluster_pair_0_1",
+            effective_target=shared_target,
+            title="Tumor Folate Liposome",
+            text="Folate-targeted liposome siRNA delivery for tumors",
+            queue_position=2,
+            support_citations=["p1", "p2"],
+            evidence_paper_ids=["p1", "p2", "p4"],
+            idea_fingerprint={
+                "disease": ["cancer"],
+                "material": ["liposome"],
+                "payload": ["sirna"],
+                "targeting": ["folate"],
+                "mechanism": ["delivery"],
+                "tokens": ["folate", "liposome", "sirna", "delivery", "tumor"],
+            },
+            average_score=4.1,
+            criterion_scores=_criterion_score_card(importance=4, novelty=4, plausibility=4, feasibility=4, evaluability=4, likely_impact=4),
+        ),
+        _make_overlap_idea(
+            "idea_3",
+            winner=True,
+            target_id="cluster_pair_0_1",
+            effective_target=shared_target,
+            title="Polymer Fibrosis Therapy",
+            text="Polymer nanoparticle payload for fibrosis modulation",
+            queue_position=3,
+            support_citations=["p9"],
+            evidence_paper_ids=["p9", "p10"],
+            idea_fingerprint={
+                "disease": ["fibrosis"],
+                "material": ["polymer"],
+                "payload": ["drug"],
+                "mechanism": ["modulation"],
+                "tokens": ["polymer", "payload", "fibrosis", "modulation"],
+            },
+            average_score=4.3,
+            criterion_scores=_criterion_score_card(importance=4, novelty=4, plausibility=4, feasibility=4, evaluability=5, likely_impact=5),
+        ),
+        _make_overlap_idea(
+            "idea_4",
+            winner=False,
+            target_id="cluster_pair_0_1",
+            effective_target=shared_target,
+            title="Background Variant",
+            text="Supporting variant that should stay visible when winner overlap filtering is enabled",
+            queue_position=4,
+            support_citations=["p1"],
+            evidence_paper_ids=["p1", "p6"],
+            average_score=2.8,
+        ),
+    ]
 
 
 class AssessmentAppTests(unittest.TestCase):
@@ -249,6 +415,88 @@ class AssessmentAppTests(unittest.TestCase):
 
         bob_flagged = filter_ideas(bundle["ideas"], assessments, "bob", status_filter="flagged")
         self.assertEqual([idea["idea_id"] for idea in bob_flagged], ["idea_2"])
+
+    def test_overlap_analysis_groups_same_target_winners_and_keeps_top_score(self) -> None:
+        analysis = analyze_winner_overlap(_overlap_test_ideas(), threshold=0.68)
+
+        self.assertEqual(analysis["winner_count"], 3)
+        self.assertEqual(analysis["overlap_group_count"], 1)
+        self.assertEqual(analysis["hidden_winner_ids"], ["idea_2"])
+        self.assertEqual(analysis["visible_winner_ids"], ["idea_1", "idea_3"])
+
+        overlap_group = next(group for group in analysis["groups"] if group["group_size"] > 1)
+        self.assertEqual(overlap_group["representative_id"], "idea_1")
+        self.assertIn("p1", overlap_group["shared_evidence_ids"])
+
+        distant_pair = next(
+            pair
+            for pair in analysis["pair_scores"]
+            if {pair["idea_id_a"], pair["idea_id_b"]} == {"idea_1", "idea_3"}
+        )
+        self.assertFalse(distant_pair["is_overlap_edge"])
+
+    def test_overlap_filter_only_hides_redundant_winners(self) -> None:
+        ideas = _overlap_test_ideas()
+        analysis = analyze_winner_overlap(ideas, threshold=0.68)
+
+        queue = filter_ideas(
+            ideas,
+            pd.DataFrame(),
+            "alice",
+            status_filter="all",
+            keep_idea_ids=analysis["visible_idea_ids"],
+        )
+        self.assertEqual([idea["idea_id"] for idea in queue], ["idea_1", "idea_3", "idea_4"])
+
+        winner_queue = filter_ideas(
+            ideas,
+            pd.DataFrame(),
+            "alice",
+            status_filter="all",
+            winner_only=True,
+            keep_idea_ids=analysis["visible_idea_ids"],
+        )
+        self.assertEqual([idea["idea_id"] for idea in winner_queue], ["idea_1", "idea_3"])
+
+    def test_overlap_analysis_falls_back_when_scores_citations_or_fingerprints_are_missing(self) -> None:
+        target = {"target_type": "gap", "gap_id": "gap_1"}
+        ideas = [
+            _make_overlap_idea(
+                "idea_a",
+                winner=True,
+                target_id="gap_1",
+                effective_target=target,
+                title="Polymer vaccine delivery",
+                text="Polymer vaccine delivery for tumor control",
+                queue_position=1,
+                support_citations=[],
+                evidence_paper_ids=["p20", "p21"],
+                idea_fingerprint=None,
+                average_score=None,
+                criterion_scores=_criterion_score_card(importance=5, novelty=4, plausibility=5, feasibility=4, evaluability=4, likely_impact=4),
+            ),
+            _make_overlap_idea(
+                "idea_b",
+                winner=True,
+                target_id="gap_1",
+                effective_target=target,
+                title="Polymer vaccine delivery",
+                text="Polymer vaccine delivery for tumor control",
+                queue_position=2,
+                support_citations=[],
+                evidence_paper_ids=["p20", "p21"],
+                idea_fingerprint=None,
+                average_score=3.0,
+                criterion_scores=_criterion_score_card(importance=3, novelty=3, plausibility=3, feasibility=3, evaluability=3, likely_impact=3),
+            ),
+        ]
+
+        analysis = analyze_winner_overlap(ideas, threshold=0.68)
+        overlap_group = next(group for group in analysis["groups"] if group["group_size"] > 1)
+
+        self.assertEqual(analysis["hidden_winner_ids"], ["idea_b"])
+        self.assertEqual(overlap_group["representative_id"], "idea_a")
+        self.assertGreaterEqual(float(overlap_group["mean_overlap"]), 0.68)
 
 
 if __name__ == "__main__":

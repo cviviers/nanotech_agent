@@ -220,21 +220,26 @@ def filter_ideas(
     status_filter: str = "all",
     flagged_only: bool = False,
     search_text: str = "",
+    keep_idea_ids: Sequence[str] | None = None,
 ) -> List[Dict[str, Any]]:
     method_allow = {str(item) for item in (method_names or [])}
     target_allow = {str(item) for item in (target_types or [])}
+    keep_allow = {str(item) for item in (keep_idea_ids or []) if str(item)}
     query = _clean_text(search_text).lower()
     reviewer_lookup = reviewer_assessment_lookup(assessments_df, reviewer_id)
     out: List[Dict[str, Any]] = []
 
     for idea in ideas:
+        idea_id = str(idea.get("idea_id") or "")
         run_context = dict(idea.get("run_context") or {})
         target = dict(idea.get("target") or {})
         hypothesis = dict(idea.get("hypothesis") or {})
-        assessment = reviewer_lookup.get(str(idea.get("idea_id") or ""))
+        assessment = reviewer_lookup.get(idea_id)
         status = idea_review_status(assessment)
         flagged = bool((assessment or {}).get("insufficient_context")) or bool((assessment or {}).get("needs_follow_up"))
 
+        if keep_allow and idea_id not in keep_allow:
+            continue
         if method_allow and str(run_context.get("method_name") or "") not in method_allow:
             continue
         if target_allow and str(target.get("effective_target", {}).get("target_type") or target.get("target_type") or "") not in target_allow:

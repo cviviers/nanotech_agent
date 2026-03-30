@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import tempfile
 import uuid
@@ -24,6 +25,7 @@ from novelty_app.evaluation.assessment_bundle import (
     load_assessment_bundle_bytes,
 )
 
+from assement_app.overlap_analysis import analyze_winner_overlap
 from assement_app.review_logic import (
     CRITERION_FIELDS,
     CRITERION_NOTE_FIELDS,
@@ -46,6 +48,9 @@ DEFAULT_REVIEWS_DIR = APP_DIR / "reviews"
 DISCOVERED_BUNDLE_LIMIT = 50
 WORKBOOK_DOWNLOAD_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 MAIN_VIEWS = ("Load", "Review", "Progress")
+OVERLAP_HANDLING_SHOW_ALL = "Show all ideas"
+OVERLAP_HANDLING_HIDE = "Hide overlapping winners, keep top LLM-scored representative"
+DEFAULT_OVERLAP_THRESHOLD = 0.4
 
 
 def _set_flash(level: str, message: str) -> None:
@@ -422,6 +427,97 @@ def _render_main_view_nav() -> str:
     return _active_main_view()
 
 
+@st.cache_data(show_spinner=False)
+def _cached_overlap_analysis(bundle_sha: str, threshold: float, ideas_json: str) -> Dict[str, Any]:
+    return analyze_winner_overlap(json.loads(ideas_json), threshold=threshold)
+
+
+def _overlap_handling() -> str:
+    value = str(st.session_state.get("filter_overlap_handling") or OVERLAP_HANDLING_HIDE)
+    if value in {OVERLAP_HANDLING_SHOW_ALL, OVERLAP_HANDLING_HIDE}:
+        return value
+    return OVERLAP_HANDLING_HIDE
+
+
+def _overlap_threshold() -> float:
+    raw_value = st.session_state.get("filter_overlap_threshold", DEFAULT_OVERLAP_THRESHOLD)
+    try:
+        threshold = float(raw_value)
+    except (TypeError, ValueError):
+        threshold = DEFAULT_OVERLAP_THRESHOLD
+    return max(0.30, min(0.90, threshold))
+
+
+def _overlap_analysis() -> Dict[str, Any]:
+    bundle = _bundle() or {}
+    threshold = round(_overlap_threshold(), 2)
+    ideas_json = json.dumps(bundle.get("ideas") or [], ensure_ascii=False, sort_keys=True)
+    bundle_sha = str(bundle.get("bundle_sha256") or "")
+    return _cached_overlap_analysis(bundle_sha, threshold, ideas_json)
+
+
+def _overlap_keep_idea_ids(overlap_analysis: Dict[str, Any] | None = None) -> set[str] | None:
+    if _overlap_handling() != OVERLAP_HANDLING_HIDE:
+        return None
+    analysis = overlap_analysis or _overlap_analysis()
+    keep_ids = {str(idea_id) for idea_id in (analysis.get("visible_idea_ids") or []) if str(idea_id)}
+    return keep_ids or None
+
+
+def _idea_label(idea: Dict[str, Any] | None, *, fallback_id: str = "") -> str:
+    payload = dict(idea or {})
+    idea_id = str(payload.get("idea_id") or fallback_id or "").strip()
+    title = str((payload.get("hypothesis") or {}).get("title") or "").strip()
+    if title and idea_id:
+        return f"{title} [{idea_id}]"
+    return title or idea_id or "Untitled idea"
+
+
+def _render_overlap_diagnostics(overlap_analysis: Dict[str, Any]) -> None:
+    with st.expander("Winner Overlap Diagnostics", expanded=False):
+        metric_cols = st.columns(4)
+        metric_cols[0].metric("Winner ideas", int(overlap_analysis.get("winner_count") or 0))
+        metric_cols[1].metric("Overlap groups", int(overlap_analysis.get("overlap_group_count") or 0))
+        metric_cols[2].metric("Hidden winners", int(overlap_analysis.get("hidden_winner_count") or 0))
+        metric_cols[3].metric("Diversity score", f"{float(overlap_analysis.get('overall_diversity') or 0.0):.2f}")
+
+        if _overlap_handling() == OVERLAP_HANDLING_HIDE:
+            st.caption(
+                f"Overlap filtering is active at threshold {_overlap_threshold():.2f}. "
+                "One representative winner is kept per overlap group using the model's average idea score as an internal tie-breaker."
+            )
+        else:
+            st.caption(
+                "Overlap diagnostics still identify a representative winner internally using the model's average idea score, "
+                "but all ideas remain visible until you enable the overlap filter."
+            )
+
+        groups = [group for group in (overlap_analysis.get("groups") or []) if int(group.get("group_size") or 0) > 1]
+        if not groups:
+            st.caption("No overlapping winner groups were detected at the current threshold.")
+            return
+
+        idea_lookup = {str(idea.get("idea_id") or ""): idea for idea in _bundle_ideas() if str(idea.get("idea_id") or "")}
+        rows: List[Dict[str, Any]] = []
+        for group in groups:
+            representative_id = str(group.get("representative_id") or "")
+            hidden_ids = [str(idea_id) for idea_id in (group.get("hidden_ids") or []) if str(idea_id)]
+            representative_idea = idea_lookup.get(representative_id)
+            rows.append(
+                {
+                    "target_key": str(group.get("target_key") or ""),
+                    "representative_idea": _idea_label(representative_idea, fallback_id=representative_id),
+                    "group_size": int(group.get("group_size") or 0),
+                    "mean_overlap": float(group.get("mean_overlap") or 0.0),
+                    "hidden_ideas": ", ".join(
+                        _idea_label(idea_lookup.get(idea_id), fallback_id=idea_id) for idea_id in hidden_ids
+                    ),
+                    "shared_evidence_ids": ", ".join(str(value) for value in (group.get("shared_evidence_ids") or [])),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 def _current_form_values() -> Dict[str, Any]:
     values: Dict[str, Any] = {
         "overall_rationale": st.session_state.get("form_overall_rationale", ""),
@@ -538,21 +634,23 @@ def _persist_current_form(*, submit: bool = False, reason: str = "") -> bool:
     return True
 
 
-def _review_queue() -> List[Dict[str, Any]]:
+def _review_queue(*, overlap_analysis: Dict[str, Any] | None = None) -> List[Dict[str, Any]]:
     workbook = _workbook()
     reviewer_id = _reviewer_id()
     if not workbook or not reviewer_id:
         return []
+    keep_idea_ids = _overlap_keep_idea_ids(overlap_analysis)
     return filter_ideas(
         _bundle_ideas(),
         workbook.assessments,
         reviewer_id,
         method_names=st.session_state.get("filter_methods") or [],
         target_types=st.session_state.get("filter_target_types") or [],
-        winner_only=bool(st.session_state.get("filter_winner_only", False)),
+        winner_only=bool(st.session_state.get("filter_winner_only", True)),
         status_filter=str(st.session_state.get("filter_status", "all") or "all"),
         flagged_only=bool(st.session_state.get("filter_flagged_only", False)),
         search_text=str(st.session_state.get("filter_search_text", "") or ""),
+        keep_idea_ids=sorted(keep_idea_ids) if keep_idea_ids is not None else None,
     )
 
 
@@ -772,7 +870,7 @@ def _render_idea_context(idea: Dict[str, Any]) -> None:
                 st.json({key: value for key, value in selected_meta.items() if value not in (None, "", [])})
 
 
-def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | None) -> None:
+def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | None, *, queue: List[Dict[str, Any]]) -> None:
     st.markdown("### Human Assessment")
     _render_scoring_readiness()
 
@@ -824,7 +922,6 @@ def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | N
         if _persist_current_form(submit=True):
             st.rerun()
 
-    queue = _review_queue()
     current_id = str(st.session_state.get("current_idea_id") or "")
     current_index = next((idx for idx, item in enumerate(queue) if str(item.get("idea_id")) == current_id), 0)
     prev_id = str(queue[current_index - 1].get("idea_id") or "") if queue and current_index > 0 else ""
@@ -866,7 +963,10 @@ def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | N
         else:
             st.caption("No retrospective benchmark rows were stored.")
     else:
-        st.info(f"Blind mode is active. Model judge scores and retrieval outcomes stay hidden until you submit this review. Current status: {current_status}.")
+        st.info(
+            "Blind mode is active for per-criterion judge detail and retrieval outcomes until submission. "
+            f"Overlap diagnostics may still use the model's average idea score. Current status: {current_status}."
+        )
 
 
 def _render_progress_tab() -> None:
@@ -1041,7 +1141,7 @@ def _render_load_tab() -> None:
         st.write(f"Workbook source: `{_workbook_source()}`")
         st.write(f"Download name: `{_workbook_download_name() or _default_workbook_filename(bundle)}`")
         st.write(f"Reviewer: `{_reviewer_id()}`")
-        st.write("Blind mode: model scores and retrieval labels remain hidden until submission.")
+        st.write("Blind mode: per-criterion model scores and retrieval labels remain hidden until submission.")
         st.caption("Download the current workbook before closing the session if you want to keep your progress locally.")
         _render_workbook_download_button(key="download_load_tab")
 
@@ -1053,6 +1153,9 @@ def _render_review_tab() -> None:
     if not bundle or not workbook or not reviewer_id:
         st.info("Load an assessment bundle and workbook first.")
         return
+
+    st.session_state.setdefault("filter_winner_only", True)
+    st.session_state.setdefault("filter_overlap_handling", OVERLAP_HANDLING_HIDE)
 
     with st.expander("Filters", expanded=True):
         available_methods = sorted(
@@ -1077,8 +1180,26 @@ def _render_review_tab() -> None:
         filter_cols_2[0].checkbox("Winner ideas only", key="filter_winner_only")
         filter_cols_2[1].checkbox("Flagged only", key="filter_flagged_only")
         filter_cols_2[2].text_input("Search", key="filter_search_text")
+        overlap_cols = st.columns([1.7, 1.0])
+        overlap_cols[0].selectbox(
+            "Overlap handling",
+            options=[OVERLAP_HANDLING_SHOW_ALL, OVERLAP_HANDLING_HIDE],
+            key="filter_overlap_handling",
+        )
+        overlap_cols[1].slider(
+            "Overlap threshold",
+            min_value=0.30,
+            max_value=0.90,
+            value=DEFAULT_OVERLAP_THRESHOLD,
+            step=0.01,
+            format="%.2f",
+            key="filter_overlap_threshold",
+        )
 
-    queue = _review_queue()
+    overlap_analysis = _overlap_analysis()
+    _render_overlap_diagnostics(overlap_analysis)
+
+    queue = _review_queue(overlap_analysis=overlap_analysis)
     if not queue:
         st.warning("No ideas match the current filters.")
         return
@@ -1110,7 +1231,7 @@ def _render_review_tab() -> None:
     with context_col:
         _render_idea_context(current_idea)
     with scoring_col:
-        _render_assessment_form(current_idea, assessment)
+        _render_assessment_form(current_idea, assessment, queue=queue)
 
 
 def main() -> None:
