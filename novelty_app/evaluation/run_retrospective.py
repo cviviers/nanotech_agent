@@ -465,7 +465,16 @@ def _select_cluster_pair_targets(
     return pairs
 
 
-def _target_request(snapshot_id: str, target: Dict[str, Any], *, discovery_cue: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _target_request(
+    snapshot_id: str,
+    target: Dict[str, Any],
+    *,
+    discovery_cue: Optional[Dict[str, Any]],
+    cue_source_snapshot_id: Optional[str] = None,
+    cue_similarity_top_k: int = 50,
+    cue_similarity_sample_n: int = 6,
+    cue_similarity_seed: Optional[str | int] = None,
+) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "snapshot_id": snapshot_id,
         "target_type": str(target.get("target_type") or ""),
@@ -481,6 +490,12 @@ def _target_request(snapshot_id: str, target: Dict[str, Any], *, discovery_cue: 
         payload["cluster_b"] = target.get("cluster_b")
     if discovery_cue:
         payload["discovery_cue"] = discovery_cue
+        if cue_source_snapshot_id:
+            payload["cue_source_snapshot_id"] = cue_source_snapshot_id
+        payload["cue_similarity_top_k"] = int(cue_similarity_top_k)
+        payload["cue_similarity_sample_n"] = int(cue_similarity_sample_n)
+        if cue_similarity_seed is not None:
+            payload["cue_similarity_seed"] = cue_similarity_seed
     return payload
 
 
@@ -599,13 +614,28 @@ def _generation_task_tags(method_name: str, seed: int, gold: GoldFutureAssignmen
 
 def _prepare_target_pool(
     backend: BackendClient,
+    run_id: str,
     snapshot_id: str,
     targets: Sequence[Dict[str, Any]],
     discovery_cue: Optional[Dict[str, Any]],
+    cue_source_snapshot_id: Optional[str],
+    cue_similarity_top_k: int,
+    cue_similarity_sample_n: int,
 ) -> List[Dict[str, Any]]:
     target_pool: List[Dict[str, Any]] = []
     for target in targets:
-        pack = backend.evidence_pack(_target_request(snapshot_id, target, discovery_cue=discovery_cue))
+        cue_similarity_seed = f"{run_id}:target_pool:0:{target_id(target)}"
+        pack = backend.evidence_pack(
+            _target_request(
+                snapshot_id,
+                target,
+                discovery_cue=discovery_cue,
+                cue_source_snapshot_id=cue_source_snapshot_id,
+                cue_similarity_top_k=cue_similarity_top_k,
+                cue_similarity_sample_n=cue_similarity_sample_n,
+                cue_similarity_seed=cue_similarity_seed,
+            )
+        )
         target_pool.append(
             {
                 "target": dict(target),
@@ -891,8 +921,6 @@ def run_retrospective(
     cutoff_date: str = "2020-12-31",
     future_window_start: str = "2022-01-01",
     future_window_end: str = "2025-12-31",
-    sensitivity_window_start: Optional[str] = "2021-01-01",
-    sensitivity_window_end: Optional[str] = "2025-12-31",
     analysis_config: Optional[AnalysisConfig] = None,
     n_gap_targets: int = 20,
     n_cluster_pair_targets: int = 10,
@@ -905,6 +933,9 @@ def run_retrospective(
     model_name: Optional[str] = None,
     existing_snapshot_id: Optional[str] = None,
     discovery_cue: Optional[Dict[str, Any] | str] = None,
+    cue_source_snapshot_id: Optional[str] = None,
+    cue_similarity_top_k: int = 50,
+    cue_similarity_sample_n: int = 6,
     disable_leakage_check: bool = False,
     future_title_exclude: Optional[Sequence[str]] = None,
     future_abstract_exclude: Optional[Sequence[str]] = None,
@@ -920,8 +951,6 @@ def run_retrospective(
         cutoff_date=cutoff_date,
         future_window_start=future_window_start,
         future_window_end=future_window_end,
-        sensitivity_window_start=sensitivity_window_start,
-        sensitivity_window_end=sensitivity_window_end,
         analysis_config=analysis_config,
         n_gap_targets=n_gap_targets,
         n_cluster_pair_targets=n_cluster_pair_targets,
@@ -934,6 +963,9 @@ def run_retrospective(
         model_name=model_name,
         existing_snapshot_id=existing_snapshot_id,
         discovery_cue=discovery_cue,
+        cue_source_snapshot_id=cue_source_snapshot_id,
+        cue_similarity_top_k=cue_similarity_top_k,
+        cue_similarity_sample_n=cue_similarity_sample_n,
         disable_leakage_check=disable_leakage_check,
         future_title_exclude=future_title_exclude,
         future_abstract_exclude=future_abstract_exclude,
@@ -952,8 +984,6 @@ def _run_retrospective_progress_core_v2(
     cutoff_date: str = "2020-12-31",
     future_window_start: str = "2022-01-01",
     future_window_end: str = "2025-12-31",
-    sensitivity_window_start: Optional[str] = "2021-01-01",
-    sensitivity_window_end: Optional[str] = "2025-12-31",
     analysis_config: Optional[AnalysisConfig] = None,
     n_gap_targets: int = 20,
     n_cluster_pair_targets: int = 10,
@@ -966,6 +996,9 @@ def _run_retrospective_progress_core_v2(
     model_name: Optional[str] = None,
     existing_snapshot_id: Optional[str] = None,
     discovery_cue: Optional[Dict[str, Any] | str] = None,
+    cue_source_snapshot_id: Optional[str] = None,
+    cue_similarity_top_k: int = 50,
+    cue_similarity_sample_n: int = 6,
     disable_leakage_check: bool = False,
     future_title_exclude: Optional[Sequence[str]] = None,
     future_abstract_exclude: Optional[Sequence[str]] = None,
@@ -977,6 +1010,15 @@ def _run_retrospective_progress_core_v2(
     methods = list(methods or DEFAULT_METHODS)
     analysis_config = analysis_config or AnalysisConfig()
     normalized_cue = discovery_cue_to_dict(normalize_discovery_cue(discovery_cue))
+    cue_source_snapshot_id = str(cue_source_snapshot_id or "").strip() or None
+    if normalized_cue and not cue_source_snapshot_id:
+        raise ValueError("cue_source_snapshot_id is required when discovery_cue is active.")
+    cue_similarity_top_k = int(cue_similarity_top_k)
+    cue_similarity_sample_n = int(cue_similarity_sample_n)
+    if cue_similarity_top_k < 1:
+        raise ValueError("cue_similarity_top_k must be >= 1.")
+    if cue_similarity_sample_n < 0:
+        raise ValueError("cue_similarity_sample_n must be >= 0.")
     future_prefilter = _normalize_future_prefilter(
         future_title_exclude=future_title_exclude,
         future_abstract_exclude=future_abstract_exclude,
@@ -1113,8 +1155,6 @@ def _run_retrospective_progress_core_v2(
                         cutoff_date=cutoff_date,
                         future_window_start=future_window_start,
                         future_window_end=future_window_end,
-                        sensitivity_window_start=sensitivity_window_start,
-                        sensitivity_window_end=sensitivity_window_end,
                     )
                     _validate_reconstructed_historical_split(snapshot, manifest, split.historical.df)
 
@@ -1139,8 +1179,6 @@ def _run_retrospective_progress_core_v2(
                         cutoff_date=cutoff_date,
                         future_window_start=future_window_start,
                         future_window_end=future_window_end,
-                        sensitivity_window_start=sensitivity_window_start,
-                        sensitivity_window_end=sensitivity_window_end,
                     )
                     analysis_embedding = split.historical.embeddings[analysis_config.embedding_name]
                     analysis = run_analysis_v1(split.historical.df, analysis_embedding, config=analysis_config)
@@ -1189,7 +1227,16 @@ def _run_retrospective_progress_core_v2(
                 targets: List[Dict[str, Any]] = [*gap_target_rows, *cluster_targets]
 
                 _emit_progress("building_target_pool", message=f"Building focused evidence packs for {len(targets)} targets")
-                target_pool = _prepare_target_pool(backend, snapshot_id, targets, normalized_cue)
+                target_pool = _prepare_target_pool(
+                    backend,
+                    run_id,
+                    snapshot_id,
+                    targets,
+                    normalized_cue,
+                    cue_source_snapshot_id,
+                    cue_similarity_top_k,
+                    cue_similarity_sample_n,
+                )
                 cluster_ids = [
                     int(c["cluster_id"])
                     for c in backend.list_clusters(snapshot_id=snapshot_id, limit=200).get("clusters", [])
@@ -1264,6 +1311,9 @@ def _run_retrospective_progress_core_v2(
                 for method_name in methods:
                     for seed in range(seeds):
                         for gold in gold_assignments:
+                            cue_similarity_seed = (
+                                f"{run_id}:{method_name}:{seed}:{target_id(dict(gold.assigned_target))}"
+                            )
                             context = GenerationContext(
                                 backend=backend,
                                 snapshot_id=snapshot_id,
@@ -1272,6 +1322,10 @@ def _run_retrospective_progress_core_v2(
                                 openai_api_key=openai_api_key,
                                 model_name=model_name,
                                 discovery_cue=normalized_cue,
+                                cue_source_snapshot_id=cue_source_snapshot_id,
+                                cue_similarity_top_k=cue_similarity_top_k,
+                                cue_similarity_sample_n=cue_similarity_sample_n,
+                                cue_similarity_seed=cue_similarity_seed,
                                 hypotheses_per_target=hypotheses_per_target,
                                 all_clusters=cluster_ids,
                                 all_targets=all_targets,
@@ -1563,6 +1617,9 @@ def _run_retrospective_progress_core_v2(
                         "resumed_existing_snapshot": bool(existing_snapshot_id),
                         "disable_leakage_check": bool(disable_leakage_check),
                         "discovery_cue": normalized_cue or {},
+                        "cue_source_snapshot_id": cue_source_snapshot_id,
+                        "cue_similarity_top_k": cue_similarity_top_k,
+                        "cue_similarity_sample_n": cue_similarity_sample_n,
                         "future_prefilter": future_prefilter_stats,
                         "target_pool_profile": "focused_eval",
                     },
@@ -1605,8 +1662,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--cutoff-date", default="2020-12-31")
     parser.add_argument("--future-window-start", default="2022-01-01")
     parser.add_argument("--future-window-end", default="2025-12-31")
-    parser.add_argument("--sensitivity-window-start", default="2021-01-01")
-    parser.add_argument("--sensitivity-window-end", default="2025-12-31")
     parser.add_argument("--n-gap-targets", type=int, default=20)
     parser.add_argument("--n-cluster-pair-targets", type=int, default=10)
     parser.add_argument("--n-gold-future-papers", type=int, default=50)
@@ -1626,6 +1681,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--existing-snapshot-id", default=None)
     parser.add_argument("--discovery-cue-text", default=None)
     parser.add_argument("--discovery-cue-goal", default=None)
+    parser.add_argument(
+        "--cue-source-snapshot-id",
+        default=None,
+        help="Snapshot id used for cue-semantic retrieval. Required when discovery cue is active.",
+    )
+    parser.add_argument("--cue-similarity-top-k", type=int, default=50)
+    parser.add_argument("--cue-similarity-sample-n", type=int, default=6)
     parser.add_argument(
         "--disable-leakage-check",
         action="store_true",
@@ -1661,8 +1723,6 @@ def main() -> None:
             cutoff_date=args.cutoff_date,
             future_window_start=args.future_window_start,
             future_window_end=args.future_window_end,
-            sensitivity_window_start=args.sensitivity_window_start,
-            sensitivity_window_end=args.sensitivity_window_end,
             analysis_config=analysis_config,
             n_gap_targets=args.n_gap_targets,
             n_cluster_pair_targets=args.n_cluster_pair_targets,
@@ -1680,6 +1740,9 @@ def main() -> None:
             }
             if args.discovery_cue_text or args.discovery_cue_goal
             else None,
+            cue_source_snapshot_id=args.cue_source_snapshot_id,
+            cue_similarity_top_k=args.cue_similarity_top_k,
+            cue_similarity_sample_n=args.cue_similarity_sample_n,
             disable_leakage_check=bool(args.disable_leakage_check),
             future_title_exclude=args.future_title_exclude,
             future_abstract_exclude=args.future_abstract_exclude,

@@ -20,6 +20,7 @@ from novelty_app.evaluation.assessment_bundle import (
     bundle_hash,
     load_assessment_bundle,
     load_assessment_bundle_text,
+    load_prospective_hypotheses_text,
 )
 
 
@@ -113,6 +114,89 @@ def _sample_bundle() -> dict:
     }
     bundle["bundle_sha256"] = bundle_hash(bundle)
     return bundle
+
+
+def _sample_prospective_hypotheses_payload() -> dict:
+    return {
+        "run": {
+            "run_id": "prospective_snapshot_abc123",
+            "snapshot_id": "snapshot_abc123",
+            "created_at": "2026-04-01T10:00:00+00:00",
+            "method_names": ["orchestrator"],
+            "config": {"hypotheses_per_target": 2},
+            "summary": {"n_generated_hypotheses": 2},
+            "discovery_cue": {"text": "find biofilm-resistant inorganic coatings"},
+            "status": "completed",
+        },
+        "tasks": [
+            {
+                "task_id": "orchestrator:0:gap_0",
+                "run_id": "prospective_snapshot_abc123",
+                "snapshot_id": "snapshot_abc123",
+                "method_name": "orchestrator",
+                "seed": 0,
+                "target": {"target_type": "gap", "gap_id": "gap_0"},
+                "target_id": "gap_0",
+                "target_type": "gap",
+                "effective_target": {"target_type": "gap", "gap_id": "gap_0"},
+                "hypotheses": [
+                    {
+                        "run_id": "prospective_snapshot_abc123",
+                        "hypothesis_id": "H1",
+                        "target_id": "gap_0",
+                        "target_type": "gap",
+                        "method_name": "orchestrator",
+                        "seed": 0,
+                        "title": "Layered antibiofilm shell on inorganic core",
+                        "text": "Use a stealth inner shell and an infection-activated outer antibiofilm layer.",
+                        "support_citations": ["p1"],
+                        "idea_scores": {
+                            "importance": {"score": 4},
+                            "novelty": {"score": 4},
+                            "plausibility": {"score": 4},
+                            "feasibility": {"score": 3},
+                            "evaluability": {"score": 4},
+                            "likely_impact": {"score": 4},
+                            "average_score": 3.83,
+                            "summary": "Solid hypothesis.",
+                            "judge_model": "gpt-5.4-mini-2026-03-17",
+                            "score_method": "pairwise_rubric_v1",
+                        },
+                        "discovery_cue": {"text": "inorganic nanoparticle coating biofilm"},
+                        "idea_fingerprint": {"material": ["inorganic nanoparticle"]},
+                    },
+                    {
+                        "run_id": "prospective_snapshot_abc123",
+                        "hypothesis_id": "H2",
+                        "target_id": "gap_0",
+                        "target_type": "gap",
+                        "method_name": "orchestrator",
+                        "seed": 0,
+                        "title": "Biofilm matrix-binding catalytic coating",
+                        "text": "Engineer matrix affinity plus local catalytic activation.",
+                        "support_citations": ["p2"],
+                        "idea_scores": {
+                            "importance": {"score": 5},
+                            "novelty": {"score": 4},
+                            "plausibility": {"score": 3},
+                            "feasibility": {"score": 3},
+                            "evaluability": {"score": 4},
+                            "likely_impact": {"score": 4},
+                            "average_score": 3.83,
+                        },
+                    },
+                ],
+                "evidence_pack": {
+                    "meta": {"profile": "focused_eval"},
+                    "papers": [{"paper_id": "p1", "title": "Paper One"}],
+                },
+                "evidence_pack_summary": {"n_papers": 1},
+                "explanation": {"rationale": "contrastive bridge"},
+                "audit": {"supported_claim_fraction": 0.8},
+            }
+        ],
+        "failures": [],
+    }
 
 
 def _criterion_score_card(
@@ -314,6 +398,65 @@ class AssessmentAppTests(unittest.TestCase):
         self.assertEqual(loaded["bundle_id"], bundle["bundle_id"])
         self.assertEqual(len(loaded["ideas"]), len(bundle["ideas"]))
         self.assertEqual(loaded["bundle_sha256"], bundle["bundle_sha256"])
+
+    def test_load_assessment_bundle_text_rejects_prospective_hypotheses_json(self) -> None:
+        with self.assertRaisesRegex(ValueError, "assessment_bundle_v1"):
+            load_assessment_bundle_text(json.dumps(_sample_prospective_hypotheses_payload()))
+
+    def test_load_prospective_hypotheses_text_converts_to_assessment_bundle(self) -> None:
+        prospective_payload = _sample_prospective_hypotheses_payload()
+        bundle = load_prospective_hypotheses_text(json.dumps(prospective_payload))
+        self.assertEqual(bundle["schema_version"], ASSESSMENT_BUNDLE_SCHEMA_VERSION)
+        self.assertEqual(bundle["source_kind"], "prospective_run")
+        self.assertEqual(bundle["bundle_id"], "assessment_prospective_snapshot_abc123")
+        self.assertEqual(len(bundle["ideas"]), 2)
+        self.assertTrue(all(bool(idea.get("is_review_packet_winner")) for idea in bundle["ideas"]))
+        self.assertTrue(all((idea.get("benchmark_context") or {}).get("evaluations") == [] for idea in bundle["ideas"]))
+        self.assertEqual(bundle["bundle_sha256"], bundle_hash({k: v for k, v in bundle.items() if k != "bundle_sha256"}))
+
+    def test_load_prospective_hypotheses_text_rejects_assessment_bundle_json(self) -> None:
+        with self.assertRaisesRegex(ValueError, "prospective hypotheses export"):
+            load_prospective_hypotheses_text(json.dumps(_sample_bundle()))
+
+    def test_workbook_roundtrip_supports_prospective_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            bundle = load_prospective_hypotheses_text(json.dumps(_sample_prospective_hypotheses_payload()))
+            bundle_path = tmp / "prospective_hypotheses.json"
+            bundle_path.write_text(json.dumps(_sample_prospective_hypotheses_payload()), encoding="utf-8")
+            workbook_path = tmp / "prospective_reviews.xlsx"
+
+            workbook = load_or_create_workbook(workbook_path, bundle, bundle_path=str(bundle_path))
+            self.assertEqual(len(workbook.ideas), 2)
+            self.assertFalse(workbook.meta.empty)
+
+            draft = build_assessment_record(
+                bundle_id=bundle["bundle_id"],
+                reviewer_id="alice",
+                idea_id=str(bundle["ideas"][0]["idea_id"]),
+                values={
+                    "importance": 4,
+                    "novelty": 4,
+                    "plausibility": 4,
+                    "feasibility": 3,
+                    "evaluability": 4,
+                    "likely_impact": 4,
+                },
+                existing=None,
+                submit=False,
+                saved_at="2026-04-01T12:00:00+00:00",
+            )
+            save_assessment(workbook, draft, bundle=bundle, bundle_path=str(bundle_path))
+
+            reopened = load_or_create_workbook(workbook_path, bundle, bundle_path=str(bundle_path))
+            loaded = get_assessment(
+                reopened,
+                bundle_id=bundle["bundle_id"],
+                reviewer_id="alice",
+                idea_id=str(bundle["ideas"][0]["idea_id"]),
+            )
+            self.assertIsNotNone(loaded)
+            self.assertEqual(loaded["status"], "draft")
 
     def test_workbook_roundtrip_supports_resume_and_multi_reviewer(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

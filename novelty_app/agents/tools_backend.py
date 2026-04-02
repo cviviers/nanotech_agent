@@ -46,6 +46,16 @@ class EvidencePackArgs(BaseModel):
         default=None,
         description="Optional steering cue describing the desired research direction. This is not treated as evidence.",
     )
+    cue_source_snapshot_id: str | None = Field(
+        default=None,
+        description="Snapshot id used for cue-semantic similarity retrieval (required when discovery cue is active).",
+    )
+    cue_similarity_top_k: int = Field(default=50, ge=1, le=5000)
+    cue_similarity_sample_n: int = Field(default=6, ge=0, le=500)
+    cue_similarity_seed: str | int | None = Field(
+        default=None,
+        description="Optional deterministic seed used when sampling cue-similar papers from the top-k set.",
+    )
 
 
 class StoreArtifactArgs(BaseModel):
@@ -85,6 +95,10 @@ def make_backend_tools(backend: BackendClient) -> List[Any]:
         diverse: int = 25,
         counter_queries: List[str] | None = None,
         discovery_cue: DiscoveryCue | None = None,
+        cue_source_snapshot_id: str | None = None,
+        cue_similarity_top_k: int = 50,
+        cue_similarity_sample_n: int = 6,
+        cue_similarity_seed: str | int | None = None,
     ) -> Dict[str, Any]:
         return backend.evidence_pack(
             {
@@ -98,6 +112,10 @@ def make_backend_tools(backend: BackendClient) -> List[Any]:
                 "diverse": diverse,
                 "counter_queries": counter_queries or [],
                 "discovery_cue": discovery_cue.model_dump() if discovery_cue is not None else None,
+                "cue_source_snapshot_id": cue_source_snapshot_id,
+                "cue_similarity_top_k": cue_similarity_top_k,
+                "cue_similarity_sample_n": cue_similarity_sample_n,
+                "cue_similarity_seed": cue_similarity_seed,
             }
         )
 

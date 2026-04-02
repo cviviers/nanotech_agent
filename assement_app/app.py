@@ -23,6 +23,8 @@ from novelty_app.evaluation.assessment_bundle import (
     ASSESSMENT_RUBRIC,
     load_assessment_bundle,
     load_assessment_bundle_bytes,
+    load_prospective_hypotheses,
+    load_prospective_hypotheses_bytes,
 )
 
 from assement_app.overlap_analysis import analyze_winner_overlap
@@ -51,6 +53,9 @@ MAIN_VIEWS = ("Load", "Review", "Progress")
 OVERLAP_HANDLING_SHOW_ALL = "Show all ideas"
 OVERLAP_HANDLING_HIDE = "Hide overlapping winners, keep top LLM-scored representative"
 DEFAULT_OVERLAP_THRESHOLD = 0.4
+EVAL_MODE_RETROSPECTIVE = "Retrospective"
+EVAL_MODE_PROSPECTIVE = "Prospective"
+EVALUATION_MODES = (EVAL_MODE_RETROSPECTIVE, EVAL_MODE_PROSPECTIVE)
 
 
 def _set_flash(level: str, message: str) -> None:
@@ -236,11 +241,17 @@ def _render_card(title: str, body: str = "", *, meta: str = "") -> None:
     st.markdown("".join(html), unsafe_allow_html=True)
 
 
-def _discover_bundle_files() -> List[str]:
-    candidates = sorted(
-        (str(path) for path in REPO_ROOT.rglob(f"*{ASSESSMENT_BUNDLE_SCHEMA_VERSION}.json")),
-        key=lambda item: item.lower(),
-    )
+def _evaluation_mode() -> str:
+    value = str(st.session_state.get("evaluation_mode") or EVAL_MODE_RETROSPECTIVE).strip()
+    return value if value in EVALUATION_MODES else EVAL_MODE_RETROSPECTIVE
+
+
+def _bundle_discovery_pattern(mode: str) -> str:
+    return "*_hypotheses.json" if mode == EVAL_MODE_PROSPECTIVE else f"*{ASSESSMENT_BUNDLE_SCHEMA_VERSION}.json"
+
+
+def _discover_bundle_files(mode: str) -> List[str]:
+    candidates = sorted((str(path) for path in REPO_ROOT.rglob(_bundle_discovery_pattern(mode))), key=lambda item: item.lower())
     return candidates[:DISCOVERED_BUNDLE_LIMIT]
 
 
@@ -276,7 +287,7 @@ def _bundle_source() -> str:
 
 
 def _uploaded_bundle_file():
-    return st.session_state.get("bundle_upload")
+    return st.session_state.get(_bundle_upload_key())
 
 
 def _uploaded_workbook_file():
@@ -298,6 +309,53 @@ def _workbook_download_name() -> str:
 def _bundle_ideas() -> List[Dict[str, Any]]:
     bundle = _bundle() or {}
     return list(bundle.get("ideas") or [])
+
+
+def _bundle_upload_key() -> str:
+    return "bundle_upload_prospective" if _evaluation_mode() == EVAL_MODE_PROSPECTIVE else "bundle_upload_retrospective"
+
+
+def _bundle_input_labels(mode: str) -> Dict[str, str]:
+    if mode == EVAL_MODE_PROSPECTIVE:
+        return {
+            "discovered": "Discovered prospective hypotheses files",
+            "discovered_help": "Select a discovered `<run_id>_hypotheses.json` file or enter a path manually below.",
+            "upload": "Upload local prospective hypotheses",
+            "upload_help": "Use this when the app is deployed remotely and the `<run_id>_hypotheses.json` file lives on your machine.",
+            "path": "Prospective hypotheses path",
+            "path_help": "Optional server-side path to `<run_id>_hypotheses.json`. If an uploaded JSON is present, the upload takes precedence.",
+            "required_error": "Provide a prospective hypotheses JSON path or upload a local hypotheses file.",
+            "source_default_name": "prospective_hypotheses.json",
+        }
+    return {
+        "discovered": "Discovered bundles",
+        "discovered_help": "Select a discovered assessment bundle or enter a path manually below.",
+        "upload": "Upload local assessment bundle",
+        "upload_help": "Use this when the app is deployed remotely and the bundle JSON lives on your machine.",
+        "path": "Assessment bundle path",
+        "path_help": "Optional server-side path. If an uploaded JSON is present, the upload takes precedence.",
+        "required_error": "Provide an assessment bundle JSON path or upload a local bundle file.",
+        "source_default_name": "assessment_bundle.json",
+    }
+
+
+def _bundle_required_error() -> str:
+    return str(_bundle_input_labels(_evaluation_mode()).get("required_error") or "Provide a bundle JSON path or upload a local file.")
+
+
+def _coerce_bundle_load_error(mode: str, message: str) -> str:
+    detail = str(message or "").strip()
+    if mode == EVAL_MODE_PROSPECTIVE:
+        prefix = (
+            "Prospective mode expects a `<run_id>_hypotheses.json` file that contains top-level `run` and `tasks`. "
+            "If you are loading an `assessment_bundle_v1` file, switch Evaluation mode to Retrospective."
+        )
+        return f"{prefix} Details: {detail}" if detail else prefix
+    prefix = (
+        "Retrospective mode expects an `assessment_bundle_v1.json` file. "
+        "If you are loading a prospective run export, switch Evaluation mode to Prospective and select `<run_id>_hypotheses.json`."
+    )
+    return f"{prefix} Details: {detail}" if detail else prefix
 
 
 def _basename(value: str) -> str:
@@ -332,15 +390,31 @@ def _session_runtime_dir() -> Path:
 
 
 def _load_selected_bundle() -> tuple[Dict[str, Any], str]:
+    mode = _evaluation_mode()
+    labels = _bundle_input_labels(mode)
     uploaded_bundle = _uploaded_bundle_file()
     if uploaded_bundle is not None:
-        upload_name = str(getattr(uploaded_bundle, "name", "") or "assessment_bundle.json")
-        return load_assessment_bundle_bytes(uploaded_bundle.getvalue()), f"uploaded://{upload_name}"
+        upload_name = str(getattr(uploaded_bundle, "name", "") or labels["source_default_name"])
+        try:
+            if mode == EVAL_MODE_PROSPECTIVE:
+                bundle = load_prospective_hypotheses_bytes(uploaded_bundle.getvalue())
+            else:
+                bundle = load_assessment_bundle_bytes(uploaded_bundle.getvalue())
+        except Exception as exc:
+            raise ValueError(_coerce_bundle_load_error(mode, str(exc))) from exc
+        return bundle, f"uploaded://{upload_name}"
 
     bundle_path = _bundle_path()
     if not bundle_path:
-        raise ValueError("Provide an assessment bundle JSON path or upload a local bundle file.")
-    return load_assessment_bundle(bundle_path), bundle_path
+        raise ValueError(_bundle_required_error())
+    try:
+        if mode == EVAL_MODE_PROSPECTIVE:
+            bundle = load_prospective_hypotheses(bundle_path)
+        else:
+            bundle = load_assessment_bundle(bundle_path)
+    except Exception as exc:
+        raise ValueError(_coerce_bundle_load_error(mode, str(exc))) from exc
+    return bundle, bundle_path
 
 
 def _resolve_workbook_target(bundle: Dict[str, Any]) -> tuple[str, str, str]:
@@ -960,6 +1034,8 @@ def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | N
         evaluations = list(((idea.get("benchmark_context") or {}).get("evaluations") or []))
         if evaluations:
             st.dataframe(pd.DataFrame(evaluations), use_container_width=True, hide_index=True)
+        elif str((_bundle() or {}).get("source_kind") or "") == "prospective_run":
+            st.caption("Retrospective retrieval outcomes are not applicable for prospective runs.")
         else:
             st.caption("No retrospective benchmark rows were stored.")
     else:
@@ -1035,7 +1111,7 @@ def _render_progress_tab() -> None:
 def _load_bundle_and_workbook() -> None:
     reviewer_id = _entered_reviewer_id()
     if not _bundle_path() and _uploaded_bundle_file() is None:
-        st.error("Provide an assessment bundle JSON path or upload a local bundle file.")
+        st.error(_bundle_required_error())
         return
     if not reviewer_id:
         st.error("Provide a reviewer id.")
@@ -1061,42 +1137,51 @@ def _load_bundle_and_workbook() -> None:
     st.session_state["current_idea_id"] = current_idea_id
     st.session_state["jump_idea_id"] = current_idea_id
     _load_form_state(current_idea_id)
-    _set_flash("success", "Assessment bundle loaded.")
+    _set_flash("success", "Review bundle loaded.")
     _set_main_view("Review")
     st.rerun()
 
 
 def _render_load_tab() -> None:
     st.markdown("### Bundle Input")
+    st.radio(
+        "Evaluation mode",
+        options=list(EVALUATION_MODES),
+        key="evaluation_mode",
+        horizontal=True,
+        help="Choose the expected input format for data loading.",
+    )
+    mode = _evaluation_mode()
+    mode_labels = _bundle_input_labels(mode)
     st.caption("Workbook upload is optional. If you do not upload or select one, the app creates a session workbook automatically and you can download it later.")
-    discovered_bundles = _discover_bundle_files()
+    discovered_bundles = _discover_bundle_files(mode)
     discovered_workbooks = _discover_workbooks()
     if "reviewer_id" not in st.session_state and st.session_state.get("active_reviewer_id"):
         st.session_state["reviewer_id"] = str(st.session_state.get("active_reviewer_id") or "")
 
     if discovered_bundles:
         selected_bundle = st.selectbox(
-            "Discovered bundles",
+            mode_labels["discovered"],
             options=[""] + discovered_bundles,
             index=0,
-            help="Select a discovered assessment bundle or enter a path manually below.",
+            help=mode_labels["discovered_help"],
         )
         if selected_bundle:
             st.session_state["bundle_path"] = selected_bundle
 
     uploaded_bundle = st.file_uploader(
-        "Upload local assessment bundle",
+        mode_labels["upload"],
         type=["json"],
-        key="bundle_upload",
-        help="Use this when the app is deployed remotely and the bundle JSON lives on your machine.",
+        key=_bundle_upload_key(),
+        help=mode_labels["upload_help"],
     )
     if uploaded_bundle is not None:
         st.caption(f"Using uploaded bundle: `{uploaded_bundle.name}`")
 
     st.text_input(
-        "Assessment bundle path",
+        mode_labels["path"],
         key="bundle_path",
-        help="Optional server-side path. If an uploaded JSON is present, the upload takes precedence.",
+        help=mode_labels["path_help"],
     )
 
     if discovered_workbooks:
@@ -1135,7 +1220,10 @@ def _render_load_tab() -> None:
     bundle = _bundle()
     workbook = _workbook()
     if bundle and workbook:
+        source_kind = str(bundle.get("source_kind") or "")
+        active_mode_label = EVAL_MODE_PROSPECTIVE if source_kind == "prospective_run" else EVAL_MODE_RETROSPECTIVE
         st.markdown("### Active Session")
+        st.write(f"Evaluation mode: `{active_mode_label}`")
         st.write(f"Bundle id: `{bundle.get('bundle_id')}`")
         st.write(f"Ideas in bundle: `{len(bundle.get('ideas') or [])}`")
         st.write(f"Workbook source: `{_workbook_source()}`")
@@ -1255,6 +1343,9 @@ if __name__ == "__main__":
 
 # example usage:
 # 1. Run this Streamlit app: `streamlit run app.py`
-# 2. In the "Load" tab, upload or select an `assessment_bundle_v1.json`, optionally upload a workbook, set a reviewer id, then click "Load / Resume Review".
+# 2. In the "Load" tab, choose Evaluation mode:
+#    - Retrospective: upload/select an `assessment_bundle_v1.json`
+#    - Prospective: upload/select a `<run_id>_hypotheses.json`
+#    Optionally upload a workbook, set a reviewer id, then click "Load / Resume Review".
 # 3. In the "Review" tab, assess the ideas using the provided form, and navigate through the queue using the buttons or jump selectbox.
 # 4. Download the workbook from the "Load" or "Progress" tab when you want to save the completed review locally.

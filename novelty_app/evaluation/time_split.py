@@ -4,7 +4,7 @@ import calendar
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import numpy as np
 import pandas as pd
@@ -20,7 +20,6 @@ class CorpusSplit:
 class TimeSplitResult:
     historical: CorpusSplit
     future: CorpusSplit
-    sensitivity_future: Optional[CorpusSplit]
     publication_dates: pd.Series
 
 
@@ -82,8 +81,6 @@ def split_corpus_by_time(
     cutoff_date: str,
     future_window_start: str,
     future_window_end: str,
-    sensitivity_window_start: Optional[str] = None,
-    sensitivity_window_end: Optional[str] = None,
 ) -> TimeSplitResult:
     if not embeddings:
         raise ValueError("embeddings are required")
@@ -104,26 +101,11 @@ def split_corpus_by_time(
     hist_embeddings = _subset_embeddings(embeddings, historical_mask.to_numpy())
     future_embeddings = _subset_embeddings(embeddings, future_mask.to_numpy())
 
-    sensitivity_split: Optional[CorpusSplit] = None
-    if sensitivity_window_start and sensitivity_window_end:
-        sensitivity_start = pd.Timestamp(sensitivity_window_start)
-        sensitivity_end = pd.Timestamp(sensitivity_window_end)
-        sensitivity_mask = (
-            publication_dates.notna()
-            & (publication_dates >= sensitivity_start)
-            & (publication_dates <= sensitivity_end)
-        )
-        sensitivity_split = CorpusSplit(
-            df=df.loc[sensitivity_mask].reset_index(drop=True).copy(),
-            embeddings=_subset_embeddings(embeddings, sensitivity_mask.to_numpy()),
-        )
-
     if not historical_df.empty and pd.to_datetime(historical_df["publication_year"], format="%Y", errors="coerce").dt.year.max() > cutoff.year:
         raise ValueError("historical split leaked post-cutoff papers")
 
     return TimeSplitResult(
         historical=CorpusSplit(df=historical_df, embeddings=hist_embeddings),
         future=CorpusSplit(df=future_df, embeddings=future_embeddings),
-        sensitivity_future=sensitivity_split,
         publication_dates=publication_dates,
     )

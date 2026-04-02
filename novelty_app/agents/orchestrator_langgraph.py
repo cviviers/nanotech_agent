@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from enum import Enum
-from typing import Any, Dict, List, Literal, TypedDict
+from typing import Any, Dict, List, TypedDict
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -191,7 +191,8 @@ class BlueprintOut(BaseModel):
 
 
 class OrchestratorState(TypedDict, total=False):
-    target_type: Literal["gap", "cluster_pair"]
+    # Keep this as plain str to avoid runtime type-hint evaluation issues across mixed import contexts.
+    target_type: str
     snapshot_id: str
     gap_id: str
     cluster_a: int
@@ -202,6 +203,10 @@ class OrchestratorState(TypedDict, total=False):
     boundary: int
     diverse: int
     discovery_cue: Dict[str, Any]
+    cue_source_snapshot_id: str
+    cue_similarity_top_k: int
+    cue_similarity_sample_n: int
+    cue_similarity_seed: str | int | None
     evidence: List[Dict[str, Any]]
     evidence_meta: Dict[str, Any]
     explanation: Dict[str, Any]
@@ -286,6 +291,15 @@ def _target_payload(state: OrchestratorState) -> Dict[str, Any]:
     discovery_cue = discovery_cue_to_dict(state.get("discovery_cue"))
     if discovery_cue is not None:
         payload["discovery_cue"] = discovery_cue
+        cue_source_snapshot_id = str(state.get("cue_source_snapshot_id") or "").strip()
+        if cue_source_snapshot_id:
+            payload["cue_source_snapshot_id"] = cue_source_snapshot_id
+        if state.get("cue_similarity_top_k") is not None:
+            payload["cue_similarity_top_k"] = int(state["cue_similarity_top_k"])
+        if state.get("cue_similarity_sample_n") is not None:
+            payload["cue_similarity_sample_n"] = int(state["cue_similarity_sample_n"])
+        if state.get("cue_similarity_seed") is not None:
+            payload["cue_similarity_seed"] = state.get("cue_similarity_seed")
     return payload
 
 

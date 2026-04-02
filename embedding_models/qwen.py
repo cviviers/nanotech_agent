@@ -363,7 +363,11 @@ def rank_documents(payload: RankRequest):
     if not payload.documents:
         raise HTTPException(status_code=400, detail="documents must be a non-empty list")
 
-    # Reranker scores
+    reranker_failed = False
+    reranker_error: Optional[Exception] = None
+    rerank_scores: Optional[List[float]] = None
+
+    # Prefer reranker scores when available.
     try:
         rerank_scores = rerank_query_documents(
             query=payload.query,
@@ -372,11 +376,14 @@ def rank_documents(payload: RankRequest):
         )
     except Exception as e:
         _print_local_qwen_error("/rank reranker failed", e)
-        raise HTTPException(status_code=500, detail=f"reranker error: {e}")
+        reranker_failed = True
+        reranker_error = e
 
-    # Optional embedding-based similarity scores
+    # Optional embedding-based similarity scores.
+    # If reranker fails, we force embedding similarity as fallback ranking.
     embedding_scores: Optional[List[float]] = None
-    if payload.return_embedding_similarity:
+    compute_embedding_scores = payload.return_embedding_similarity or reranker_failed
+    if compute_embedding_scores:
         try:
             # One query vs many documents
             query_emb = embed_texts(
@@ -392,9 +399,37 @@ def rank_documents(payload: RankRequest):
             sims = cosine_similarity_matrix(query_emb, doc_embs)[0]
             embedding_scores = sims.cpu().tolist()
         except Exception as e:
-            # Do not fail the whole request if embedding similarity fails
+            # Defer failure handling until we know whether fallback is required.
             _print_local_qwen_error("/rank embedding similarity failed", e)
             embedding_scores = None
+
+    # Fallback: if reranker is unavailable, use embedding similarity as rank score.
+    if reranker_failed:
+        if embedding_scores is None:
+            raise HTTPException(
+                status_code=500,
+                detail=f"reranker error: {reranker_error}; embedding fallback unavailable",
+            )
+        rerank_scores = [float(score) for score in embedding_scores]
+
+    if rerank_scores is None:
+        raise HTTPException(status_code=500, detail="ranker produced no scores")
+    if len(rerank_scores) != len(payload.documents):
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"ranker returned {len(rerank_scores)} scores for "
+                f"{len(payload.documents)} documents"
+            ),
+        )
+    if embedding_scores is not None and len(embedding_scores) != len(payload.documents):
+        _print_local_qwen_error(
+            "/rank embedding similarity length mismatch",
+            ValueError(
+                f"got {len(embedding_scores)} scores for {len(payload.documents)} documents"
+            ),
+        )
+        embedding_scores = None
 
     # Build result objects
     results = []
@@ -426,7 +461,7 @@ def rank_documents(payload: RankRequest):
         query=payload.query,
         instruction=payload.instruction,
         qwen_model_reranker=RERANK_MODEL_NAME,
-        qwen_model_embedding=EMBED_MODEL_NAME if payload.return_embedding_similarity else None,
+        qwen_model_embedding=EMBED_MODEL_NAME if embedding_scores is not None else None,
         results=results_sorted,
     )
 

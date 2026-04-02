@@ -1,6 +1,8 @@
 """
 Filters Page - Optional filtering tools (K-means, semantic similarity, entity-based)
 """
+import os
+
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -17,6 +19,19 @@ def to_native(obj):
     if hasattr(obj, 'to_native'):
         return obj.to_native()
     return obj
+
+
+def _get_qwen_api_url() -> str:
+    """Resolve Qwen API endpoint from config, session, or environment."""
+    config = st.session_state.get("config") or {}
+    base_url = str(
+        config.get("qwen_api_url")
+        or st.session_state.get("qwen_api_url")
+        or os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:8000")
+    ).strip()
+    if not base_url:
+        base_url = "http://127.0.0.1:8000"
+    return base_url.rstrip("/")
 
 
 def page_filters():
@@ -230,7 +245,7 @@ def compute_semantic_similarity(query_text, threshold, instruction=None):
         import requests
         
         # API endpoint for Qwen embedding service
-        QWEN_API_URL = "http://localhost:8000"
+        qwen_api_url = _get_qwen_api_url()
         
         with st.spinner("Generating query embedding..."):
             # Generate query embedding with instruction for better retrieval
@@ -244,7 +259,7 @@ def compute_semantic_similarity(query_text, threshold, instruction=None):
             }
             
             query_response = requests.post(
-                f"{QWEN_API_URL}/embed",
+                f"{qwen_api_url}/embed",
                 json=query_payload,
                 timeout=60
             )
@@ -270,7 +285,7 @@ def compute_semantic_similarity(query_text, threshold, instruction=None):
             st.success(f"✅ Computed similarities: {(similarities >= threshold).sum()} papers above threshold {threshold:.2f}")
     
     except requests.exceptions.ConnectionError:
-        st.error("❌ Cannot connect to Qwen API. Make sure the service is running at http://localhost:8000")
+        st.error(f"❌ Cannot connect to Qwen API at {qwen_api_url}")
         st.info("Start the service with: `uvicorn qwen:app --host 0.0.0.0 --port 8000` in the embedding_models directory")
     except Exception as e:
         st.error(f"❌ Error: {str(e)}")

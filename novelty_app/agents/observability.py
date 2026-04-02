@@ -329,14 +329,26 @@ def current_trace_ref(
     client = get_langfuse_client()
     if client is None:
         return {}
-    trace_id = client.get_current_trace_id()
+    try:
+        trace_id = client.get_current_trace_id()
+    except Exception:
+        return {}
     if not trace_id:
         return {}
+    try:
+        observation_id = client.get_current_observation_id()
+    except Exception:
+        observation_id = None
+    trace_url: Optional[str] = None
+    try:
+        trace_url = client.get_trace_url(trace_id=trace_id)
+    except Exception:
+        trace_url = None
     ref: Dict[str, Any] = {
         "provider": "langfuse",
         "trace_id": trace_id,
-        "observation_id": client.get_current_observation_id(),
-        "url": client.get_trace_url(trace_id=trace_id),
+        "observation_id": observation_id,
+        "url": trace_url,
         "session_id": session_id,
         "tags": list(tags or []),
         "metadata": dict(metadata or {}),

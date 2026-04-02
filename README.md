@@ -227,7 +227,7 @@ Outputs include:
 streamlit run assement_app/app.py
 ```
 
-This app is for blind-first human review of generated ideas. It expects an `assessment_bundle_v1` JSON file produced by the retrospective runner and writes reviewer state to an Excel workbook.
+This app is for blind-first human review of generated ideas. In the Load tab, choose `Retrospective` to load an `assessment_bundle_v1` JSON file from the retrospective runner, or `Prospective` to load a `<run_id>_hypotheses.json` file from the prospective runner. Reviewer state is written to an Excel workbook.
 
 Workbook sheets:
 

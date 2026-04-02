@@ -185,7 +185,7 @@ class KnowledgeStoreTests(unittest.TestCase):
         payload = {
             "snapshot_id": "snap_cue",
             "created_at": "2026-03-11T00:00:00+00:00",
-            "metadata": {"source": "test"},
+            "metadata": {"source": "test", "embedding_source": "qwen"},
             "papers": [
                 {
                     "paper_id": "p1",
@@ -215,6 +215,7 @@ class KnowledgeStoreTests(unittest.TestCase):
             "llm_analyses": [],
         }
         self.store.publish_snapshot(payload)
+        self.store._embed_texts_with_qwen = lambda texts: [[1.0, 0.0, 0.0]]  # type: ignore[method-assign]
 
         evidence = self.store.build_evidence_pack(
             {
@@ -234,6 +235,10 @@ class KnowledgeStoreTests(unittest.TestCase):
                         "disease": ["breast"],
                     },
                 },
+                "cue_source_snapshot_id": "snap_cue",
+                "cue_similarity_top_k": 2,
+                "cue_similarity_sample_n": 2,
+                "cue_similarity_seed": "test_seed",
             }
         )
 
@@ -250,7 +255,7 @@ class KnowledgeStoreTests(unittest.TestCase):
         payload = {
             "snapshot_id": "snap_freeform_cue",
             "created_at": "2026-03-11T00:00:00+00:00",
-            "metadata": {"source": "test"},
+            "metadata": {"source": "test", "embedding_source": "qwen"},
             "papers": [
                 {
                     "paper_id": "p1",
@@ -292,6 +297,7 @@ class KnowledgeStoreTests(unittest.TestCase):
             "llm_analyses": [],
         }
         self.store.publish_snapshot(payload)
+        self.store._embed_texts_with_qwen = lambda texts: [[0.0, 0.5, 0.5]]  # type: ignore[method-assign]
 
         evidence = self.store.build_evidence_pack(
             {
@@ -305,6 +311,10 @@ class KnowledgeStoreTests(unittest.TestCase):
                 "discovery_cue": {
                     "text": "What characteristics should a coating for inorganic nanoparticles have to overcome biofilms?"
                 },
+                "cue_source_snapshot_id": "snap_freeform_cue",
+                "cue_similarity_top_k": 3,
+                "cue_similarity_sample_n": 2,
+                "cue_similarity_seed": "biofilm_seed",
             }
         )
 
@@ -313,6 +323,187 @@ class KnowledgeStoreTests(unittest.TestCase):
         self.assertEqual(evidence["papers"][0]["paper_id"], "p3")
         self.assertGreater(float(evidence["papers"][0]["selection_meta"]["cue_score"]), 0.0)
         self.assertEqual(evidence["meta"]["cue_stats"]["reserved_slots_applied"], 1)
+
+    def test_build_evidence_pack_requires_cue_source_snapshot_when_cue_active(self) -> None:
+        payload = {
+            "snapshot_id": "snap_cue_required",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test", "embedding_source": "qwen"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Paper 1",
+                    "abstract": "Cue paper",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "embedding": [1.0, 0.0],
+                }
+            ],
+            "clusters": [{"cluster_id": 1, "size": 1, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 1, "avg_gap_score": 0.5, "max_gap_score": 0.5, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [{"gap_id": "gap_0", "paper_id": "p1", "rank": 0, "gap_score": 0.5}],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(payload)
+        with self.assertRaises(ValueError):
+            self.store.build_evidence_pack(
+                {
+                    "snapshot_id": "snap_cue_required",
+                    "target_type": "gap",
+                    "gap_id": "gap_0",
+                    "discovery_cue": {"text": "focus on cue usage"},
+                }
+            )
+
+    def test_build_evidence_pack_rejects_non_qwen_cue_source_snapshot(self) -> None:
+        target_payload = {
+            "snapshot_id": "snap_target_non_qwen",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test", "split_role": "historical", "cutoff_date": "2020-12-31", "embedding_source": "qwen"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Paper 1",
+                    "abstract": "Target paper",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "embedding": [1.0, 0.0],
+                }
+            ],
+            "clusters": [{"cluster_id": 1, "size": 1, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 1, "avg_gap_score": 0.5, "max_gap_score": 0.5, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [{"gap_id": "gap_0", "paper_id": "p1", "rank": 0, "gap_score": 0.5}],
+            "llm_analyses": [],
+        }
+        source_payload = {
+            "snapshot_id": "snap_source_bert",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test", "split_role": "full", "embedding_source": "bert"},
+            "papers": [
+                {
+                    "paper_id": "s1",
+                    "title": "Source paper",
+                    "abstract": "Source abstract",
+                    "publication_year": 2020,
+                    "cluster_id": 2,
+                    "embedding": [1.0, 0.0],
+                }
+            ],
+            "clusters": [{"cluster_id": 2, "size": 1, "metadata": {}}],
+            "gaps": [],
+            "gap_papers": [],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(target_payload)
+        self.store.publish_snapshot(source_payload)
+        with self.assertRaises(ValueError):
+            self.store.build_evidence_pack(
+                {
+                    "snapshot_id": "snap_target_non_qwen",
+                    "target_type": "gap",
+                    "gap_id": "gap_0",
+                    "discovery_cue": {"text": "focus on cue usage"},
+                    "cue_source_snapshot_id": "snap_source_bert",
+                }
+            )
+
+    def test_build_evidence_pack_cue_similarity_sampling_is_deterministic_and_filtered(self) -> None:
+        target_payload = {
+            "snapshot_id": "snap_hist_target",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {
+                "source": "test",
+                "split_role": "historical",
+                "cutoff_date": "2020-12-31",
+                "embedding_source": "qwen",
+            },
+            "papers": [
+                {
+                    "paper_id": "shared",
+                    "title": "Shared historical paper",
+                    "abstract": "shared",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.9,
+                    "embedding": [1.0, 0.0],
+                }
+            ],
+            "clusters": [{"cluster_id": 1, "size": 1, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 1, "avg_gap_score": 0.9, "max_gap_score": 0.9, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [{"gap_id": "gap_0", "paper_id": "shared", "rank": 0, "gap_score": 0.9}],
+            "llm_analyses": [],
+        }
+        source_payload = {
+            "snapshot_id": "snap_full_source",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test", "split_role": "full", "embedding_source": "qwen"},
+            "papers": [
+                {"paper_id": "shared", "title": "Shared historical paper", "abstract": "shared", "publication_year": 2020, "cluster_id": 1, "embedding": [1.0, 0.0]},
+                {"paper_id": "a", "title": "A", "abstract": "a", "publication_year": 2018, "cluster_id": 1, "embedding": [0.99, 0.01]},
+                {"paper_id": "b", "title": "B", "abstract": "b", "publication_year": 2019, "cluster_id": 1, "embedding": [0.98, 0.02]},
+                {"paper_id": "c", "title": "C", "abstract": "c", "publication_year": 2020, "cluster_id": 1, "embedding": [0.97, 0.03]},
+                {"paper_id": "d", "title": "D", "abstract": "d", "publication_year": 2021, "cluster_id": 1, "embedding": [0.96, 0.04]},
+                {"paper_id": "e", "title": "E", "abstract": "e", "publication_year": None, "cluster_id": 1, "embedding": [0.95, 0.05]},
+                {"paper_id": "f", "title": "F", "abstract": "f", "publication_year": 2022, "cluster_id": 1, "embedding": [0.94, 0.06]},
+            ],
+            "clusters": [{"cluster_id": 1, "size": 7, "metadata": {}}],
+            "gaps": [],
+            "gap_papers": [],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(target_payload)
+        self.store.publish_snapshot(source_payload)
+        self.store._embed_texts_with_qwen = lambda texts: [[1.0, 0.0]]  # type: ignore[method-assign]
+
+        base_request = {
+            "snapshot_id": "snap_hist_target",
+            "target_type": "gap",
+            "gap_id": "gap_0",
+            "profile": "focused_eval",
+            "exemplars": 1,
+            "boundary": 1,
+            "diverse": 0,
+            "discovery_cue": {"text": "liposome cue"},
+            "cue_source_snapshot_id": "snap_full_source",
+            "cue_similarity_top_k": 7,
+            "cue_similarity_sample_n": 3,
+        }
+        evidence_seed_1_a = self.store.build_evidence_pack({**base_request, "cue_similarity_seed": 1})
+        evidence_seed_1_b = self.store.build_evidence_pack({**base_request, "cue_similarity_seed": 1})
+        evidence_seed_2 = self.store.build_evidence_pack({**base_request, "cue_similarity_seed": 2})
+        evidence_default_seed_a = self.store.build_evidence_pack(dict(base_request))
+        evidence_default_seed_b = self.store.build_evidence_pack(dict(base_request))
+
+        stats_1_a = dict(evidence_seed_1_a["meta"]["cue_full_similarity_stats"])
+        stats_1_b = dict(evidence_seed_1_b["meta"]["cue_full_similarity_stats"])
+        stats_2 = dict(evidence_seed_2["meta"]["cue_full_similarity_stats"])
+        stats_default_a = dict(evidence_default_seed_a["meta"]["cue_full_similarity_stats"])
+        stats_default_b = dict(evidence_default_seed_b["meta"]["cue_full_similarity_stats"])
+
+        self.assertEqual(stats_1_a["sampled_ids"], stats_1_b["sampled_ids"])
+        self.assertNotEqual(stats_1_a["sampled_ids"], stats_2["sampled_ids"])
+        self.assertEqual(stats_default_a["sampled_ids"], stats_default_b["sampled_ids"])
+        self.assertEqual(int(stats_1_a["filtered_by_cutoff"]), 3)
+        self.assertEqual(int(stats_1_a["candidate_count"]), 4)
+
+        sampled_years = {"shared": 2020, "a": 2018, "b": 2019, "c": 2020, "d": 2021, "e": None, "f": 2022}
+        for sampled_id in stats_1_a["sampled_ids"]:
+            year = sampled_years[sampled_id]
+            self.assertIsNotNone(year)
+            self.assertLessEqual(int(year), 2020)
+
+        cue_similarity_papers = [
+            paper
+            for paper in evidence_seed_1_a["papers"]
+            if "cue_full_similarity" in list(paper.get("selection_sources") or [])
+        ]
+        self.assertTrue(cue_similarity_papers)
+        self.assertTrue(
+            all(
+                "cue_full_similarity_score" in dict(paper.get("selection_meta") or {})
+                for paper in cue_similarity_papers
+            )
+        )
 
 
 if __name__ == "__main__":

@@ -25,12 +25,9 @@ class TimeSplitTests(unittest.TestCase):
             cutoff_date="2020-12-31",
             future_window_start="2022-01-01",
             future_window_end="2025-12-31",
-            sensitivity_window_start="2021-01-01",
-            sensitivity_window_end="2025-12-31",
         )
         self.assertEqual(len(split.historical.df), 2)
         self.assertEqual(len(split.future.df), 1)
-        self.assertEqual(len(split.sensitivity_future.df), 2)
         self.assertTrue((split.historical.df["publication_year"] <= 2020).all())
 
 

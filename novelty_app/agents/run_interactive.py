@@ -65,6 +65,12 @@ def main() -> None:
     cue_text = input("Discovery cue (optional): ").strip()
     if cue_text:
         state["discovery_cue"] = discovery_cue_to_dict(cue_text)
+        cue_source_snapshot_id = input("Cue source snapshot id (required for cue evidence): ").strip()
+        if not cue_source_snapshot_id:
+            raise ValueError("Cue source snapshot id is required when discovery cue is provided.")
+        state["cue_source_snapshot_id"] = cue_source_snapshot_id
+        state["cue_similarity_top_k"] = 50
+        state["cue_similarity_sample_n"] = 6
 
     print("\nRunning orchestrator...\n")
     out = app.invoke(state)

@@ -5,7 +5,10 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from novelty_app.agents.observability import observe_current
+try:
+    from novelty_app.agents.observability import observe_current
+except Exception:  # pragma: no cover
+    from agents.observability import observe_current  # type: ignore
 
 
 def _print_local_qwen_error(message: str) -> None:

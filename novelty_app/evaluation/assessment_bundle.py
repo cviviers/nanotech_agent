@@ -152,6 +152,136 @@ def _evidence_pack_papers(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     return list(pack.get("papers") or [])
 
 
+def _prospective_queue_sort_key(row: Dict[str, Any]) -> List[Any]:
+    return [
+        str(row.get("run_id") or ""),
+        str(row.get("method_name") or ""),
+        int(row.get("seed") or 0),
+        str(row.get("target_id") or ""),
+        str(row.get("hypothesis_id") or ""),
+    ]
+
+
+def _prospective_idea_record(run_payload: Dict[str, Any], task: Dict[str, Any], hypothesis: Dict[str, Any]) -> Dict[str, Any]:
+    run_id = str(task.get("run_id") or run_payload.get("run_id") or "")
+    snapshot_id = str(task.get("snapshot_id") or run_payload.get("snapshot_id") or "")
+    method_name = str(task.get("method_name") or "")
+    seed = int(task.get("seed") or 0)
+    target_id = str(task.get("target_id") or "")
+    hypothesis_id = str(hypothesis.get("hypothesis_id") or "")
+    title = str(hypothesis.get("title") or "")
+    text = str(hypothesis.get("text") or "")
+    target = dict(task.get("target") or {})
+    effective_target = dict(task.get("effective_target") or target)
+    evidence_pack = dict(task.get("evidence_pack") or {})
+    discovery_cue = dict(hypothesis.get("discovery_cue") or run_payload.get("discovery_cue") or {})
+    idea_scores = dict(hypothesis.get("idea_scores") or {})
+    row_for_id = {
+        "run_id": run_id,
+        "snapshot_id": snapshot_id,
+        "method_name": method_name,
+        "seed": seed,
+        "target_id": target_id,
+        "hypothesis_id": hypothesis_id,
+        "hypothesis": {
+            "hypothesis_id": hypothesis_id,
+            "title": title,
+            "text": text,
+        },
+    }
+    queue_sort_key = _prospective_queue_sort_key(row_for_id)
+    trace_ref = dict(hypothesis.get("trace_ref") or task.get("trace_ref") or {})
+    return {
+        "idea_id": build_idea_id(row_for_id),
+        "is_review_packet_winner": True,
+        "winner_task_count": 1,
+        "run_context": {
+            "run_id": run_id,
+            "snapshot_id": snapshot_id,
+            "method_name": method_name,
+            "seed": seed,
+            "target_id": target_id,
+            "hypothesis_id": hypothesis_id,
+            "queue_sort_key": queue_sort_key,
+            "trace_ref": trace_ref,
+            "source_match_count": 1,
+        },
+        "target": {
+            "target_id": target_id,
+            "target_type": task.get("target_type") or target.get("target_type"),
+            "effective_target": effective_target,
+        },
+        "discovery_cue": discovery_cue,
+        "ideation_context": {
+            "effective_target": effective_target,
+            "evidence_pack_summary": dict(task.get("evidence_pack_summary") or {}),
+            "evidence_pack_meta": dict(evidence_pack.get("meta") or {}),
+            "evidence_papers": list(evidence_pack.get("papers") or []),
+            "explanation": dict(task.get("explanation") or {}),
+            "audit": dict(task.get("audit") or {}),
+        },
+        "hypothesis": {
+            "hypothesis_id": hypothesis_id,
+            "title": title,
+            "text": text,
+            "support_citations": list(hypothesis.get("support_citations") or []),
+            "raw_hypothesis": dict(hypothesis.get("raw_hypothesis") or {}),
+            "normalized_hypothesis": dict(hypothesis.get("normalized_hypothesis") or {}),
+            "grounding_summary": dict(hypothesis.get("grounding_summary") or {}),
+            "idea_fingerprint": dict(hypothesis.get("idea_fingerprint") or {}),
+            "trace_ref": trace_ref,
+        },
+        "judge_context": {
+            "idea_scores": idea_scores,
+            "score_summary": idea_scores.get("summary"),
+            "judge_model": idea_scores.get("judge_model"),
+            "score_method": idea_scores.get("score_method"),
+        },
+        "benchmark_context": {
+            "evaluations": [],
+            "historical_match": {},
+            "future_match": {},
+        },
+    }
+
+
+def _build_prospective_assessment_bundle(run_payload: Dict[str, Any], tasks: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    run_id = str(run_payload.get("run_id") or "").strip()
+    if not run_id:
+        raise ValueError("Prospective hypotheses JSON is missing `run.run_id`.")
+
+    ideas: List[Dict[str, Any]] = []
+    for task in tasks:
+        hypotheses = list(task.get("hypotheses") or [])
+        for hypothesis in hypotheses:
+            if not isinstance(hypothesis, dict):
+                raise ValueError("Prospective hypotheses JSON contains an invalid hypothesis row.")
+            ideas.append(_prospective_idea_record(run_payload, task, hypothesis))
+    ideas.sort(key=lambda idea: (tuple((idea.get("run_context") or {}).get("queue_sort_key") or []), str(idea.get("idea_id") or "")))
+
+    bundle = {
+        "schema_version": ASSESSMENT_BUNDLE_SCHEMA_VERSION,
+        "bundle_id": f"assessment_{run_id}",
+        "created_at": run_payload.get("created_at"),
+        "source_kind": "prospective_run",
+        "rubric": dict(ASSESSMENT_RUBRIC),
+        "run_manifest": {
+            "run_id": run_payload.get("run_id"),
+            "snapshot_id": run_payload.get("snapshot_id"),
+            "created_at": run_payload.get("created_at"),
+            "method_names": list(run_payload.get("method_names") or []),
+            "config": dict(run_payload.get("config") or {}),
+            "summary": dict(run_payload.get("summary") or {}),
+            "metrics": dict(run_payload.get("metrics") or {}),
+            "discovery_cue": dict(run_payload.get("discovery_cue") or {}),
+            "status": run_payload.get("status"),
+        },
+        "ideas": ideas,
+    }
+    bundle["bundle_sha256"] = bundle_hash(bundle)
+    return bundle
+
+
 def _idea_record(group_rows: Sequence[Dict[str, Any]], winner_task_keys: set[Tuple[Any, ...]]) -> Dict[str, Any]:
     rows = sorted(group_rows, key=_queue_sort_key)
     primary = rows[0]
@@ -288,6 +418,40 @@ def _validate_assessment_bundle_payload(payload: Any) -> Dict[str, Any]:
     return normalized
 
 
+def _validate_prospective_hypotheses_payload(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise ValueError("Prospective hypotheses JSON must contain an object at the top level.")
+    run_payload = payload.get("run")
+    tasks = payload.get("tasks")
+    if not isinstance(run_payload, dict) or not isinstance(tasks, list):
+        raise ValueError(
+            "This file is not a prospective hypotheses export. Prospective mode requires a `<run_id>_hypotheses.json` file containing `run` and `tasks`."
+        )
+    normalized_tasks: List[Dict[str, Any]] = []
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise ValueError("Prospective hypotheses JSON contains an invalid task row.")
+        hypothesis_rows = task.get("hypotheses")
+        if hypothesis_rows is None:
+            normalized_hypotheses: List[Dict[str, Any]] = []
+        elif isinstance(hypothesis_rows, list):
+            normalized_hypotheses = []
+            for row in hypothesis_rows:
+                if not isinstance(row, dict):
+                    raise ValueError("Prospective hypotheses JSON contains an invalid hypothesis row.")
+                normalized_hypotheses.append(dict(row))
+        else:
+            raise ValueError("Prospective hypotheses JSON contains an invalid `task.hypotheses` payload.")
+        normalized_task = dict(task)
+        normalized_task["hypotheses"] = normalized_hypotheses
+        normalized_tasks.append(normalized_task)
+    return {
+        "run": dict(run_payload),
+        "tasks": normalized_tasks,
+        "failures": list(payload.get("failures") or []),
+    }
+
+
 def load_assessment_bundle_text(text: str) -> Dict[str, Any]:
     try:
         payload = json.loads(text)
@@ -307,3 +471,25 @@ def load_assessment_bundle_bytes(data: bytes) -> Dict[str, Any]:
 def load_assessment_bundle(path: str | Path) -> Dict[str, Any]:
     bundle_path = Path(path)
     return load_assessment_bundle_text(bundle_path.read_text(encoding="utf-8"))
+
+
+def load_prospective_hypotheses_text(text: str) -> Dict[str, Any]:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Prospective hypotheses file is not valid JSON.") from exc
+    normalized = _validate_prospective_hypotheses_payload(payload)
+    return _build_prospective_assessment_bundle(dict(normalized.get("run") or {}), list(normalized.get("tasks") or []))
+
+
+def load_prospective_hypotheses_bytes(data: bytes) -> Dict[str, Any]:
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Prospective hypotheses file must be UTF-8 encoded JSON.") from exc
+    return load_prospective_hypotheses_text(text)
+
+
+def load_prospective_hypotheses(path: str | Path) -> Dict[str, Any]:
+    hypotheses_path = Path(path)
+    return load_prospective_hypotheses_text(hypotheses_path.read_text(encoding="utf-8"))

@@ -48,6 +48,10 @@ class EvidencePackRequest(BaseModel):
     diverse: int = 25
     counter_queries: List[str] = Field(default_factory=list)
     discovery_cue: Optional[DiscoveryCue] = None
+    cue_source_snapshot_id: Optional[str] = None
+    cue_similarity_top_k: int = Field(default=50, ge=1)
+    cue_similarity_sample_n: int = Field(default=6, ge=0)
+    cue_similarity_seed: str | int | None = None
 
 
 class ArtifactStoreRequest(BaseModel):

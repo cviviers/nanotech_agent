@@ -5,6 +5,7 @@ import csv
 import json
 import os
 import sys
+import traceback
 import uuid
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -435,6 +436,9 @@ def run_prospective(
     openai_api_key: Optional[str] = None,
     model_name: Optional[str] = None,
     discovery_cue: Optional[Any] = None,
+    cue_source_snapshot_id: Optional[str] = None,
+    cue_similarity_top_k: int = 50,
+    cue_similarity_sample_n: int = 6,
     exemplars: int = 8,
     boundary: int = 8,
     diverse: int = 0,
@@ -465,6 +469,15 @@ def run_prospective(
     snapshot = backend.get_snapshot(snapshot_id)
     resolved_snapshot_id = str(snapshot.get("snapshot_id") or snapshot_id)
     normalized_cue = discovery_cue_to_dict(discovery_cue)
+    cue_source_snapshot_id = str(cue_source_snapshot_id or "").strip() or None
+    if normalized_cue and not cue_source_snapshot_id:
+        raise ValueError("cue_source_snapshot_id is required when discovery_cue is active.")
+    cue_similarity_top_k = int(cue_similarity_top_k)
+    cue_similarity_sample_n = int(cue_similarity_sample_n)
+    if cue_similarity_top_k < 1:
+        raise ValueError("cue_similarity_top_k must be >= 1.")
+    if cue_similarity_sample_n < 0:
+        raise ValueError("cue_similarity_sample_n must be >= 0.")
     targets = _resolve_targets(
         backend,
         resolved_snapshot_id,
@@ -493,6 +506,9 @@ def run_prospective(
             "diverse": diverse,
             "max_iters": max_iters,
             "model_name": model_name or os.getenv("OPENAI_MODEL", "gpt-5-mini-2025-08-07"),
+            "cue_source_snapshot_id": cue_source_snapshot_id,
+            "cue_similarity_top_k": cue_similarity_top_k,
+            "cue_similarity_sample_n": cue_similarity_sample_n,
         },
         "status": "running",
         "summary": {},
@@ -636,6 +652,10 @@ def run_prospective(
                                             openai_api_key=openai_api_key,
                                             model_name=model_name,
                                             discovery_cue=normalized_cue,
+                                            cue_source_snapshot_id=cue_source_snapshot_id,
+                                            cue_similarity_top_k=cue_similarity_top_k,
+                                            cue_similarity_sample_n=cue_similarity_sample_n,
+                                            cue_similarity_seed=f"{run_id}:{method_name}:{seed}:{target_label}",
                                             hypotheses_per_target=hypotheses_per_target,
                                             exemplars=exemplars,
                                             boundary=boundary,
@@ -709,6 +729,9 @@ def run_prospective(
                                         "target": dict(target),
                                         "target_id": target_label,
                                         "error": str(exc),
+                                        "error_type": type(exc).__name__,
+                                        "repr": repr(exc),
+                                        "traceback": traceback.format_exc(),
                                         "trace_ref": dict(task_trace_ref),
                                     }
                                 )
@@ -790,6 +813,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--openai-model", default=os.getenv("OPENAI_MODEL", "gpt-5-mini-2025-08-07"))
     parser.add_argument("--discovery-cue-text", default=None)
     parser.add_argument("--discovery-cue-goal", default=None)
+    parser.add_argument(
+        "--cue-source-snapshot-id",
+        default=None,
+        help="Snapshot id used for cue-semantic retrieval. Required when discovery cue is active.",
+    )
+    parser.add_argument("--cue-similarity-top-k", type=int, default=50)
+    parser.add_argument("--cue-similarity-sample-n", type=int, default=6)
     return parser.parse_args()
 
 
@@ -828,6 +858,9 @@ def main() -> None:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         model_name=args.openai_model,
         discovery_cue=discovery_cue,
+        cue_source_snapshot_id=args.cue_source_snapshot_id,
+        cue_similarity_top_k=args.cue_similarity_top_k,
+        cue_similarity_sample_n=args.cue_similarity_sample_n,
         exemplars=args.exemplars,
         boundary=args.boundary,
         diverse=args.diverse,

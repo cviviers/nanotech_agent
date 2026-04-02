@@ -101,10 +101,18 @@ class BackendApiEvaluationTests(unittest.TestCase):
                 "text": "Focus on inhaled RNA delivery",
                 "soft_constraints": {"route": ["inhalation"], "payload": ["mrna"]},
             },
+            cue_source_snapshot_id="snapshot_full_123",
+            cue_similarity_top_k=75,
+            cue_similarity_sample_n=4,
+            cue_similarity_seed="run_seed",
         )
         self.assertEqual(req.discovery_cue.text, "Focus on inhaled RNA delivery")
         self.assertEqual(req.discovery_cue.soft_constraints["route"], ["inhalation"])
         self.assertEqual(req.profile, "focused_eval")
+        self.assertEqual(req.cue_source_snapshot_id, "snapshot_full_123")
+        self.assertEqual(req.cue_similarity_top_k, 75)
+        self.assertEqual(req.cue_similarity_sample_n, 4)
+        self.assertEqual(req.cue_similarity_seed, "run_seed")
 
     def test_snapshot_and_artifact_lookup_endpoints(self) -> None:
         publish_resp = self.client.post(

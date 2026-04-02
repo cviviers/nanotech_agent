@@ -310,8 +310,6 @@ def _prepare_existing_snapshot(
         cutoff_date="2020-12-31",
         future_window_start="2022-01-01",
         future_window_end="2025-12-31",
-        sensitivity_window_start="2021-01-01",
-        sensitivity_window_end="2025-12-31",
     )
     analysis = run_analysis_v1(split.historical.df, split.historical.embeddings["qwen"], config=analysis_config)
     manifest = build_frontend_corpus_manifest(
@@ -435,6 +433,7 @@ class RetrospectiveMinimalTests(unittest.TestCase):
                     hypotheses_per_target=1,
                     output_dir=str(tmp / "out"),
                     discovery_cue="Focus on folate liposome siRNA approaches in breast cancer",
+                    cue_source_snapshot_id="snapshot_full_source",
                     progress_callback=progress_events.append,
                 )
 
@@ -531,8 +530,6 @@ class RetrospectiveMinimalTests(unittest.TestCase):
                 cutoff_date="2020-12-31",
                 future_window_start="2022-01-01",
                 future_window_end="2025-12-31",
-                sensitivity_window_start="2021-01-01",
-                sensitivity_window_end="2025-12-31",
             )
             config = _normalize_future_prefilter(
                 future_title_exclude=["gold"],
@@ -694,6 +691,7 @@ class RetrospectiveMinimalTests(unittest.TestCase):
                     hypotheses_per_target=1,
                     output_dir=str(tmp / "out_off_cue"),
                     discovery_cue="What characteristics should a coating for inorganic nanoparticles have to overcome biofilms?",
+                    cue_source_snapshot_id="snapshot_full_source",
                     progress_callback=progress_events.append,
                 )
 
@@ -820,6 +818,7 @@ class RetrospectiveMinimalTests(unittest.TestCase):
                     output_dir=str(tmp / "out_existing"),
                     existing_snapshot_id=snapshot_id,
                     discovery_cue="Focus on folate liposome siRNA approaches in breast cancer",
+                    cue_source_snapshot_id="snapshot_full_source",
                     progress_callback=progress_events.append,
                 )
 

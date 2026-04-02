@@ -100,6 +100,16 @@ def page_data_loading():
             available_embeddings,
             index=0 if available_embeddings else None,
         )
+        default_qwen_api_url = (
+            (st.session_state.get("config") or {}).get("qwen_api_url")
+            or os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:8000")
+        )
+        qwen_api_url = st.text_input(
+            "Qwen API Endpoint",
+            value=str(default_qwen_api_url),
+            key="config_qwen_api_url",
+            help="Base URL for the Qwen embedding service (e.g. http://127.0.0.1:8000).",
+        ).strip()
 
     st.subheader("OpenAI API Key (Optional)")
     openai_api_key = st.text_input(
@@ -114,15 +124,18 @@ def page_data_loading():
     )
 
     if st.button("Save Configuration", type="primary"):
+        normalized_qwen_api_url = qwen_api_url.rstrip("/") if qwen_api_url else "http://127.0.0.1:8000"
         st.session_state.config = {
             "data_path": data_path,
             "sample_n": sample_n if sample_n > 0 else None,
             "embedding_cols": available_embeddings,
             "primary_embedding": primary_embedding,
             "random_seed": random_seed,
+            "qwen_api_url": normalized_qwen_api_url,
         }
         st.session_state.random_seed = random_seed
         st.session_state.openai_api_key = openai_api_key
+        st.session_state.qwen_api_url = normalized_qwen_api_url
         st.success("Configuration saved.")
 
     st.divider()

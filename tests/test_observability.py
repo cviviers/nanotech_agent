@@ -58,6 +58,11 @@ class _FakeLangfuseClient:
         return f"https://langfuse.local/project/test/traces/{resolved}" if resolved else None
 
 
+class _TraceUrlFailingLangfuseClient(_FakeLangfuseClient):
+    def get_trace_url(self, *, trace_id=None):
+        raise OSError("[WinError 10061] No connection could be made because the target machine actively refused it")
+
+
 class _StrictCallbackHandler:
     def __init__(self, *, session_id=None, tags=None, enabled=None):
         self.session_id = session_id
@@ -112,6 +117,17 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(ref["tags"], ["test"])
         self.assertEqual(ref["metadata"]["kind"], "unit")
         self.assertIn("/traces/", ref["url"])
+
+    def test_current_trace_ref_omits_url_when_get_trace_url_fails(self) -> None:
+        fake_client = _TraceUrlFailingLangfuseClient()
+        with patch("novelty_app.agents.observability.get_langfuse_client", return_value=fake_client):
+            with observe_current(name="workflow", as_type="agent", trace_id=fake_client.create_trace_id(seed="workflow")):
+                ref = current_trace_ref(session_id="session_1", tags=["test"], metadata={"kind": "unit"})
+        self.assertEqual(ref["provider"], "langfuse")
+        self.assertEqual(ref["session_id"], "session_1")
+        self.assertEqual(ref["tags"], ["test"])
+        self.assertEqual(ref["metadata"]["kind"], "unit")
+        self.assertNotIn("url", ref)
 
     def test_langchain_config_with_observability_appends_callback(self) -> None:
         with patch("novelty_app.agents.observability.get_langfuse_client", return_value=object()), patch(

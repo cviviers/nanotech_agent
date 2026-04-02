@@ -50,6 +50,10 @@ class GenerationContext:
     openai_api_key: Optional[str] = None
     model_name: Optional[str] = None
     discovery_cue: Optional[Dict[str, Any]] = None
+    cue_source_snapshot_id: Optional[str] = None
+    cue_similarity_top_k: int = 50
+    cue_similarity_sample_n: int = 6
+    cue_similarity_seed: Optional[str | int] = None
     exemplars: int = 8
     boundary: int = 8
     diverse: int = 0
@@ -80,6 +84,12 @@ def _pack_request(context: GenerationContext, target_override: Optional[Dict[str
     discovery_cue = discovery_cue_to_dict(context.discovery_cue)
     if discovery_cue is not None:
         payload["discovery_cue"] = discovery_cue
+        if context.cue_source_snapshot_id:
+            payload["cue_source_snapshot_id"] = str(context.cue_source_snapshot_id)
+        payload["cue_similarity_top_k"] = int(context.cue_similarity_top_k)
+        payload["cue_similarity_sample_n"] = int(context.cue_similarity_sample_n)
+        if context.cue_similarity_seed is not None:
+            payload["cue_similarity_seed"] = context.cue_similarity_seed
     if target["target_type"] == "gap":
         payload["gap_id"] = target["gap_id"]
     else:
@@ -245,6 +255,10 @@ def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[Generat
         "boundary": context.boundary,
         "diverse": context.diverse,
         "discovery_cue": discovery_cue_to_dict(context.discovery_cue),
+        "cue_source_snapshot_id": context.cue_source_snapshot_id,
+        "cue_similarity_top_k": context.cue_similarity_top_k,
+        "cue_similarity_sample_n": context.cue_similarity_sample_n,
+        "cue_similarity_seed": context.cue_similarity_seed,
     }
     if context.target["target_type"] == "gap":
         state["gap_id"] = context.target["gap_id"]

@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 import pandas as pd
 import streamlit as st
@@ -95,6 +96,7 @@ DEFAULT_EVALUATION_METHODS = [
     "random_target_control",
 ]
 LLM_REQUIRED_EVALUATION_METHODS = {"orchestrator", "single_shot_llm", "retrieval_summary_direct"}
+SNAPSHOT_PUBLISH_INTENTS = ("prospective", "retrospective")
 _USE_SESSION = object()
 
 
@@ -216,7 +218,7 @@ def _build_snapshot_payload(
         include_raw_rows=include_raw_rows,
         include_embeddings=include_embeddings,
         snapshot_id=st.session_state.get("agent_snapshot_id") or f"snapshot_{uuid.uuid4().hex[:10]}",
-        metadata_overrides=metadata_overrides,
+        metadata_overrides=_snapshot_metadata_with_defaults(metadata_overrides),
     )
 
 
@@ -306,11 +308,7 @@ def _snapshot_retrospective_context(snapshot: Optional[Dict[str, Any]]) -> Dict[
 
 
 def _retrospective_requested_in_ui_state() -> bool:
-    try:
-        _retrospective_metadata_from_state(require_enabled=True)
-    except Exception:
-        return False
-    return True
+    return _retrospective_publish_intent_enabled()
 
 
 def _resolved_evaluation_mode(snapshot: Optional[Dict[str, Any]]) -> str:
@@ -319,6 +317,150 @@ def _resolved_evaluation_mode(snapshot: Optional[Dict[str, Any]]) -> str:
     if _retrospective_requested_in_ui_state():
         return "retrospective"
     return "prospective"
+
+
+def _snapshot_embedding_scope(snapshot: Optional[Dict[str, Any]]) -> str:
+    metadata = dict((snapshot or {}).get("metadata") or {})
+    candidates: List[str] = []
+    if metadata.get("embedding_source") is not None:
+        candidates.append(str(metadata.get("embedding_source") or ""))
+    if metadata.get("embedding_name") is not None:
+        candidates.append(str(metadata.get("embedding_name") or ""))
+    analysis_config = metadata.get("analysis_config")
+    if isinstance(analysis_config, dict) and analysis_config.get("embedding_name") is not None:
+        candidates.append(str(analysis_config.get("embedding_name") or ""))
+    for value in candidates:
+        normalized = value.strip().lower()
+        if normalized:
+            return normalized
+    return "unknown"
+
+
+def _snapshot_catalog_records(payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(payload, dict):
+        snapshots = payload.get("snapshots")
+        if isinstance(snapshots, list):
+            return [dict(s) for s in snapshots if isinstance(s, dict)]
+    if isinstance(payload, list):
+        return [dict(s) for s in payload if isinstance(s, dict)]
+    return []
+
+
+def _snapshot_option_label(snapshot: Dict[str, Any]) -> str:
+    snapshot_id = str(snapshot.get("snapshot_id") or "").strip() or "<missing-id>"
+    metadata = dict(snapshot.get("metadata") or {})
+    split_role = str(metadata.get("split_role") or "").strip() or "unspecified"
+    scope = _snapshot_embedding_scope(snapshot)
+    created_at = str(snapshot.get("created_at") or "").strip()
+    if created_at:
+        return f"{snapshot_id} | role={split_role} | embedding={scope} | {created_at}"
+    return f"{snapshot_id} | role={split_role} | embedding={scope}"
+
+
+def _prioritize_cue_source_snapshots(snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ranked: List[Tuple[int, int, Dict[str, Any]]] = []
+    for idx, snapshot in enumerate(snapshots):
+        snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
+        if not snapshot_id:
+            continue
+        metadata = dict(snapshot.get("metadata") or {})
+        split_role = str(metadata.get("split_role") or "").strip().lower()
+        scope = _snapshot_embedding_scope(snapshot)
+        is_full_or_unspecified = split_role in {"", "full"}
+        if scope == "qwen" and is_full_or_unspecified:
+            rank = 0
+        elif scope == "qwen":
+            rank = 1
+        elif is_full_or_unspecified:
+            rank = 2
+        else:
+            rank = 3
+        ranked.append((rank, idx, snapshot))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [snapshot for _, _, snapshot in ranked]
+
+
+def _suggest_cue_source_snapshot_id(snapshots: List[Dict[str, Any]]) -> Optional[str]:
+    prioritized = _prioritize_cue_source_snapshots(snapshots)
+    for snapshot in prioritized:
+        metadata = dict(snapshot.get("metadata") or {})
+        split_role = str(metadata.get("split_role") or "").strip().lower()
+        scope = _snapshot_embedding_scope(snapshot)
+        if scope == "qwen" and split_role in {"", "full"}:
+            return str(snapshot.get("snapshot_id") or "").strip() or None
+    for snapshot in prioritized:
+        if _snapshot_embedding_scope(snapshot) == "qwen":
+            return str(snapshot.get("snapshot_id") or "").strip() or None
+    return None
+
+
+def _resolve_snapshot_by_id(
+    snapshot_id: str,
+    snapshot_by_id: Dict[str, Dict[str, Any]],
+    backend: BackendClient,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    sid = str(snapshot_id or "").strip()
+    if not sid:
+        return None, None
+    if sid in snapshot_by_id:
+        return snapshot_by_id[sid], None
+    try:
+        return backend.get_snapshot(sid), None
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _cue_source_scope_error(
+    cue_source_snapshot_id: str,
+    cue_source_snapshot: Optional[Dict[str, Any]],
+    cue_source_lookup_error: Optional[str] = None,
+) -> Optional[str]:
+    sid = str(cue_source_snapshot_id or "").strip()
+    if not sid:
+        return "Cue source snapshot ID is required when discovery cue is active."
+    if cue_source_snapshot is None:
+        if cue_source_lookup_error:
+            return f"Cue source snapshot `{sid}` lookup failed: {cue_source_lookup_error}"
+        return f"Cue source snapshot `{sid}` was not found."
+    scope = _snapshot_embedding_scope(cue_source_snapshot)
+    if scope != "qwen":
+        return (
+            f"Cue source snapshot `{sid}` uses embedding scope `{scope}`; "
+            "cue similarity requires `qwen` embeddings."
+        )
+    return None
+
+
+def _qwen_base_url_issue(base_url: str) -> Optional[str]:
+    text = str(base_url or "").strip()
+    if not text:
+        return "Qwen base URL is required for retrospective evaluation."
+    candidate = text if "://" in text else f"http://{text}"
+    parsed = urlparse(candidate)
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        return "Qwen base URL must include a valid host."
+    if host == "0.0.0.0":
+        return (
+            "Qwen base URL host `0.0.0.0` is not reachable from the evaluator. "
+            "Use `127.0.0.1` or a routable host."
+        )
+    return None
+
+
+def _render_preflight_status(hard_failures: List[str], warnings: List[str]) -> None:
+    st.caption("Preflight")
+    if not hard_failures and not warnings:
+        st.success("Ready to run.")
+        return
+    if hard_failures:
+        st.error("Hard failures must be resolved before running.")
+        for message in hard_failures:
+            st.caption(f"- {message}")
+    if warnings:
+        st.warning("Warnings")
+        for message in warnings:
+            st.caption(f"- {message}")
 
 
 def _publication_year_span(df: Optional[pd.DataFrame]) -> Optional[str]:
@@ -467,15 +609,38 @@ def _build_snapshot_payload_for_df(
         include_embeddings=include_embeddings,
         snapshot_id=snapshot_id,
         source="streamlit_agent_console",
-        metadata_overrides=metadata_overrides,
+        metadata_overrides=_snapshot_metadata_with_defaults(metadata_overrides),
     )
 
 
+def _snapshot_metadata_with_defaults(metadata_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Ensure agent-console snapshots carry stable embedding scope metadata."""
+    merged = dict(metadata_overrides or {})
+    if merged.get("embedding_source"):
+        return merged
+    config = st.session_state.get("config") or {}
+    primary_embedding = str(config.get("primary_embedding") or "").strip()
+    if primary_embedding:
+        merged["embedding_source"] = primary_embedding
+    return merged
+
+
+def _snapshot_publish_intent_from_state() -> str:
+    raw = str(st.session_state.get("agent_publish_snapshot_intent") or "prospective").strip().lower()
+    if raw in SNAPSHOT_PUBLISH_INTENTS:
+        return raw
+    return "prospective"
+
+
+def _retrospective_publish_intent_enabled() -> bool:
+    return _snapshot_publish_intent_from_state() == "retrospective"
+
+
 def _retrospective_metadata_from_state(*, require_enabled: bool = False) -> Dict[str, Any]:
-    enabled = bool(st.session_state.get("agent_publish_retrospective_metadata"))
+    enabled = _retrospective_publish_intent_enabled()
     if not enabled:
         if require_enabled:
-            raise ValueError("Enable retrospective metadata above before publishing split historical/future snapshots.")
+            raise ValueError("Set Snapshot intent to `Retrospective` before publishing retrospective metadata.")
         return {}
 
     split_role = str(st.session_state.get("agent_publish_split_role") or "historical")
@@ -661,14 +826,19 @@ def _frontend_corpus_manifest_from_state() -> Dict[str, Any]:
 
 
 def _snapshot_metadata_overrides() -> Dict[str, Any]:
-    if not st.checkbox(
-        "Annotate snapshot for retrospective evaluation",
-        key="agent_publish_retrospective_metadata",
+    intent = st.radio(
+        "Snapshot intent",
+        options=list(SNAPSHOT_PUBLISH_INTENTS),
+        key="agent_publish_snapshot_intent",
+        horizontal=True,
+        format_func=lambda value: str(value).title(),
         help=(
-            "Adds split-role and cutoff-window metadata to the snapshot so historical "
-            "retrospective evaluation runs can reuse the published snapshot cleanly."
+            "Use `Prospective` for full working-corpus snapshots. Use `Retrospective` when publishing "
+            "dated split metadata for benchmark workflows."
         ),
-    ):
+    )
+    if intent != "retrospective":
+        st.caption("Prospective intent publishes the current working corpus without retrospective split metadata.")
         return {}
 
     year_span = _publication_year_span(st.session_state.get("df_valid"))
@@ -677,9 +847,12 @@ def _snapshot_metadata_overrides() -> Dict[str, Any]:
 
     split_role = st.selectbox(
         "Snapshot split role",
-        options=["historical", "future", "full"],
+        options=["historical", "full", "future"],
         key="agent_publish_split_role",
-        help="Use `historical` for snapshots intended to seed the retrospective evaluation pipeline.",
+        help=(
+            "Use `historical` for retrospective historical snapshots. Use `full` for cue-source "
+            "or inspection snapshots that still carry retrospective cutoff metadata."
+        ),
     )
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -704,7 +877,7 @@ def _snapshot_metadata_overrides() -> Dict[str, Any]:
             placeholder="YYYY-MM-DD",
         )
 
-    return _retrospective_metadata_from_state()
+    return _retrospective_metadata_from_state(require_enabled=True)
 
 
 def _parse_multivalue_text(value: str) -> List[str]:
@@ -769,6 +942,190 @@ def _render_evaluation_progress(placeholder: Any, progress_payload: Optional[Dic
         cols[3].metric("Failures", int(progress_payload.get("n_failures") or 0))
 
 
+def _should_publish_cutoff_filtered_snapshot(metadata_overrides: Optional[Dict[str, Any]]) -> bool:
+    split_role = str((metadata_overrides or {}).get("split_role") or "").strip().lower()
+    return split_role == "historical"
+
+
+def _set_active_published_snapshot(snapshot_id: str) -> None:
+    sid = str(snapshot_id or "").strip()
+    if not sid:
+        return
+    st.session_state["agent_snapshot_id"] = sid
+    st.session_state["agent_eval_snapshot_id"] = sid
+    st.session_state["agent_eval_cue_source_snapshot_id"] = sid
+
+
+def _upsert_snapshot_record_in_cache(cache_payload: Any, snapshot_record: Dict[str, Any]) -> Dict[str, Any]:
+    sid = str(snapshot_record.get("snapshot_id") or "").strip()
+    if not sid:
+        if isinstance(cache_payload, dict):
+            return dict(cache_payload)
+        return {"snapshots": _snapshot_catalog_records(cache_payload)}
+
+    normalized_record = dict(snapshot_record)
+    normalized_record["snapshot_id"] = sid
+    existing_records = _snapshot_catalog_records(cache_payload)
+    merged_records = [normalized_record] + [
+        dict(item)
+        for item in existing_records
+        if str(item.get("snapshot_id") or "").strip() != sid
+    ]
+
+    if isinstance(cache_payload, dict):
+        out = dict(cache_payload)
+        out.pop("error", None)
+        out["snapshots"] = merged_records
+        return out
+    return {"snapshots": merged_records}
+
+
+def _sync_snapshot_cache_after_publish(
+    backend: Any,
+    snapshot_records: List[Dict[str, Any]],
+) -> Optional[str]:
+    candidates: List[Dict[str, Any]] = []
+    for record in snapshot_records:
+        sid = str((record or {}).get("snapshot_id") or "").strip()
+        if not sid:
+            continue
+        normalized = dict(record)
+        normalized["snapshot_id"] = sid
+        if "created_at" not in normalized:
+            normalized["created_at"] = _now_iso()
+        candidates.append(normalized)
+
+    if not candidates:
+        return None
+
+    st.session_state["agent_eval_snapshot_options_loaded"] = True
+    try:
+        st.session_state["agent_snapshots_cache"] = backend.list_snapshots(limit=200)
+        return None
+    except Exception as exc:
+        cache_payload = st.session_state.get("agent_snapshots_cache")
+        for record in candidates:
+            cache_payload = _upsert_snapshot_record_in_cache(cache_payload, record)
+        st.session_state["agent_snapshots_cache"] = cache_payload
+        return str(exc)
+
+
+def _fallback_artifact_filename(result_payload: Dict[str, Any], fallback_suffix: str) -> str:
+    run_id_raw = str(((result_payload.get("run") or {}).get("run_id") or "")).strip()
+    run_id = run_id_raw.replace("/", "_").replace("\\", "_") or "evaluation"
+    suffix = str(fallback_suffix or "").strip().lstrip("_") or "artifact.bin"
+    return f"{run_id}_{suffix}"
+
+
+def _resolve_download_artifact(
+    result_payload: Dict[str, Any],
+    *,
+    payload_key: str,
+    fallback_suffix: str,
+) -> Dict[str, Any]:
+    fallback_name = _fallback_artifact_filename(result_payload, fallback_suffix)
+    raw_path = str(result_payload.get(payload_key) or "").strip()
+    filename = Path(raw_path).name if raw_path else ""
+    filename = filename or fallback_name
+
+    if not raw_path:
+        return {
+            "ok": False,
+            "reason": "missing_path",
+            "error": "No artifact path was provided.",
+            "path": "",
+            "filename": filename,
+            "data": b"",
+        }
+
+    path = Path(raw_path)
+    if not path.exists():
+        return {
+            "ok": False,
+            "reason": "missing_file",
+            "error": f"File not found: {path}",
+            "path": str(path),
+            "filename": filename,
+            "data": b"",
+        }
+    if not path.is_file():
+        return {
+            "ok": False,
+            "reason": "not_file",
+            "error": f"Path is not a file: {path}",
+            "path": str(path),
+            "filename": filename,
+            "data": b"",
+        }
+    try:
+        data = path.read_bytes()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason": "unreadable",
+            "error": f"Failed to read file: {exc}",
+            "path": str(path),
+            "filename": filename,
+            "data": b"",
+        }
+    return {
+        "ok": True,
+        "reason": "ok",
+        "error": "",
+        "path": str(path),
+        "filename": filename,
+        "data": data,
+    }
+
+
+def _render_evaluation_artifact_downloads(result_payload: Dict[str, Any]) -> None:
+    mode = str(result_payload.get("mode") or "").strip().lower()
+    if mode == "prospective":
+        artifact_specs = [
+            ("Download Summary JSON", "summary_json", "application/json", "summary.json"),
+            ("Download Hypotheses JSON", "hypotheses_json", "application/json", "hypotheses.json"),
+            ("Download Hypotheses CSV", "hypotheses_csv", "text/csv", "hypotheses.csv"),
+        ]
+    elif mode == "retrospective":
+        artifact_specs = [
+            ("Download Review Packet CSV", "review_packet_csv", "text/csv", "review_packet.csv"),
+            ("Download Review Packet JSON", "review_packet_json", "application/json", "review_packet.json"),
+            ("Download Assessment Bundle", "assessment_bundle_json", "application/json", "assessment_bundle_v1.json"),
+        ]
+    else:
+        artifact_specs = []
+
+    if not artifact_specs:
+        return
+
+    st.markdown("**Download Artifacts**")
+    cols = st.columns(len(artifact_specs))
+    key_run_id = str(((result_payload.get("run") or {}).get("run_id") or "evaluation")).strip() or "evaluation"
+    key_run_id = key_run_id.replace(" ", "_")
+    for idx, (label, payload_key, mime, fallback_suffix) in enumerate(artifact_specs):
+        artifact = _resolve_download_artifact(
+            result_payload,
+            payload_key=payload_key,
+            fallback_suffix=fallback_suffix,
+        )
+        with cols[idx]:
+            if artifact.get("ok"):
+                st.download_button(
+                    label=label,
+                    data=artifact.get("data") or b"",
+                    file_name=str(artifact.get("filename") or _fallback_artifact_filename(result_payload, fallback_suffix)),
+                    mime=mime,
+                    key=f"agent_eval_download_{mode}_{payload_key}_{key_run_id}",
+                    use_container_width=True,
+                )
+            else:
+                reason = str(artifact.get("reason") or "")
+                if reason == "missing_path":
+                    st.caption(f"{label}: unavailable for this run.")
+                else:
+                    st.caption(f"{label}: {artifact.get('error')}")
+
+
 def _build_retrospective_command_preview(config: Dict[str, Any]) -> str:
     parts = [
         "python",
@@ -796,10 +1153,6 @@ def _build_retrospective_command_preview(config: Dict[str, Any]) -> str:
                 config["future_window_end"],
             ]
         )
-        if config.get("sensitivity_window_start"):
-            parts.extend(["--sensitivity-window-start", config["sensitivity_window_start"]])
-        if config.get("sensitivity_window_end"):
-            parts.extend(["--sensitivity-window-end", config["sensitivity_window_end"]])
     parts.extend(
         [
             "--n-gap-targets",
@@ -826,6 +1179,17 @@ def _build_retrospective_command_preview(config: Dict[str, Any]) -> str:
         parts.extend(["--discovery-cue-text", config["discovery_cue_text"]])
     if config.get("discovery_cue_goal"):
         parts.extend(["--discovery-cue-goal", config["discovery_cue_goal"]])
+    if config.get("cue_source_snapshot_id"):
+        parts.extend(
+            [
+                "--cue-source-snapshot-id",
+                str(config["cue_source_snapshot_id"]),
+                "--cue-similarity-top-k",
+                str(config.get("cue_similarity_top_k", 50)),
+                "--cue-similarity-sample-n",
+                str(config.get("cue_similarity_sample_n", 6)),
+            ]
+        )
     title_terms = list(config.get("future_title_exclude") or [])
     if title_terms:
         parts.extend(["--future-title-exclude", *title_terms])
@@ -879,6 +1243,17 @@ def _build_prospective_command_preview(config: Dict[str, Any]) -> str:
         parts.extend(["--discovery-cue-text", config["discovery_cue_text"]])
     if config.get("discovery_cue_goal"):
         parts.extend(["--discovery-cue-goal", config["discovery_cue_goal"]])
+    if config.get("cue_source_snapshot_id"):
+        parts.extend(
+            [
+                "--cue-source-snapshot-id",
+                str(config["cue_source_snapshot_id"]),
+                "--cue-similarity-top-k",
+                str(config.get("cue_similarity_top_k", 50)),
+                "--cue-similarity-sample-n",
+                str(config.get("cue_similarity_sample_n", 6)),
+            ]
+        )
     return _command_preview(parts)
 
 
@@ -952,35 +1327,27 @@ def _tab_snapshot_publish() -> None:
         key="agent_include_embeddings",
         help="Uses st.session_state.X_primary. Increases snapshot size, but enables richer evidence-pack selection.",
     )
-    drop_post_cutoff = st.checkbox(
-        "Drop papers after cutoff date before publishing snapshot",
-        key="agent_publish_drop_post_cutoff",
-        help=(
-            "When retrospective metadata is enabled, publish only papers on or before the cutoff date. "
-            "This is useful for historical snapshots."
-        ),
-    )
 
     try:
         metadata_overrides = _snapshot_metadata_overrides()
-        if drop_post_cutoff:
+        if _should_publish_cutoff_filtered_snapshot(metadata_overrides):
             split_plan = _retrospective_split_plan()
             historical_mask_list = [bool(v) for v in split_plan["historical_mask"].tolist()]
             if not any(historical_mask_list):
                 raise ValueError("No papers remain on or before the cutoff date.")
-            cutoff_metadata = dict(metadata_overrides or {})
-            cutoff_metadata["split_role"] = "historical"
-            extra = dict(cutoff_metadata.get("extra") or {})
+            filtered_metadata = dict(metadata_overrides or {})
+            filtered_metadata["split_role"] = "historical"
+            extra = dict(filtered_metadata.get("extra") or {})
             extra["cutoff_filter_applied"] = True
             extra["excluded_post_cutoff_papers"] = split_plan["counts"]["excluded"]
             extra["excluded_undated_papers"] = split_plan["counts"]["undated"]
-            cutoff_metadata["extra"] = extra
+            filtered_metadata["extra"] = extra
             payload, summary = _build_snapshot_payload_for_df(
                 df=st.session_state.df_valid.loc[split_plan["historical_mask"]].copy(),
                 include_raw_rows=include_raw_rows,
                 include_embeddings=include_embeddings,
                 snapshot_id=st.session_state.get("agent_snapshot_id") or f"snapshot_{uuid.uuid4().hex[:10]}",
-                metadata_overrides=cutoff_metadata,
+                metadata_overrides=filtered_metadata,
                 gap_regions=_subset_gap_regions(
                     st.session_state.df_valid,
                     st.session_state.get("gap_regions") or [],
@@ -1000,6 +1367,12 @@ def _tab_snapshot_publish() -> None:
                 include_embeddings=include_embeddings,
                 metadata_overrides=metadata_overrides,
             )
+            split_role = str((metadata_overrides or {}).get("split_role") or "").strip().lower()
+            if split_role in {"full", "future"}:
+                st.info(
+                    "Publishing a retrospective metadata snapshot without cutoff filtering "
+                    f"(split_role={split_role})."
+                )
     except Exception as exc:
         st.error(f"Failed to build snapshot payload: {exc}")
         return
@@ -1022,12 +1395,26 @@ def _tab_snapshot_publish() -> None:
 
     if st.button("Publish to Backend", type="primary"):
         try:
-            resp = _get_backend().publish_snapshot(payload)
+            backend = _get_backend()
+            resp = backend.publish_snapshot(payload)
             st.session_state.agent_publish_result = resp
-            if resp.get("snapshot_id"):
-                st.session_state.agent_snapshot_id = resp["snapshot_id"]
-                st.session_state.agent_eval_snapshot_id = resp["snapshot_id"]
+            published_snapshot_id = str(resp.get("snapshot_id") or payload.get("snapshot_id") or "").strip()
+            if published_snapshot_id:
+                _set_active_published_snapshot(published_snapshot_id)
+            sync_error = _sync_snapshot_cache_after_publish(
+                backend,
+                [
+                    {
+                        "snapshot_id": published_snapshot_id or str(payload.get("snapshot_id") or "").strip(),
+                        "metadata": dict(payload.get("metadata") or {}),
+                    }
+                ],
+            )
             st.success("Snapshot published")
+            if sync_error:
+                st.caption(
+                    "Snapshot options refresh failed after publish; the new snapshot was added locally to picker options."
+                )
         except Exception as exc:
             st.session_state.agent_publish_result = {
                 "error": str(exc),
@@ -1088,7 +1475,7 @@ def _tab_snapshot_publish() -> None:
         analysis_config_payload = _normalized_frontend_analysis_config()
     except Exception as exc:
         split_error = str(exc)
-        st.info("Enable retrospective metadata above and provide valid dates to prepare a split export.")
+        st.info("Set Snapshot intent to `Retrospective` and provide valid dates to prepare a split export.")
         st.caption(split_error)
 
     if split_plan is not None and source_df is not None and frontend_manifest is not None and analysis_config_payload is not None:
@@ -1279,8 +1666,21 @@ def _tab_snapshot_publish() -> None:
                             }
                         },
                     )
-                st.session_state.agent_snapshot_id = historical_snapshot_id
-                st.session_state.agent_eval_snapshot_id = historical_snapshot_id
+                _set_active_published_snapshot(historical_snapshot_id)
+                sync_records = [
+                    {
+                        "snapshot_id": historical_snapshot_id,
+                        "metadata": dict(historical_payload.get("metadata") or {}),
+                    }
+                ]
+                if publish_future_snapshot and future_snapshot_id is not None:
+                    sync_records.append(
+                        {
+                            "snapshot_id": future_snapshot_id,
+                            "metadata": dict(future_payload.get("metadata") or {}),
+                        }
+                    )
+                sync_error = _sync_snapshot_cache_after_publish(backend, sync_records)
                 st.session_state.agent_split_publish_result = {
                     "ok": True,
                     "bundle_prefix": bundle_prefix,
@@ -1290,6 +1690,11 @@ def _tab_snapshot_publish() -> None:
                     "manifest_artifact": manifest_resp,
                 }
                 st.success("Retrospective evaluation bundle published")
+                if sync_error:
+                    st.caption(
+                        "Snapshot options refresh failed after split publish; published snapshots were added locally "
+                        "to picker options."
+                    )
             except Exception as exc:
                 st.session_state.agent_split_publish_result = {
                     "error": str(exc),
@@ -1323,39 +1728,12 @@ def _tab_evaluation_runner() -> None:
             st.caption(str(_EVALUATION_IMPORT_ERROR))
         return
 
-    if "agent_eval_snapshot_id" not in st.session_state:
-        st.session_state.agent_eval_snapshot_id = st.session_state.get("agent_snapshot_id") or ""
-
-    snapshot_id = st.text_input(
-        "Snapshot ID",
-        key="agent_eval_snapshot_id",
-        help="Published snapshot to evaluate. Retrospective runs may also reuse this historical snapshot.",
-    ).strip()
-    snapshot: Optional[Dict[str, Any]] = None
-    snapshot_error: Optional[str] = None
-    if snapshot_id:
-        try:
-            snapshot = _get_backend().get_snapshot(snapshot_id)
-        except Exception as exc:
-            snapshot_error = str(exc)
-
-    snapshot_context = _snapshot_retrospective_context(snapshot)
-    mode = _resolved_evaluation_mode(snapshot)
-    if mode == "retrospective":
-        if snapshot_context.get("has_dates"):
-            st.info("Mode: retrospective. The selected snapshot has cutoff and future-window metadata.")
-        else:
-            st.info("Mode: retrospective. Valid cutoff and future-window dates are initialized in the publish panel.")
-    else:
-        st.info("Mode: prospective. No retrospective cutoff metadata is active.")
-    if snapshot_error:
-        st.caption(f"Snapshot lookup failed: {snapshot_error}")
-
     backend_url = st.text_input(
         "Backend URL",
         value=st.session_state.get("agent_backend_url") or DEFAULT_BACKEND_URL,
         key="agent_eval_backend_url",
     )
+    backend = BackendClient(backend_url)
     model_name = st.text_input(
         "OpenAI model",
         value=os.environ.get("OPENAI_MODEL", "gpt-5-mini-2025-08-07"),
@@ -1368,6 +1746,88 @@ def _tab_evaluation_runner() -> None:
         key="agent_eval_methods",
         help="Choose one or more generation methods to score against the selected evaluation protocol.",
     )
+    openai_api_key = st.session_state.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+
+    if "agent_eval_snapshot_id" not in st.session_state:
+        st.session_state.agent_eval_snapshot_id = st.session_state.get("agent_snapshot_id") or ""
+    if "agent_eval_cue_source_snapshot_id" not in st.session_state:
+        st.session_state.agent_eval_cue_source_snapshot_id = ""
+    if "agent_eval_snapshot_options_loaded" not in st.session_state:
+        st.session_state.agent_eval_snapshot_options_loaded = False
+
+    refresh_cols = st.columns([1, 3])
+    with refresh_cols[0]:
+        if st.button("Refresh Snapshot Options", key="agent_eval_refresh_snapshot_options", use_container_width=True):
+            try:
+                st.session_state.agent_snapshots_cache = backend.list_snapshots(limit=200)
+                st.session_state.agent_eval_snapshot_options_loaded = True
+            except Exception as exc:
+                st.session_state.agent_snapshots_cache = {"error": str(exc)}
+                st.session_state.agent_eval_snapshot_options_loaded = True
+    if (
+        not st.session_state.get("agent_eval_snapshot_options_loaded")
+        and st.session_state.get("agent_snapshots_cache") is None
+    ):
+        try:
+            st.session_state.agent_snapshots_cache = backend.list_snapshots(limit=200)
+        except Exception as exc:
+            st.session_state.agent_snapshots_cache = {"error": str(exc)}
+        st.session_state.agent_eval_snapshot_options_loaded = True
+
+    snapshot_payload = st.session_state.get("agent_snapshots_cache")
+    snapshot_lookup_error = str((snapshot_payload or {}).get("error") or "").strip() if isinstance(snapshot_payload, dict) else ""
+    snapshot_options = _snapshot_catalog_records(snapshot_payload)
+    snapshot_by_id = {
+        str(snapshot.get("snapshot_id") or "").strip(): snapshot
+        for snapshot in snapshot_options
+        if str(snapshot.get("snapshot_id") or "").strip()
+    }
+    snapshot_label_by_id = {sid: _snapshot_option_label(snapshot) for sid, snapshot in snapshot_by_id.items()}
+
+    snapshot_picker_ids = [""] + list(snapshot_by_id.keys())
+    current_snapshot_id = str(st.session_state.get("agent_eval_snapshot_id") or "").strip()
+    snapshot_picker_index = snapshot_picker_ids.index(current_snapshot_id) if current_snapshot_id in snapshot_picker_ids else 0
+    selected_snapshot_id = st.selectbox(
+        "Snapshot Picker",
+        options=snapshot_picker_ids,
+        index=snapshot_picker_index,
+        key="agent_eval_snapshot_picker",
+        format_func=lambda sid: (
+            "Manual entry"
+            if not sid
+            else snapshot_label_by_id.get(str(sid), str(sid))
+        ),
+        help="Pick a published snapshot and optionally refine it with the manual override field below.",
+    )
+    if selected_snapshot_id:
+        st.session_state.agent_eval_snapshot_id = str(selected_snapshot_id)
+
+    snapshot_id = st.text_input(
+        "Snapshot ID (manual override)",
+        key="agent_eval_snapshot_id",
+        help="Published snapshot to evaluate. Retrospective runs may also reuse this historical snapshot.",
+    ).strip()
+
+    snapshot: Optional[Dict[str, Any]] = None
+    snapshot_error: Optional[str] = None
+    if snapshot_id:
+        snapshot, snapshot_error = _resolve_snapshot_by_id(snapshot_id, snapshot_by_id, backend)
+
+    snapshot_context = _snapshot_retrospective_context(snapshot)
+    mode = _resolved_evaluation_mode(snapshot)
+    if mode == "retrospective":
+        if snapshot_context.get("has_dates"):
+            st.info("Inferred mode: retrospective. The selected snapshot has cutoff and future-window metadata.")
+        elif _retrospective_publish_intent_enabled():
+            st.info("Inferred mode: retrospective. Snapshot intent in the publish panel is set to Retrospective.")
+        else:
+            st.info("Inferred mode: retrospective.")
+    else:
+        st.info("Inferred mode: prospective. No retrospective cutoff metadata is active.")
+    if snapshot_lookup_error:
+        st.caption(f"Snapshot option refresh error: {snapshot_lookup_error}")
+    if snapshot_error:
+        st.caption(f"Snapshot lookup failed: {snapshot_error}")
 
     common_cols = st.columns(4)
     seeds = int(common_cols[0].number_input("Seeds", min_value=1, value=1, step=1, key="agent_eval_seeds"))
@@ -1381,13 +1841,13 @@ def _tab_evaluation_runner() -> None:
         )
     )
     n_gap_targets = int(
-        common_cols[2].number_input("Gap targets", min_value=0, value=1, step=1, key="agent_eval_n_gap_targets")
+        common_cols[2].number_input("Gap targets", min_value=0, value=25, step=1, key="agent_eval_n_gap_targets")
     )
     n_cluster_pair_targets = int(
         common_cols[3].number_input(
             "Cluster-pair targets",
             min_value=0,
-            value=1,
+            value=10,
             step=1,
             key="agent_eval_n_cluster_pair_targets",
         )
@@ -1398,14 +1858,93 @@ def _tab_evaluation_runner() -> None:
         value="",
         height=100,
         key="agent_eval_discovery_cue_text",
+        placeholder=(
+            "Example: Focus on antimicrobial nanocarriers that combine membrane-disruptive peptides "
+            "with pH-responsive polymer coatings to improve biofilm penetration while reducing "
+            "mammalian cytotoxicity."
+        ),
     ).strip()
     discovery_cue_goal = st.text_input(
         "Discovery cue goal (optional)",
         value="",
         key="agent_eval_discovery_cue_goal",
+        placeholder=(
+            "Example: Prioritize hypotheses for multidrug-resistant Gram-negative biofilm infections."
+        ),
     ).strip()
 
-    openai_api_key = st.session_state.get("openai_api_key") or os.environ.get("OPENAI_API_KEY")
+    cue_is_active = bool(discovery_cue_text or discovery_cue_goal)
+    if cue_is_active and not str(st.session_state.get("agent_eval_cue_source_snapshot_id") or "").strip():
+        suggested_cue_snapshot_id = _suggest_cue_source_snapshot_id(snapshot_options)
+        if suggested_cue_snapshot_id:
+            st.session_state.agent_eval_cue_source_snapshot_id = suggested_cue_snapshot_id
+
+    prioritized_cue_options = _prioritize_cue_source_snapshots(snapshot_options)
+    cue_picker_ids = [
+        str(snapshot.get("snapshot_id") or "").strip()
+        for snapshot in prioritized_cue_options
+        if str(snapshot.get("snapshot_id") or "").strip()
+    ]
+    cue_picker_values = [""] + cue_picker_ids
+    current_cue_id = str(st.session_state.get("agent_eval_cue_source_snapshot_id") or "").strip()
+    cue_picker_index = cue_picker_values.index(current_cue_id) if current_cue_id in cue_picker_values else 0
+
+    cue_cols = st.columns(3)
+    with cue_cols[0]:
+        selected_cue_source_snapshot_id = st.selectbox(
+            "Cue Source Snapshot Picker",
+            options=cue_picker_values,
+            index=cue_picker_index,
+            key="agent_eval_cue_source_snapshot_picker",
+            format_func=lambda sid: (
+                "Manual entry"
+                if not sid
+                else snapshot_label_by_id.get(str(sid), str(sid))
+            ),
+            help="Prioritizes full-corpus qwen snapshots for cue-semantic evidence retrieval.",
+        )
+        if selected_cue_source_snapshot_id:
+            st.session_state.agent_eval_cue_source_snapshot_id = str(selected_cue_source_snapshot_id)
+        cue_source_snapshot_id = st.text_input(
+            "Cue source snapshot ID (manual override)",
+            value="",
+            key="agent_eval_cue_source_snapshot_id",
+            help="Full-corpus snapshot used for cue-semantic retrieval. Required when discovery cue is active.",
+        ).strip()
+    cue_similarity_top_k = int(
+        cue_cols[1].number_input(
+            "Cue top-K",
+            min_value=1,
+            value=50,
+            step=1,
+            key="agent_eval_cue_similarity_top_k",
+        )
+    )
+    cue_similarity_sample_n = int(
+        cue_cols[2].number_input(
+            "Cue sample N",
+            min_value=0,
+            value=6,
+            step=1,
+            key="agent_eval_cue_similarity_sample_n",
+        )
+    )
+
+    cue_source_snapshot: Optional[Dict[str, Any]] = None
+    cue_source_lookup_error: Optional[str] = None
+    if cue_source_snapshot_id:
+        if snapshot_id and cue_source_snapshot_id == snapshot_id and snapshot is not None:
+            cue_source_snapshot = snapshot
+        else:
+            cue_source_snapshot, cue_source_lookup_error = _resolve_snapshot_by_id(
+                cue_source_snapshot_id,
+                snapshot_by_id,
+                backend,
+            )
+
+    if cue_is_active and not cue_source_snapshot_id:
+        st.warning("Cue source snapshot ID is required when discovery cue is active.")
+
     if not methods:
         st.warning("Select at least one method before running an evaluation.")
     elif any(method in LLM_REQUIRED_EVALUATION_METHODS for method in methods) and not openai_api_key:
@@ -1415,7 +1954,7 @@ def _tab_evaluation_runner() -> None:
     if st.session_state.get("agent_evaluation_progress"):
         _render_evaluation_progress(progress_placeholder, st.session_state.agent_evaluation_progress)
 
-    if mode == "retrospective":
+    with st.expander("Retrospective Evaluation", expanded=False):
         default_cutoff = (
             snapshot_context.get("cutoff_date")
             or str(st.session_state.get("agent_publish_cutoff_date") or "").strip()
@@ -1431,11 +1970,6 @@ def _tab_evaluation_runner() -> None:
             or str(st.session_state.get("agent_publish_future_window_end") or "").strip()
             or "2025-12-31"
         )
-        try:
-            default_sensitivity_start = (pd.Timestamp(default_cutoff) + pd.Timedelta(days=1)).date().isoformat()
-        except Exception:
-            default_sensitivity_start = "2021-01-01"
-        default_sensitivity_end = default_future_end or "2025-12-31"
 
         reuse_snapshot = st.checkbox(
             "Reuse an existing published historical snapshot",
@@ -1471,19 +2005,9 @@ def _tab_evaluation_runner() -> None:
             key="agent_eval_retro_future_window_end",
         ).strip()
 
-        retro_more_cols = st.columns(4)
-        sensitivity_window_start = retro_more_cols[0].text_input(
-            "Sensitivity window start",
-            value=default_sensitivity_start,
-            key="agent_eval_retro_sensitivity_window_start",
-        ).strip()
-        sensitivity_window_end = retro_more_cols[1].text_input(
-            "Sensitivity window end",
-            value=default_sensitivity_end,
-            key="agent_eval_retro_sensitivity_window_end",
-        ).strip()
+        retro_more_cols = st.columns(2)
         n_gold_future_papers = int(
-            retro_more_cols[2].number_input(
+            retro_more_cols[0].number_input(
                 "Gold future papers",
                 min_value=1,
                 value=5,
@@ -1491,7 +2015,7 @@ def _tab_evaluation_runner() -> None:
                 key="agent_eval_retro_n_gold_future_papers",
             )
         )
-        disable_leakage_check = retro_more_cols[3].checkbox(
+        disable_leakage_check = retro_more_cols[1].checkbox(
             "Disable leakage check",
             value=False,
             key="agent_eval_retro_disable_leakage_check",
@@ -1510,7 +2034,7 @@ def _tab_evaluation_runner() -> None:
         ).strip()
         qwen_base_url = io_cols[2].text_input(
             "Qwen base URL",
-            value=os.environ.get("QWEN_BASE_URL", "http://0.0.0.0:8000"),
+            value=os.environ.get("QWEN_BASE_URL", "http://127.0.0.1:8000"),
             key="agent_eval_retro_qwen_base_url",
         ).strip()
         output_dir = st.text_input(
@@ -1519,38 +2043,103 @@ def _tab_evaluation_runner() -> None:
             key="agent_eval_retro_output_dir",
         ).strip()
 
-        with st.expander("Future Prefilter", expanded=False):
-            future_title_exclude_text = st.text_area(
-                "Title exclusions (comma or newline separated)",
-                value="",
-                height=80,
-                key="agent_eval_retro_future_title_exclude",
+        st.markdown("**Future Prefilter**")
+        future_title_exclude_text = st.text_area(
+            "Title exclusions (comma or newline separated)",
+            value="",
+            height=80,
+            key="agent_eval_retro_future_title_exclude",
+        )
+        future_abstract_exclude_text = st.text_area(
+            "Abstract exclusions (comma or newline separated)",
+            value="",
+            height=80,
+            key="agent_eval_retro_future_abstract_exclude",
+        )
+        future_semantic_query = st.text_area(
+            "Future semantic query",
+            value="",
+            height=80,
+            key="agent_eval_retro_future_semantic_query",
+        ).strip()
+        future_semantic_threshold = float(
+            st.number_input(
+                "Future semantic threshold",
+                min_value=0.0,
+                max_value=1.0,
+                value=0.45,
+                step=0.01,
+                key="agent_eval_retro_future_semantic_threshold",
             )
-            future_abstract_exclude_text = st.text_area(
-                "Abstract exclusions (comma or newline separated)",
-                value="",
-                height=80,
-                key="agent_eval_retro_future_abstract_exclude",
-            )
-            future_semantic_query = st.text_area(
-                "Future semantic query",
-                value="",
-                height=80,
-                key="agent_eval_retro_future_semantic_query",
-            ).strip()
-            future_semantic_threshold = float(
-                st.number_input(
-                    "Future semantic threshold",
-                    min_value=0.0,
-                    max_value=1.0,
-                    value=0.45,
-                    step=0.01,
-                    key="agent_eval_retro_future_semantic_threshold",
-                )
-            )
+        )
 
         future_title_exclude = _parse_multivalue_text(future_title_exclude_text)
         future_abstract_exclude = _parse_multivalue_text(future_abstract_exclude_text)
+
+        retro_hard_failures: List[str] = []
+        retro_warnings: List[str] = []
+        if not methods:
+            retro_hard_failures.append("Select at least one method.")
+        if not data_json:
+            retro_hard_failures.append("Data JSON is required.")
+        if not data_dir:
+            retro_hard_failures.append("Data dir is required.")
+        if not output_dir:
+            retro_hard_failures.append("Output dir is required.")
+        if reuse_snapshot and not existing_snapshot_id:
+            retro_hard_failures.append("Existing snapshot ID is required when snapshot reuse is enabled.")
+        if not reuse_snapshot and not _has_valid_retrospective_dates(
+            cutoff_date,
+            future_window_start,
+            future_window_end,
+        ):
+            retro_hard_failures.append("Cutoff date and future window dates must be valid before running retrospective evaluation.")
+
+        existing_snapshot_error: Optional[str] = None
+        existing_snapshot: Optional[Dict[str, Any]] = None
+        existing_snapshot_context = {}
+        if reuse_snapshot and existing_snapshot_id:
+            if snapshot_id and existing_snapshot_id == snapshot_id and snapshot is not None:
+                existing_snapshot = snapshot
+            else:
+                existing_snapshot, existing_snapshot_error = _resolve_snapshot_by_id(
+                    existing_snapshot_id,
+                    snapshot_by_id,
+                    backend,
+                )
+            if existing_snapshot is not None:
+                existing_snapshot_context = _snapshot_retrospective_context(existing_snapshot)
+            if existing_snapshot_error:
+                retro_hard_failures.append(f"Existing snapshot lookup failed: {existing_snapshot_error}")
+            elif existing_snapshot is None:
+                retro_hard_failures.append(f"Existing snapshot `{existing_snapshot_id}` was not found.")
+            elif not existing_snapshot_context.get("can_reuse_snapshot"):
+                retro_hard_failures.append(
+                    str(existing_snapshot_context.get("reuse_reason") or "Existing snapshot is not reusable for retrospective mode.")
+                )
+
+        if cue_is_active:
+            cue_error = _cue_source_scope_error(
+                cue_source_snapshot_id,
+                cue_source_snapshot,
+                cue_source_lookup_error,
+            )
+            if cue_error:
+                retro_hard_failures.append(cue_error)
+
+        qwen_issue = _qwen_base_url_issue(qwen_base_url)
+        if qwen_issue:
+            retro_hard_failures.append(qwen_issue)
+
+        if any(method in LLM_REQUIRED_EVALUATION_METHODS for method in methods) and not openai_api_key:
+            retro_warnings.append("OPENAI_API_KEY is required for selected LLM-backed methods.")
+        if snapshot_error:
+            retro_warnings.append(f"Evaluation snapshot lookup warning: {snapshot_error}")
+        if cue_source_lookup_error and cue_source_snapshot_id:
+            retro_warnings.append(f"Cue source snapshot lookup warning: {cue_source_lookup_error}")
+
+        _render_preflight_status(retro_hard_failures, retro_warnings)
+
         retro_command = _build_retrospective_command_preview(
             {
                 "backend_url": backend_url,
@@ -1561,8 +2150,6 @@ def _tab_evaluation_runner() -> None:
                 "cutoff_date": cutoff_date,
                 "future_window_start": future_window_start,
                 "future_window_end": future_window_end,
-                "sensitivity_window_start": sensitivity_window_start or None,
-                "sensitivity_window_end": sensitivity_window_end or None,
                 "n_gap_targets": n_gap_targets,
                 "n_cluster_pair_targets": n_cluster_pair_targets,
                 "n_gold_future_papers": n_gold_future_papers,
@@ -1574,6 +2161,9 @@ def _tab_evaluation_runner() -> None:
                 "disable_leakage_check": disable_leakage_check,
                 "discovery_cue_text": discovery_cue_text or None,
                 "discovery_cue_goal": discovery_cue_goal or None,
+                "cue_source_snapshot_id": cue_source_snapshot_id or None,
+                "cue_similarity_top_k": cue_similarity_top_k,
+                "cue_similarity_sample_n": cue_similarity_sample_n,
                 "future_title_exclude": future_title_exclude,
                 "future_abstract_exclude": future_abstract_exclude,
                 "future_semantic_query": future_semantic_query or None,
@@ -1582,18 +2172,15 @@ def _tab_evaluation_runner() -> None:
         )
         st.code(retro_command, language="bash")
 
-        if st.button("Run Retrospective Evaluation", type="primary", key="agent_eval_run_retrospective"):
+        if st.button(
+            "Run Retrospective Evaluation",
+            type="primary",
+            key="agent_eval_run_retrospective",
+            disabled=bool(retro_hard_failures),
+        ):
             try:
-                if not methods:
-                    raise ValueError("Select at least one method.")
-                if reuse_snapshot and not existing_snapshot_id:
-                    raise ValueError("Existing snapshot ID is required when snapshot reuse is enabled.")
-                if not reuse_snapshot and not _has_valid_retrospective_dates(
-                    cutoff_date,
-                    future_window_start,
-                    future_window_end,
-                ):
-                    raise ValueError("Cutoff date and future window dates must be valid before running retrospective evaluation.")
+                if retro_hard_failures:
+                    raise ValueError(retro_hard_failures[0])
 
                 analysis_config_obj = None
                 if AnalysisConfig is not None:
@@ -1619,8 +2206,6 @@ def _tab_evaluation_runner() -> None:
                         cutoff_date=cutoff_date,
                         future_window_start=future_window_start,
                         future_window_end=future_window_end,
-                        sensitivity_window_start=sensitivity_window_start or None,
-                        sensitivity_window_end=sensitivity_window_end or None,
                         analysis_config=analysis_config_obj,
                         n_gap_targets=n_gap_targets,
                         n_cluster_pair_targets=n_cluster_pair_targets,
@@ -1638,6 +2223,9 @@ def _tab_evaluation_runner() -> None:
                         }
                         if discovery_cue_text or discovery_cue_goal
                         else None,
+                        cue_source_snapshot_id=cue_source_snapshot_id or None,
+                        cue_similarity_top_k=cue_similarity_top_k,
+                        cue_similarity_sample_n=cue_similarity_sample_n,
                         disable_leakage_check=disable_leakage_check,
                         future_title_exclude=future_title_exclude or None,
                         future_abstract_exclude=future_abstract_exclude or None,
@@ -1665,7 +2253,8 @@ def _tab_evaluation_runner() -> None:
                     "message": str(exc),
                 }
                 _render_evaluation_progress(progress_placeholder, st.session_state.agent_evaluation_progress)
-    else:
+
+    with st.expander("Prospective Evaluation", expanded=False):
         pack_cols = st.columns(4)
         exemplars = int(pack_cols[0].number_input("Exemplars", min_value=0, value=8, step=1, key="agent_eval_pro_exemplars"))
         boundary = int(pack_cols[1].number_input("Boundary", min_value=0, value=8, step=1, key="agent_eval_pro_boundary"))
@@ -1680,19 +2269,19 @@ def _tab_evaluation_runner() -> None:
         cluster_pair_parse_error: Optional[str] = None
         gap_ids_text = ""
         cluster_pairs_text = ""
-        with st.expander("Explicit Targets", expanded=False):
-            gap_ids_text = st.text_area(
-                "Gap IDs (one per line)",
-                value="",
-                height=80,
-                key="agent_eval_pro_gap_ids",
-            )
-            cluster_pairs_text = st.text_area(
-                "Cluster pairs (`cluster_a,cluster_b` per line)",
-                value="",
-                height=80,
-                key="agent_eval_pro_cluster_pairs",
-            )
+        st.markdown("**Explicit Targets**")
+        gap_ids_text = st.text_area(
+            "Gap IDs (one per line)",
+            value="",
+            height=80,
+            key="agent_eval_pro_gap_ids",
+        )
+        cluster_pairs_text = st.text_area(
+            "Cluster pairs (`cluster_a,cluster_b` per line)",
+            value="",
+            height=80,
+            key="agent_eval_pro_cluster_pairs",
+        )
 
         gap_ids = _parse_multivalue_text(gap_ids_text)
         try:
@@ -1704,6 +2293,33 @@ def _tab_evaluation_runner() -> None:
             st.caption(cluster_pair_parse_error)
         if gap_ids or cluster_pairs:
             st.caption("Explicit targets override the gap-target and cluster-pair counts.")
+
+        prospective_hard_failures: List[str] = []
+        prospective_warnings: List[str] = []
+        if not snapshot_id:
+            prospective_hard_failures.append("Snapshot ID is required for prospective evaluation.")
+        if not methods:
+            prospective_hard_failures.append("Select at least one method.")
+        if cluster_pair_parse_error:
+            prospective_hard_failures.append(cluster_pair_parse_error)
+        if not output_dir:
+            prospective_hard_failures.append("Output dir is required.")
+        if cue_is_active:
+            cue_error = _cue_source_scope_error(
+                cue_source_snapshot_id,
+                cue_source_snapshot,
+                cue_source_lookup_error,
+            )
+            if cue_error:
+                prospective_hard_failures.append(cue_error)
+        if any(method in LLM_REQUIRED_EVALUATION_METHODS for method in methods) and not openai_api_key:
+            prospective_warnings.append("OPENAI_API_KEY is required for selected LLM-backed methods.")
+        if snapshot_error and snapshot_id:
+            prospective_warnings.append(f"Evaluation snapshot lookup warning: {snapshot_error}")
+        if cue_source_lookup_error and cue_source_snapshot_id:
+            prospective_warnings.append(f"Cue source snapshot lookup warning: {cue_source_lookup_error}")
+
+        _render_preflight_status(prospective_hard_failures, prospective_warnings)
 
         prospective_command = _build_prospective_command_preview(
             {
@@ -1718,6 +2334,9 @@ def _tab_evaluation_runner() -> None:
                 "model_name": model_name,
                 "discovery_cue_text": discovery_cue_text or None,
                 "discovery_cue_goal": discovery_cue_goal or None,
+                "cue_source_snapshot_id": cue_source_snapshot_id or None,
+                "cue_similarity_top_k": cue_similarity_top_k,
+                "cue_similarity_sample_n": cue_similarity_sample_n,
                 "exemplars": exemplars,
                 "boundary": boundary,
                 "diverse": diverse,
@@ -1728,14 +2347,15 @@ def _tab_evaluation_runner() -> None:
         )
         st.code(prospective_command, language="bash")
 
-        if st.button("Run Prospective Evaluation", type="primary", key="agent_eval_run_prospective"):
+        if st.button(
+            "Run Prospective Evaluation",
+            type="primary",
+            key="agent_eval_run_prospective",
+            disabled=bool(prospective_hard_failures),
+        ):
             try:
-                if not snapshot_id:
-                    raise ValueError("Snapshot ID is required for prospective evaluation.")
-                if not methods:
-                    raise ValueError("Select at least one method.")
-                if cluster_pair_parse_error:
-                    raise ValueError(cluster_pair_parse_error)
+                if prospective_hard_failures:
+                    raise ValueError(prospective_hard_failures[0])
 
                 explicit_targets = [
                     {"target_type": "gap", "gap_id": gap_id}
@@ -1772,6 +2392,9 @@ def _tab_evaluation_runner() -> None:
                         }
                         if discovery_cue_text or discovery_cue_goal
                         else None,
+                        cue_source_snapshot_id=cue_source_snapshot_id or None,
+                        cue_similarity_top_k=cue_similarity_top_k,
+                        cue_similarity_sample_n=cue_similarity_sample_n,
                         exemplars=exemplars,
                         boundary=boundary,
                         diverse=diverse,
@@ -1816,6 +2439,7 @@ def _tab_evaluation_runner() -> None:
                 f"{str(result_payload.get('mode') or 'evaluation').title()} evaluation completed: "
                 f"{((result_payload.get('run') or {}).get('run_id') or '')}"
             )
+            _render_evaluation_artifact_downloads(result_payload)
             st.json(result_payload)
 
 

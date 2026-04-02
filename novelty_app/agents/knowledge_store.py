@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import hashlib
+import random
 import sqlite3
 import uuid
 from datetime import datetime, timezone
@@ -167,6 +169,7 @@ class KnowledgeStore:
         self.db_path = Path(db_path).expanduser().resolve()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
+        self._cue_similarity_cache: Dict[str, Dict[str, Any]] = {}
 
     def _open_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
@@ -1028,6 +1031,270 @@ class KnowledgeStore:
                 ids.append(str(g["gap_id"]))
         return ids
 
+    def _snapshot_embedding_scope(self, snapshot: Dict[str, Any]) -> str:
+        metadata = dict((snapshot or {}).get("metadata") or {})
+        candidates: List[str] = []
+        if metadata.get("embedding_source") is not None:
+            candidates.append(str(metadata.get("embedding_source") or ""))
+        if metadata.get("embedding_name") is not None:
+            candidates.append(str(metadata.get("embedding_name") or ""))
+        analysis_config = metadata.get("analysis_config")
+        if isinstance(analysis_config, dict):
+            if analysis_config.get("embedding_name") is not None:
+                candidates.append(str(analysis_config.get("embedding_name") or ""))
+        for value in candidates:
+            normalized = str(value).strip().lower()
+            if normalized:
+                return normalized
+        return ""
+
+    def _retrospective_cutoff_year(self, snapshot_id: str) -> Optional[int]:
+        snapshot = self.get_snapshot(snapshot_id)
+        metadata = dict(snapshot.get("metadata") or {})
+        split_role = str(metadata.get("split_role") or "").strip().lower()
+        if split_role != "historical":
+            return None
+        cutoff_date = str(metadata.get("cutoff_date") or "").strip()
+        cutoff_year = _to_int(cutoff_date[:4]) if cutoff_date else None
+        if cutoff_year is None:
+            raise ValueError(
+                f"Snapshot '{snapshot_id}' is historical but has no valid cutoff_date; "
+                "cannot apply retrospective cue filtering safely."
+            )
+        return int(cutoff_year)
+
+    def _cue_similarity_seed_int(self, seed_value: Any, request_payload: Dict[str, Any]) -> int:
+        if isinstance(seed_value, int) and not isinstance(seed_value, bool):
+            return int(seed_value)
+        if seed_value is not None:
+            seed_text = str(seed_value)
+        else:
+            stable_payload = dict(request_payload or {})
+            stable_payload.pop("cue_similarity_seed", None)
+            seed_text = _json_dumps(stable_payload)
+        digest = hashlib.sha256(seed_text.encode("utf-8")).digest()
+        return int.from_bytes(digest[:8], byteorder="big", signed=False)
+
+    def _cue_query_text(self, discovery_cue: Any) -> str:
+        cue = normalize_discovery_cue(discovery_cue)
+        if cue is None:
+            return ""
+        parts: List[str] = []
+        if cue.goal:
+            parts.append(str(cue.goal))
+        if cue.text:
+            parts.append(str(cue.text))
+        parts.extend([str(v) for v in (cue.include_terms or []) if str(v).strip()])
+        for mapping in (cue.hard_constraints, cue.soft_constraints):
+            if not isinstance(mapping, dict):
+                continue
+            for field, values in mapping.items():
+                values_text = " ".join(str(v) for v in (values or []) if str(v).strip())
+                if values_text:
+                    parts.append(f"{field} {values_text}")
+        fingerprint = cue.fingerprint if isinstance(cue.fingerprint, dict) else {}
+        lexical_query = str(fingerprint.get("lexical_query") or "").strip()
+        if lexical_query:
+            parts.append(lexical_query)
+        freeform_terms = [str(v) for v in (fingerprint.get("freeform_terms") or []) if str(v).strip()]
+        if freeform_terms:
+            parts.extend(freeform_terms[:12])
+        query_text = " ".join(part for part in parts if str(part).strip()).strip()
+        if query_text:
+            return query_text[:4000]
+        return str(cue.model_dump_json())[:4000]
+
+    def _embed_texts_with_qwen(self, texts: Sequence[str]) -> List[List[float]]:
+        try:
+            from novelty_app.evaluation.qwen_client import QwenClient
+        except Exception:
+            from evaluation.qwen_client import QwenClient  # type: ignore
+
+        base_url = str(os.getenv("QWEN_BASE_URL", "http://0.0.0.0:8000")).strip() or "http://0.0.0.0:8000"
+        client = QwenClient(base_url=base_url)
+        normalized_texts = [str(t or "").strip() for t in texts]
+        return client.embed(normalized_texts, normalize=True)
+
+    def _cue_similarity_source_matrix(self, snapshot_id: str) -> Dict[str, Any]:
+        cached = self._cue_similarity_cache.get(snapshot_id)
+        if cached is not None:
+            return cached
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT paper_id, publication_year, embedding_json
+                FROM papers
+                WHERE snapshot_id = ?
+                  AND embedding_json IS NOT NULL
+                ORDER BY row_index ASC, paper_id ASC
+                """,
+                (snapshot_id,),
+            ).fetchall()
+        parsed: List[Tuple[str, Optional[int], List[float]]] = []
+        dim_counts: Dict[int, int] = {}
+        for row in rows:
+            emb = _to_embedding_list(row["embedding_json"])
+            if emb is None:
+                continue
+            dim = len(emb)
+            dim_counts[dim] = dim_counts.get(dim, 0) + 1
+            parsed.append((str(row["paper_id"]), _to_int(row["publication_year"]), emb))
+        if not parsed:
+            raise ValueError(f"Cue source snapshot '{snapshot_id}' has no usable embeddings.")
+        target_dim = max(dim_counts.items(), key=lambda kv: (kv[1], kv[0]))[0]
+        paper_ids: List[str] = []
+        publication_years: List[Optional[int]] = []
+        vectors: List[List[float]] = []
+        for paper_id, publication_year, emb in parsed:
+            if len(emb) != target_dim:
+                continue
+            paper_ids.append(paper_id)
+            publication_years.append(publication_year)
+            vectors.append(emb)
+        if not vectors:
+            raise ValueError(
+                f"Cue source snapshot '{snapshot_id}' has no embeddings matching its dominant dimension."
+            )
+        try:
+            import numpy as np
+        except Exception as exc:
+            raise RuntimeError("numpy is required for cue similarity retrieval.") from exc
+
+        matrix = np.asarray(vectors, dtype=float)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        matrix = matrix / np.clip(norms, 1e-12, None)
+        cached = {
+            "snapshot_id": snapshot_id,
+            "paper_ids": paper_ids,
+            "publication_years": publication_years,
+            "matrix": matrix,
+        }
+        self._cue_similarity_cache[snapshot_id] = cached
+        return cached
+
+    def _query_cue_full_similarity(
+        self,
+        *,
+        active_snapshot_id: str,
+        cue_source_snapshot_id: str,
+        discovery_cue: Any,
+        top_k: int,
+        sample_n: int,
+        seed_value: Any,
+        request_payload: Dict[str, Any],
+    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        if top_k < 1:
+            raise ValueError("cue_similarity_top_k must be >= 1.")
+        if sample_n < 0:
+            raise ValueError("cue_similarity_sample_n must be >= 0.")
+
+        cue_source_snapshot = self.get_snapshot(cue_source_snapshot_id)
+        source_scope = self._snapshot_embedding_scope(cue_source_snapshot)
+        if source_scope != "qwen":
+            raise ValueError(
+                f"Cue source snapshot '{cue_source_snapshot_id}' uses embedding scope "
+                f"'{source_scope or 'unknown'}'; v1 cue similarity requires qwen embeddings."
+            )
+
+        matrix_cache = self._cue_similarity_source_matrix(cue_source_snapshot_id)
+        paper_ids = list(matrix_cache["paper_ids"])
+        publication_years = list(matrix_cache["publication_years"])
+        matrix = matrix_cache["matrix"]
+
+        query_text = self._cue_query_text(discovery_cue)
+        if not query_text:
+            return [], {
+                "source_snapshot_id": cue_source_snapshot_id,
+                "candidate_count": 0,
+                "top_k": int(top_k),
+                "sample_n": int(sample_n),
+                "filtered_by_cutoff": 0,
+                "sampled_ids": [],
+            }
+
+        embeddings = self._embed_texts_with_qwen([query_text])
+        if not embeddings:
+            raise ValueError("Cue embedding endpoint returned no embeddings for discovery cue.")
+        query_vector = _to_embedding_list(embeddings[0])
+        if query_vector is None:
+            raise ValueError("Cue embedding endpoint returned an invalid embedding payload.")
+
+        try:
+            import numpy as np
+        except Exception as exc:
+            raise RuntimeError("numpy is required for cue similarity retrieval.") from exc
+
+        query = np.asarray(query_vector, dtype=float)
+        if matrix.shape[1] != query.shape[0]:
+            raise ValueError(
+                f"Cue embedding dim ({query.shape[0]}) does not match cue source snapshot "
+                f"embedding dim ({matrix.shape[1]})."
+            )
+        query_norm = float(np.linalg.norm(query))
+        if query_norm <= 1e-12:
+            raise ValueError("Cue embedding vector norm is zero; cannot compute cosine similarity.")
+        query = query / query_norm
+
+        similarities = matrix @ query
+        order = np.argsort(-similarities)
+        top_count = min(int(top_k), len(order))
+        top_candidates: List[Dict[str, Any]] = []
+        for rank_idx, idx in enumerate(order[:top_count], start=1):
+            pos = int(idx)
+            top_candidates.append(
+                {
+                    "paper_id": str(paper_ids[pos]),
+                    "publication_year": _to_int(publication_years[pos]),
+                    "similarity": float(similarities[pos]),
+                    "rank": rank_idx,
+                }
+            )
+
+        cutoff_year = self._retrospective_cutoff_year(active_snapshot_id)
+        filtered_by_cutoff = 0
+        candidate_pool: List[Dict[str, Any]] = []
+        for candidate in top_candidates:
+            if cutoff_year is not None:
+                year = _to_int(candidate.get("publication_year"))
+                if year is None or int(year) > cutoff_year:
+                    filtered_by_cutoff += 1
+                    continue
+            candidate_pool.append(candidate)
+
+        seed_int = self._cue_similarity_seed_int(seed_value, request_payload)
+        sample_size = min(int(sample_n), len(candidate_pool))
+        sampled_candidates: List[Dict[str, Any]] = []
+        if sample_size > 0:
+            rng = random.Random(seed_int)
+            if sample_size >= len(candidate_pool):
+                sampled_candidates = list(candidate_pool)
+            else:
+                sampled_candidates = rng.sample(candidate_pool, sample_size)
+
+        sampled_ids = [str(candidate["paper_id"]) for candidate in sampled_candidates]
+        sampled_records = self._fetch_papers_by_ids(cue_source_snapshot_id, sampled_ids)
+        sampled_map = {str(candidate["paper_id"]): candidate for candidate in sampled_candidates}
+        enriched_records: List[Dict[str, Any]] = []
+        for record in sampled_records:
+            paper_id = str(record.get("paper_id") or "")
+            candidate = sampled_map.get(paper_id) or {}
+            enriched = dict(record)
+            selection_meta = dict(enriched.get("selection_meta") or {})
+            selection_meta["cue_full_similarity_score"] = float(candidate.get("similarity") or 0.0)
+            selection_meta["cue_full_similarity_rank"] = int(candidate.get("rank") or 0)
+            selection_meta["cue_full_similarity_source_snapshot_id"] = cue_source_snapshot_id
+            enriched["selection_meta"] = selection_meta
+            enriched_records.append(enriched)
+
+        return enriched_records, {
+            "source_snapshot_id": cue_source_snapshot_id,
+            "candidate_count": len(candidate_pool),
+            "top_k": int(top_k),
+            "sample_n": int(sample_n),
+            "filtered_by_cutoff": int(filtered_by_cutoff),
+            "sampled_ids": sampled_ids,
+        }
+
     def build_evidence_pack(self, req: Dict[str, Any]) -> Dict[str, Any]:
         snapshot_id = self.resolve_snapshot_id(req.get("snapshot_id"))
         target_type = str(req.get("target_type") or "")
@@ -1038,6 +1305,10 @@ class KnowledgeStore:
         counter_queries = [str(q).strip() for q in (req.get("counter_queries") or []) if str(q).strip()]
         discovery_cue = normalize_discovery_cue(req.get("discovery_cue"))
         cue_queries = discovery_cue_query_terms(discovery_cue, max_queries=8) if discovery_cue is not None else []
+        cue_source_snapshot_id = str(req.get("cue_source_snapshot_id") or "").strip() or None
+        cue_similarity_top_k = int(req.get("cue_similarity_top_k", 50))
+        cue_similarity_sample_n = int(req.get("cue_similarity_sample_n", 6))
+        cue_similarity_seed = req.get("cue_similarity_seed")
 
         if profile == "focused_eval":
             exemplars = min(exemplars, 8) if exemplars else 8
@@ -1046,6 +1317,8 @@ class KnowledgeStore:
 
         if target_type not in {"gap", "cluster_pair"}:
             raise ValueError("target_type must be 'gap' or 'cluster_pair'")
+        if discovery_cue is not None and not cue_source_snapshot_id:
+            raise ValueError("cue_source_snapshot_id is required when discovery_cue is active.")
 
         selected: List[Dict[str, Any]] = []
         seen: set[str] = set()
@@ -1131,6 +1404,20 @@ class KnowledgeStore:
 
         if diverse > 0:
             add_many(self._query_diverse_papers(snapshot_id, seen, diverse), "diverse")
+
+        if discovery_cue is not None and cue_source_snapshot_id:
+            cue_similarity_records, cue_similarity_stats = self._query_cue_full_similarity(
+                active_snapshot_id=snapshot_id,
+                cue_source_snapshot_id=cue_source_snapshot_id,
+                discovery_cue=discovery_cue,
+                top_k=cue_similarity_top_k,
+                sample_n=cue_similarity_sample_n,
+                seed_value=cue_similarity_seed,
+                request_payload=req,
+            )
+            added_after_dedupe = add_many(cue_similarity_records, "cue_full_similarity")
+            cue_similarity_stats["added_after_dedupe"] = int(added_after_dedupe)
+            meta["cue_full_similarity_stats"] = cue_similarity_stats
 
         if cue_queries:
             add_many(
