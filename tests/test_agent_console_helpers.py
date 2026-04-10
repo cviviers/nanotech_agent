@@ -244,11 +244,13 @@ class AgentConsoleHelperTests(unittest.TestCase):
                 "max_iters": 2,
                 "gap_ids": ["gap_7"],
                 "cluster_pairs": [(1, 4)],
+                "required_paper_ids": ["paper_123"],
             }
         )
         self.assertIn("--snapshot-id snapshot_live_123", command)
         self.assertIn("--gap-id gap_7", command)
         self.assertIn("--cluster-pair 1 4", command)
+        self.assertIn("--paper-id paper_123", command)
         self.assertIn("--cue-source-snapshot-id snapshot_full_999", command)
         self.assertIn("--cue-similarity-top-k 77", command)
         self.assertIn("--cue-similarity-sample-n 5", command)

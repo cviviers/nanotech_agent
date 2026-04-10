@@ -1239,6 +1239,8 @@ def _build_prospective_command_preview(config: Dict[str, Any]) -> str:
         parts.extend(["--gap-id", gap_id])
     for cluster_a, cluster_b in config.get("cluster_pairs") or []:
         parts.extend(["--cluster-pair", str(cluster_a), str(cluster_b)])
+    for paper_id in config.get("required_paper_ids") or []:
+        parts.extend(["--paper-id", paper_id])
     if config.get("discovery_cue_text"):
         parts.extend(["--discovery-cue-text", config["discovery_cue_text"]])
     if config.get("discovery_cue_goal"):
@@ -2269,6 +2271,7 @@ def _tab_evaluation_runner() -> None:
         cluster_pair_parse_error: Optional[str] = None
         gap_ids_text = ""
         cluster_pairs_text = ""
+        required_paper_ids_text = ""
         st.markdown("**Explicit Targets**")
         gap_ids_text = st.text_area(
             "Gap IDs (one per line)",
@@ -2282,8 +2285,15 @@ def _tab_evaluation_runner() -> None:
             height=80,
             key="agent_eval_pro_cluster_pairs",
         )
+        required_paper_ids_text = st.text_area(
+            "Paper IDs (one per line)",
+            value="",
+            height=80,
+            key="agent_eval_pro_required_paper_ids",
+        )
 
         gap_ids = _parse_multivalue_text(gap_ids_text)
+        required_paper_ids = _parse_multivalue_text(required_paper_ids_text)
         try:
             cluster_pairs = _parse_cluster_pair_text(cluster_pairs_text)
         except ValueError as exc:
@@ -2293,6 +2303,7 @@ def _tab_evaluation_runner() -> None:
             st.caption(cluster_pair_parse_error)
         if gap_ids or cluster_pairs:
             st.caption("Explicit targets override the gap-target and cluster-pair counts.")
+        st.caption("Required paper IDs are added to every evidence pack and do not override target counts.")
 
         prospective_hard_failures: List[str] = []
         prospective_warnings: List[str] = []
@@ -2343,6 +2354,7 @@ def _tab_evaluation_runner() -> None:
                 "max_iters": max_iters,
                 "gap_ids": gap_ids,
                 "cluster_pairs": cluster_pairs,
+                "required_paper_ids": required_paper_ids,
             }
         )
         st.code(prospective_command, language="bash")
@@ -2399,6 +2411,7 @@ def _tab_evaluation_runner() -> None:
                         boundary=boundary,
                         diverse=diverse,
                         max_iters=max_iters,
+                        required_paper_ids=required_paper_ids or None,
                         progress_callback=_progress_callback,
                     )
                 st.session_state.agent_evaluation_result = {

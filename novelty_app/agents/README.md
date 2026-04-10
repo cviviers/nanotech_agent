@@ -141,6 +141,8 @@ For a `cluster_pair` target, the evidence pack typically includes:
 
 Optional `counter_queries` can expand the pack with papers matching missing-evidence queries.
 
+Optional `required_paper_ids` can force specific papers into the pack before the usual retrieval expansion.
+
 Optional `discovery_cue` can further steer retrieval by:
 
 - generating cue-derived retrieval queries

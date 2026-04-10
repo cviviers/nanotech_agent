@@ -505,6 +505,100 @@ class KnowledgeStoreTests(unittest.TestCase):
             )
         )
 
+    def test_build_evidence_pack_includes_required_paper_ids_once(self) -> None:
+        payload = {
+            "snapshot_id": "snap_required_ids",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Gap paper",
+                    "abstract": "boundary evidence",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.9,
+                },
+                {
+                    "paper_id": "p2",
+                    "title": "Required paper two",
+                    "abstract": "secondary evidence",
+                    "publication_year": 2019,
+                    "cluster_id": 1,
+                    "gap_score": 0.3,
+                },
+                {
+                    "paper_id": "p3",
+                    "title": "Required paper three",
+                    "abstract": "tertiary evidence",
+                    "publication_year": 2018,
+                    "cluster_id": 1,
+                    "gap_score": 0.2,
+                },
+            ],
+            "clusters": [{"cluster_id": 1, "size": 3, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 1, "avg_gap_score": 0.9, "max_gap_score": 0.9, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [{"gap_id": "gap_0", "paper_id": "p1", "rank": 0, "gap_score": 0.9}],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(payload)
+
+        evidence = self.store.build_evidence_pack(
+            {
+                "snapshot_id": "snap_required_ids",
+                "target_type": "gap",
+                "gap_id": "gap_0",
+                "profile": "focused_eval",
+                "exemplars": 1,
+                "boundary": 1,
+                "diverse": 0,
+                "required_paper_ids": ["p3", "p3", "p2"],
+            }
+        )
+
+        paper_ids = [paper["paper_id"] for paper in evidence["papers"]]
+        self.assertIn("p2", paper_ids)
+        self.assertIn("p3", paper_ids)
+        self.assertEqual(paper_ids.count("p2"), 1)
+        self.assertEqual(paper_ids.count("p3"), 1)
+        self.assertEqual(evidence["meta"]["required_paper_ids"], ["p3", "p2"])
+        self.assertEqual(int(evidence["stats"]["n_required_paper_ids"]), 2)
+
+        required_p3 = next(paper for paper in evidence["papers"] if paper["paper_id"] == "p3")
+        self.assertIn("required_paper_id", list(required_p3.get("selection_sources") or []))
+
+    def test_build_evidence_pack_rejects_unknown_required_paper_id(self) -> None:
+        payload = {
+            "snapshot_id": "snap_missing_required_id",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Known paper",
+                    "abstract": "known abstract",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.9,
+                }
+            ],
+            "clusters": [{"cluster_id": 1, "size": 1, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 1, "avg_gap_score": 0.9, "max_gap_score": 0.9, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [{"gap_id": "gap_0", "paper_id": "p1", "rank": 0, "gap_score": 0.9}],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(payload)
+
+        with self.assertRaisesRegex(ValueError, "missing_paper"):
+            self.store.build_evidence_pack(
+                {
+                    "snapshot_id": "snap_missing_required_id",
+                    "target_type": "gap",
+                    "gap_id": "gap_0",
+                    "required_paper_ids": ["missing_paper"],
+                }
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

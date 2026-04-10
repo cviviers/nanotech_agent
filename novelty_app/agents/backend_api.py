@@ -42,6 +42,7 @@ class EvidencePackRequest(BaseModel):
     gap_id: Optional[str] = None
     cluster_a: Optional[int] = None
     cluster_b: Optional[int] = None
+    required_paper_ids: List[str] = Field(default_factory=list)
     profile: Literal["default", "focused_eval"] = "default"
     exemplars: int = 25
     boundary: int = 25

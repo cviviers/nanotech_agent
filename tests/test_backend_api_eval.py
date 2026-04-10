@@ -97,6 +97,7 @@ class BackendApiEvaluationTests(unittest.TestCase):
             target_type="gap",
             gap_id="gap_0",
             profile="focused_eval",
+            required_paper_ids=["paper_1", "paper_2"],
             discovery_cue={
                 "text": "Focus on inhaled RNA delivery",
                 "soft_constraints": {"route": ["inhalation"], "payload": ["mrna"]},
@@ -109,6 +110,7 @@ class BackendApiEvaluationTests(unittest.TestCase):
         self.assertEqual(req.discovery_cue.text, "Focus on inhaled RNA delivery")
         self.assertEqual(req.discovery_cue.soft_constraints["route"], ["inhalation"])
         self.assertEqual(req.profile, "focused_eval")
+        self.assertEqual(req.required_paper_ids, ["paper_1", "paper_2"])
         self.assertEqual(req.cue_source_snapshot_id, "snapshot_full_123")
         self.assertEqual(req.cue_similarity_top_k, 75)
         self.assertEqual(req.cue_similarity_sample_n, 4)
