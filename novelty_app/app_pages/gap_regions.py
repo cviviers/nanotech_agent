@@ -337,7 +337,7 @@ def display_gap_region_details(region_id, gap_regions):
             if data.get('top_5'):
                 st.markdown(f"**{entity_type.title()}**")
                 entity_df = pd.DataFrame(data['top_5'], columns=['Entity', 'Count'])
-                st.dataframe(entity_df, use_container_width=True)
+                st.dataframe(entity_df, width="stretch")
     
     # Temporal distribution
     if 'publication_year' in region_df.columns:

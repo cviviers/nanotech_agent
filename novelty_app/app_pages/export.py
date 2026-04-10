@@ -62,7 +62,7 @@ def page_export():
     
     # Preview
     st.subheader("👀 Data Preview")
-    st.dataframe(st.session_state.df_valid.head(20), use_container_width=True)
+    st.dataframe(st.session_state.df_valid.head(20), width="stretch")
 
 
 def create_gap_summary():
