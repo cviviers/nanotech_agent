@@ -169,6 +169,43 @@ class BackendApiEvaluationTests(unittest.TestCase):
         self.assertEqual(fetched_artifact.status_code, 200)
         self.assertEqual(fetched_artifact.json()["artifact_id"], artifact_id)
 
+    def test_papers_batch_resolves_unique_aliases(self) -> None:
+        publish_resp = self.client.post(
+            "/admin/snapshots/publish",
+            json={
+                "snapshot_id": "snap_paper_aliases",
+                "created_at": "2026-03-11T00:00:00+00:00",
+                "metadata": {"source": "test"},
+                "papers": [
+                    {
+                        "paper_id": "id:8719955__src2",
+                        "title": "Paper 1",
+                        "abstract": "Abstract 1",
+                        "publication_year": 2020,
+                        "cluster_id": 1,
+                    }
+                ],
+                "clusters": [{"cluster_id": 1, "size": 1, "metadata": {}}],
+                "gaps": [],
+                "gap_papers": [],
+                "llm_analyses": [],
+            },
+        )
+        self.assertEqual(publish_resp.status_code, 200)
+
+        resp = self.client.post(
+            "/papers/batch",
+            json={"snapshot_id": "snap_paper_aliases", "paper_ids": ["8719955"], "fields": ["paper_id"]},
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["resolved_paper_ids"], ["id:8719955__src2"])
+        self.assertEqual(body["paper_id_aliases"]["8719955"], "id:8719955__src2")
+        self.assertEqual(body["unresolved_paper_ids"], [])
+        self.assertEqual(body["ambiguous_paper_ids"], {})
+        self.assertEqual(body["papers"][0]["paper_id"], "id:8719955__src2")
+
 
 if __name__ == "__main__":
     unittest.main()

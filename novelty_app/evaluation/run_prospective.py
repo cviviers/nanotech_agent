@@ -494,18 +494,44 @@ def run_prospective(
             )
     normalized_required_paper_ids = _normalize_required_paper_ids(required_paper_ids)
     if normalized_required_paper_ids:
-        fetched_papers = backend.papers_batch(
+        batch_payload = backend.papers_batch(
             snapshot_id=resolved_required_paper_source_snapshot_id,
             paper_ids=normalized_required_paper_ids,
             fields=["paper_id"],
-        ).get("papers", [])
-        found_ids = {str(paper.get("paper_id") or "").strip() for paper in fetched_papers if paper.get("paper_id")}
-        missing_ids = [paper_id for paper_id in normalized_required_paper_ids if paper_id not in found_ids]
-        if missing_ids:
+        )
+        unresolved_ids = [
+            str(paper_id).strip()
+            for paper_id in (batch_payload.get("unresolved_paper_ids") or [])
+            if str(paper_id).strip()
+        ]
+        if unresolved_ids:
             raise ValueError(
                 "required_paper_ids not found in source snapshot "
-                f"`{resolved_required_paper_source_snapshot_id}`: {', '.join(missing_ids[:10])}"
+                f"`{resolved_required_paper_source_snapshot_id}`: {', '.join(unresolved_ids[:10])}"
             )
+        ambiguous_ids = batch_payload.get("ambiguous_paper_ids") or {}
+        if ambiguous_ids:
+            alias, candidates = next(iter(ambiguous_ids.items()))
+            raise ValueError(
+                "required_paper_ids are ambiguous in source snapshot "
+                f"`{resolved_required_paper_source_snapshot_id}` for `{alias}`: {', '.join(candidates[:10])}"
+            )
+        resolved_required_ids = [
+            str(paper_id).strip()
+            for paper_id in (batch_payload.get("resolved_paper_ids") or [])
+            if str(paper_id).strip()
+        ]
+        if resolved_required_ids:
+            normalized_required_paper_ids = resolved_required_ids
+        else:
+            fetched_papers = batch_payload.get("papers", [])
+            found_ids = {str(paper.get("paper_id") or "").strip() for paper in fetched_papers if paper.get("paper_id")}
+            missing_ids = [paper_id for paper_id in normalized_required_paper_ids if paper_id not in found_ids]
+            if missing_ids:
+                raise ValueError(
+                    "required_paper_ids not found in source snapshot "
+                    f"`{resolved_required_paper_source_snapshot_id}`: {', '.join(missing_ids[:10])}"
+                )
     normalized_cue = discovery_cue_to_dict(discovery_cue)
     cue_source_snapshot_id = str(cue_source_snapshot_id or "").strip() or None
     if normalized_cue and not cue_source_snapshot_id:

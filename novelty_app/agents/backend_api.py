@@ -169,8 +169,21 @@ def list_clusters(
 def papers_batch(req: PaperBatchRequest) -> Dict[str, Any]:
     try:
         resolved = STORE.resolve_snapshot_id(req.snapshot_id)
-        papers = STORE.papers_batch(snapshot_id=resolved, paper_ids=req.paper_ids, fields=req.fields or None)
-        return {"snapshot_id": resolved, "papers": papers}
+        resolution = STORE.resolve_paper_ids(snapshot_id=resolved, paper_ids=req.paper_ids)
+        papers = STORE.papers_batch(
+            snapshot_id=resolved,
+            paper_ids=resolution.get("resolved_paper_ids") or [],
+            fields=req.fields or None,
+        )
+        return {
+            "snapshot_id": resolved,
+            "papers": papers,
+            "requested_paper_ids": resolution.get("requested_paper_ids") or [],
+            "resolved_paper_ids": resolution.get("resolved_paper_ids") or [],
+            "paper_id_aliases": resolution.get("resolved_map") or {},
+            "unresolved_paper_ids": resolution.get("unresolved_paper_ids") or [],
+            "ambiguous_paper_ids": resolution.get("ambiguous_paper_ids") or {},
+        }
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

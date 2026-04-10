@@ -50,7 +50,7 @@ fake_streamlit.session_state = {}
 sys.modules.setdefault("streamlit", fake_streamlit)
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "novelty_app" / "pages" / "agent_console.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "novelty_app" / "app_pages" / "agent_console.py"
 SPEC = spec_from_file_location("agent_console_under_test", MODULE_PATH)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = module_from_spec(SPEC)
@@ -75,6 +75,7 @@ _should_publish_cutoff_filtered_snapshot = MODULE._should_publish_cutoff_filtere
 _sync_snapshot_cache_after_publish = MODULE._sync_snapshot_cache_after_publish
 _set_active_published_snapshot = MODULE._set_active_published_snapshot
 _set_cue_source_published_snapshot = MODULE._set_cue_source_published_snapshot
+_ensure_agent_page_state = MODULE._ensure_agent_page_state
 
 
 class AgentConsoleHelperTests(unittest.TestCase):
@@ -490,6 +491,13 @@ class AgentConsoleHelperTests(unittest.TestCase):
         self.assertEqual(fake_streamlit.session_state["agent_eval_snapshot_id"], "snapshot_eval")
         self.assertEqual(fake_streamlit.session_state["agent_eval_cue_source_snapshot_id"], "snapshot_full")
         self.assertEqual(fake_streamlit.session_state["agent_eval_cue_source_snapshot_picker"], "snapshot_full")
+
+    def test_ensure_agent_page_state_initializes_shared_defaults(self) -> None:
+        _ensure_agent_page_state()
+        self.assertEqual(fake_streamlit.session_state["agent_backend_url"], MODULE.DEFAULT_BACKEND_URL)
+        self.assertEqual(fake_streamlit.session_state["agent_snapshot_id"], "")
+        self.assertEqual(fake_streamlit.session_state["agent_full_cue_snapshot_publish_id"], "")
+        self.assertIsNone(fake_streamlit.session_state["agent_full_cue_publish_result"])
 
     def test_sync_snapshot_cache_upserts_full_cue_snapshot_record_when_refresh_fails(self) -> None:
         class _BackendFail:

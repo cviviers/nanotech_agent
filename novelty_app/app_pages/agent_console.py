@@ -1338,10 +1338,21 @@ def _build_prospective_command_preview(config: Dict[str, Any]) -> str:
     return _command_preview(parts)
 
 
+def _ensure_agent_page_state() -> None:
+    if "agent_backend_url" not in st.session_state:
+        st.session_state["agent_backend_url"] = DEFAULT_BACKEND_URL
+    if "agent_snapshot_id" not in st.session_state:
+        st.session_state["agent_snapshot_id"] = ""
+    if "agent_full_cue_snapshot_publish_id" not in st.session_state:
+        st.session_state["agent_full_cue_snapshot_publish_id"] = ""
+    if "agent_full_cue_publish_result" not in st.session_state:
+        st.session_state["agent_full_cue_publish_result"] = None
+
+
 def page_agent_console() -> None:
     st.title("Agent Console")
     st.caption(
-        "Publish current analysis state as a snapshot, query the agent backend endpoints, and run the LangGraph orchestrator."
+        "Run retrospective and prospective evaluation workflows against published backend snapshots."
     )
     st.code("uvicorn agents.backend_api:app --app-dir novelty_app --host 0.0.0.0 --port 8088", language="bash")
     if _BACKEND_IMPORT_ERROR is not None:
@@ -1352,51 +1363,12 @@ def page_agent_console() -> None:
         st.caption(str(_BACKEND_IMPORT_ERROR))
         return
 
-    if "agent_backend_url" not in st.session_state:
-        st.session_state.agent_backend_url = DEFAULT_BACKEND_URL
-    if "agent_snapshot_id" not in st.session_state:
-        st.session_state.agent_snapshot_id = ""
-    if "agent_full_cue_snapshot_publish_id" not in st.session_state:
-        st.session_state.agent_full_cue_snapshot_publish_id = ""
-    if "agent_full_cue_publish_result" not in st.session_state:
-        st.session_state.agent_full_cue_publish_result = None
-
-    col1, col2, col3 = st.columns([3, 1, 1])
-    with col1:
-        st.session_state.agent_backend_url = st.text_input(
-            "Backend URL",
-            value=st.session_state.agent_backend_url,
-            key="agent_backend_url_input",
-        )
-    with col2:
-        if st.button("Health Check", use_container_width=True):
-            try:
-                st.session_state.agent_last_health = _get_backend().health()
-            except Exception as exc:
-                st.session_state.agent_last_health = {"error": str(exc)}
-    with col3:
-        if st.button("List Snapshots", use_container_width=True):
-            try:
-                st.session_state.agent_snapshots_cache = _get_backend().list_snapshots(limit=50)
-            except Exception as exc:
-                st.session_state.agent_snapshots_cache = {"error": str(exc)}
+    _ensure_agent_page_state()
 
     if st.session_state.get("agent_snapshot_id"):
         st.info(f"Active snapshot: {st.session_state.agent_snapshot_id}")
 
-    if st.session_state.get("agent_last_health"):
-        st.json(st.session_state.agent_last_health)
-
-    tabs = st.tabs(["Snapshot Publish", "Skills Playground", "Orchestrator", "Artifacts"])
-
-    with tabs[0]:
-        _tab_snapshot_publish()
-    with tabs[1]:
-        _tab_skills_playground()
-    with tabs[2]:
-        _tab_orchestrator()
-    with tabs[3]:
-        _tab_artifacts()
+    _tab_evaluation_runner()
 
 
 def _tab_snapshot_publish() -> None:
@@ -1899,8 +1871,6 @@ def _tab_snapshot_publish() -> None:
 
     if st.session_state.get("agent_split_publish_result"):
         st.json(st.session_state.agent_split_publish_result)
-
-    _tab_evaluation_runner()
 
 
 def _tab_evaluation_runner() -> None:
@@ -2468,6 +2438,7 @@ def _tab_evaluation_runner() -> None:
             height=80,
             key="agent_eval_pro_gap_ids",
         )
+        st.caption("Example: `gap_0` or `gap_0, gap_3`")
         cluster_pairs_text = st.text_area(
             "Cluster pairs (`cluster_a,cluster_b` per line)",
             value="",
@@ -2479,6 +2450,10 @@ def _tab_evaluation_runner() -> None:
             value="",
             height=80,
             key="agent_eval_pro_required_paper_ids",
+        )
+        st.caption(
+            "Example: `9165532`, `id:8719955__src2`, or `9165532, 18445731` "
+            "(bare dataset IDs resolve if they map uniquely in the selected source snapshot)"
         )
 
         gap_ids = _parse_multivalue_text(gap_ids_text)

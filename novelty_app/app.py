@@ -31,6 +31,7 @@ from app_pages.clustering import page_clustering
 from app_pages.gap_analysis import page_gap_analysis
 from app_pages.gap_regions import page_gap_regions
 from app_pages.llm_analysis import page_llm_analysis
+from app_pages.agent_backend import page_agent_backend
 from app_pages.agent_console import page_agent_console
 from app_pages.database_explorer import page_database_explorer
 from app_pages.export import page_export
@@ -61,6 +62,7 @@ def main():
                 "🔍 Gap Analysis",
                 "🌉 Gap Regions",
                 "🤖 LLM Analysis",
+                "🛰️ Agent Backend",
                 "🧠 Agent Console",
                 "📚 Database Explorer",
                 "💾 Export"
@@ -111,6 +113,8 @@ def main():
         page_gap_regions()
     elif page == "🤖 LLM Analysis":
         page_llm_analysis()
+    elif page == "🛰️ Agent Backend":
+        page_agent_backend()
     elif page == "🧠 Agent Console":
         page_agent_console()
     elif page == "📚 Database Explorer":

@@ -115,11 +115,13 @@ The app currently exposes pages for:
 - Gap Analysis
 - Gap Regions
 - LLM Analysis
+- Agent Backend
 - Agent Console
 - Database Explorer
 - Export
 
-The Agent Console is the bridge into the backend and evaluation stack. It can publish analyzed snapshots, inspect backend state, run the orchestrator, and launch retrospective or prospective evaluations from the UI.
+- The Agent Backend page publishes analyzed snapshots, inspects backend state, runs the orchestrator, and manages backend artifacts.
+- The Agent Console page focuses on retrospective and prospective evaluation runners against published snapshots.
 
 ### 2. Local Embedding Services
 
