@@ -203,6 +203,7 @@ class OrchestratorState(TypedDict, total=False):
     boundary: int
     diverse: int
     required_paper_ids: List[str]
+    required_paper_source_snapshot_id: str
     discovery_cue: Dict[str, Any]
     cue_source_snapshot_id: str
     cue_similarity_top_k: int
@@ -285,6 +286,9 @@ def _target_payload(state: OrchestratorState) -> Dict[str, Any]:
     required_paper_ids = [str(paper_id).strip() for paper_id in (state.get("required_paper_ids") or []) if str(paper_id).strip()]
     if required_paper_ids:
         payload["required_paper_ids"] = required_paper_ids
+    required_paper_source_snapshot_id = str(state.get("required_paper_source_snapshot_id") or "").strip()
+    if required_paper_source_snapshot_id:
+        payload["required_paper_source_snapshot_id"] = required_paper_source_snapshot_id
     if state.get("snapshot_id"):
         payload["snapshot_id"] = state["snapshot_id"]
     if state["target_type"] == "gap":
@@ -325,6 +329,7 @@ def _trace_metadata(state: OrchestratorState) -> Dict[str, Any]:
         **_target_summary(state),
         "has_discovery_cue": bool(discovery_cue_to_dict(state.get("discovery_cue"))),
         "n_required_paper_ids": len(state.get("required_paper_ids") or []),
+        "required_paper_source_snapshot_id": state.get("required_paper_source_snapshot_id"),
         "max_iters": state.get("max_iters"),
     }
 
@@ -379,6 +384,7 @@ def _initial_invoke_summary(state: OrchestratorState) -> Dict[str, Any]:
         "boundary": state.get("boundary"),
         "diverse": state.get("diverse"),
         "n_required_paper_ids": len(state.get("required_paper_ids") or []),
+        "required_paper_source_snapshot_id": state.get("required_paper_source_snapshot_id"),
         "has_discovery_cue": bool(discovery_cue_to_dict(state.get("discovery_cue"))),
     }
 

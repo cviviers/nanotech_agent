@@ -168,6 +168,7 @@ class LangchainTracingTests(unittest.TestCase):
             model_name="test-model",
             hypotheses_per_target=1,
             required_paper_ids=["paper_7", "paper_8"],
+            required_paper_source_snapshot_id="snapshot_full_77",
         )
         fake_response = HypothesesOut(
             hypotheses=[
@@ -186,6 +187,10 @@ class LangchainTracingTests(unittest.TestCase):
             generate_single_shot_llm(context)
 
         self.assertEqual(backend.evidence_pack_calls[0]["required_paper_ids"], ["paper_7", "paper_8"])
+        self.assertEqual(
+            backend.evidence_pack_calls[0]["required_paper_source_snapshot_id"],
+            "snapshot_full_77",
+        )
 
     def test_node_explain_passes_langfuse_config_to_structured_invoke(self) -> None:
         llm = _FakeChatOpenAI(model="test-model")

@@ -56,6 +56,8 @@ def _build_knn_graph(x: np.ndarray, k: int, metric: str = "cosine") -> nx.Graph:
     for i in range(len(x)):
         for j, d in zip(indices[i, 1:], dists[i, 1:]):
             weight = 1.0 - float(d)
+            if weight <= 0.0:
+                continue
             if not graph.has_edge(i, j):
                 graph.add_edge(i, j, weight=weight)
             elif graph[i][j]["weight"] < weight:

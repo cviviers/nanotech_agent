@@ -61,15 +61,20 @@ _build_retrospective_command_preview = MODULE._build_retrospective_command_previ
 _has_valid_retrospective_dates = MODULE._has_valid_retrospective_dates
 _retrospective_metadata_from_state = MODULE._retrospective_metadata_from_state
 _snapshot_retrospective_context = MODULE._snapshot_retrospective_context
+_default_full_cue_source_snapshot_id = MODULE._default_full_cue_source_snapshot_id
+_full_cue_source_snapshot_metadata = MODULE._full_cue_source_snapshot_metadata
 _snapshot_metadata_with_defaults = MODULE._snapshot_metadata_with_defaults
 _prioritize_cue_source_snapshots = MODULE._prioritize_cue_source_snapshots
+_prioritize_required_paper_source_snapshots = MODULE._prioritize_required_paper_source_snapshots
 _suggest_cue_source_snapshot_id = MODULE._suggest_cue_source_snapshot_id
 _cue_source_scope_error = MODULE._cue_source_scope_error
+_required_paper_source_error = MODULE._required_paper_source_error
 _qwen_base_url_issue = MODULE._qwen_base_url_issue
 _resolve_download_artifact = MODULE._resolve_download_artifact
 _should_publish_cutoff_filtered_snapshot = MODULE._should_publish_cutoff_filtered_snapshot
 _sync_snapshot_cache_after_publish = MODULE._sync_snapshot_cache_after_publish
 _set_active_published_snapshot = MODULE._set_active_published_snapshot
+_set_cue_source_published_snapshot = MODULE._set_cue_source_published_snapshot
 
 
 class AgentConsoleHelperTests(unittest.TestCase):
@@ -245,12 +250,14 @@ class AgentConsoleHelperTests(unittest.TestCase):
                 "gap_ids": ["gap_7"],
                 "cluster_pairs": [(1, 4)],
                 "required_paper_ids": ["paper_123"],
+                "required_paper_source_snapshot_id": "snapshot_full_777",
             }
         )
         self.assertIn("--snapshot-id snapshot_live_123", command)
         self.assertIn("--gap-id gap_7", command)
         self.assertIn("--cluster-pair 1 4", command)
         self.assertIn("--paper-id paper_123", command)
+        self.assertIn("--required-paper-source-snapshot-id snapshot_full_777", command)
         self.assertIn("--cue-source-snapshot-id snapshot_full_999", command)
         self.assertIn("--cue-similarity-top-k 77", command)
         self.assertIn("--cue-similarity-sample-n 5", command)
@@ -261,6 +268,34 @@ class AgentConsoleHelperTests(unittest.TestCase):
         self.assertEqual(out["embedding_source"], "qwen")
         out_existing = _snapshot_metadata_with_defaults({"embedding_source": "bert"})
         self.assertEqual(out_existing["embedding_source"], "bert")
+
+    def test_default_full_cue_source_snapshot_id_normalizes_suffixes(self) -> None:
+        fake_streamlit.session_state["agent_snapshot_id"] = "snapshot_live_123"
+        self.assertEqual(_default_full_cue_source_snapshot_id(), "snapshot_live_123_full")
+
+        for raw_value, expected in (
+            ("snapshot_hist_123_historical", "snapshot_hist_123_full"),
+            ("snapshot_hist_123_future", "snapshot_hist_123_full"),
+            ("snapshot_hist_123_full", "snapshot_hist_123_full"),
+        ):
+            with self.subTest(raw_value=raw_value):
+                fake_streamlit.session_state["agent_snapshot_publish_id"] = raw_value
+                self.assertEqual(_default_full_cue_source_snapshot_id(), expected)
+
+    def test_full_cue_source_snapshot_metadata_marks_snapshot_as_full(self) -> None:
+        fake_streamlit.session_state["config"] = {"primary_embedding": "qwen"}
+        metadata = _full_cue_source_snapshot_metadata(
+            {
+                "row_count": 42,
+                "retained_paper_id_hash": "hash_123",
+            }
+        )
+        self.assertEqual(metadata["split_role"], "full")
+        self.assertEqual(metadata["embedding_source"], "qwen")
+        self.assertEqual(metadata["extra"]["publish_mode"], "streamlit_full_cue_source")
+        self.assertTrue(metadata["extra"]["cue_source_ready"])
+        self.assertEqual(metadata["extra"]["source_corpus_row_count"], 42)
+        self.assertEqual(metadata["extra"]["source_corpus_paper_id_hash"], "hash_123")
 
     def test_cue_source_prioritization_prefers_qwen_full_scope(self) -> None:
         snapshots = [
@@ -284,6 +319,29 @@ class AgentConsoleHelperTests(unittest.TestCase):
         self.assertEqual(prioritized[0]["snapshot_id"], "snapshot_full_qwen")
         self.assertEqual(_suggest_cue_source_snapshot_id(snapshots), "snapshot_full_qwen")
 
+    def test_required_paper_source_prioritization_prefers_full_scope(self) -> None:
+        snapshots = [
+            {
+                "snapshot_id": "snapshot_hist",
+                "created_at": "2026-03-01T12:00:00Z",
+                "metadata": {"split_role": "historical", "embedding_source": "qwen"},
+            },
+            {
+                "snapshot_id": "snapshot_full",
+                "created_at": "2026-03-02T12:00:00Z",
+                "metadata": {"split_role": "full"},
+            },
+            {
+                "snapshot_id": "snapshot_unspecified",
+                "created_at": "2026-03-03T12:00:00Z",
+                "metadata": {},
+            },
+        ]
+        prioritized = _prioritize_required_paper_source_snapshots(snapshots)
+        prioritized_ids = [item["snapshot_id"] for item in prioritized]
+        self.assertEqual(prioritized_ids[:2], ["snapshot_full", "snapshot_unspecified"])
+        self.assertEqual(prioritized_ids[2], "snapshot_hist")
+
     def test_cue_source_scope_validation(self) -> None:
         self.assertIn("required", str(_cue_source_scope_error("", None)))
         non_qwen_error = _cue_source_scope_error(
@@ -302,6 +360,26 @@ class AgentConsoleHelperTests(unittest.TestCase):
             },
         )
         self.assertIsNone(ok_error)
+
+    def test_required_paper_source_validation(self) -> None:
+        self.assertIn(
+            "required",
+            str(_required_paper_source_error(["paper_1"], "", None)),
+        )
+        lookup_error = _required_paper_source_error(
+            ["paper_1"],
+            "snapshot_full_qwen",
+            None,
+            "Snapshot not found: snapshot_full_qwen",
+        )
+        self.assertIn("lookup failed", str(lookup_error))
+        self.assertIsNone(
+            _required_paper_source_error(
+                ["paper_1"],
+                "snapshot_full_qwen",
+                {"snapshot_id": "snapshot_full_qwen", "metadata": {"split_role": "full"}},
+            )
+        )
 
     def test_qwen_base_url_validation_flags_0_0_0_0(self) -> None:
         self.assertIsNotNone(_qwen_base_url_issue("http://0.0.0.0:8000"))
@@ -398,6 +476,48 @@ class AgentConsoleHelperTests(unittest.TestCase):
         self.assertEqual(fake_streamlit.session_state["agent_snapshot_id"], "snapshot_abc")
         self.assertEqual(fake_streamlit.session_state["agent_eval_snapshot_id"], "snapshot_abc")
         self.assertEqual(fake_streamlit.session_state["agent_eval_cue_source_snapshot_id"], "snapshot_abc")
+
+    def test_set_cue_source_published_snapshot_updates_only_cue_state(self) -> None:
+        fake_streamlit.session_state.update(
+            {
+                "agent_snapshot_id": "snapshot_active",
+                "agent_eval_snapshot_id": "snapshot_eval",
+                "agent_eval_cue_source_snapshot_id": "snapshot_old_cue",
+            }
+        )
+        _set_cue_source_published_snapshot("snapshot_full")
+        self.assertEqual(fake_streamlit.session_state["agent_snapshot_id"], "snapshot_active")
+        self.assertEqual(fake_streamlit.session_state["agent_eval_snapshot_id"], "snapshot_eval")
+        self.assertEqual(fake_streamlit.session_state["agent_eval_cue_source_snapshot_id"], "snapshot_full")
+        self.assertEqual(fake_streamlit.session_state["agent_eval_cue_source_snapshot_picker"], "snapshot_full")
+
+    def test_sync_snapshot_cache_upserts_full_cue_snapshot_record_when_refresh_fails(self) -> None:
+        class _BackendFail:
+            def list_snapshots(self, limit=200):
+                raise RuntimeError("backend unavailable")
+
+        fake_streamlit.session_state["config"] = {"primary_embedding": "qwen"}
+        fake_streamlit.session_state["agent_snapshots_cache"] = {
+            "snapshots": [
+                {"snapshot_id": "snapshot_existing", "metadata": {}},
+            ]
+        }
+        err = _sync_snapshot_cache_after_publish(
+            _BackendFail(),
+            [
+                {
+                    "snapshot_id": "snapshot_live_full",
+                    "metadata": _full_cue_source_snapshot_metadata(
+                        {"row_count": 12, "retained_paper_id_hash": "hash_live"}
+                    ),
+                }
+            ],
+        )
+        self.assertIsNotNone(err)
+        snapshots = fake_streamlit.session_state["agent_snapshots_cache"]["snapshots"]
+        self.assertEqual(snapshots[0]["snapshot_id"], "snapshot_live_full")
+        self.assertEqual(snapshots[0]["metadata"].get("split_role"), "full")
+        self.assertTrue(snapshots[0]["metadata"].get("extra", {}).get("cue_source_ready"))
 
 
 if __name__ == "__main__":

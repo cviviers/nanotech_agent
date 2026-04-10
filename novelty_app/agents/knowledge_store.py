@@ -1315,6 +1315,7 @@ class KnowledgeStore:
         boundary = max(0, int(req.get("boundary", 25)))
         diverse = max(0, int(req.get("diverse", 25)))
         required_paper_ids = _normalize_paper_ids(req.get("required_paper_ids") or [])
+        required_paper_source_snapshot_id = str(req.get("required_paper_source_snapshot_id") or "").strip() or None
         counter_queries = [str(q).strip() for q in (req.get("counter_queries") or []) if str(q).strip()]
         discovery_cue = normalize_discovery_cue(req.get("discovery_cue"))
         cue_queries = discovery_cue_query_terms(discovery_cue, max_queries=8) if discovery_cue is not None else []
@@ -1332,6 +1333,13 @@ class KnowledgeStore:
             raise ValueError("target_type must be 'gap' or 'cluster_pair'")
         if discovery_cue is not None and not cue_source_snapshot_id:
             raise ValueError("cue_source_snapshot_id is required when discovery_cue is active.")
+
+        resolved_required_paper_source_snapshot_id = snapshot_id
+        if required_paper_source_snapshot_id:
+            required_source_snapshot = self.get_snapshot(required_paper_source_snapshot_id)
+            resolved_required_paper_source_snapshot_id = str(
+                required_source_snapshot.get("snapshot_id") or required_paper_source_snapshot_id
+            )
 
         selected: List[Dict[str, Any]] = []
         seen: set[str] = set()
@@ -1367,9 +1375,13 @@ class KnowledgeStore:
             meta["discovery_cue"] = discovery_cue.model_dump()
         if required_paper_ids:
             meta["required_paper_ids"] = list(required_paper_ids)
+            meta["required_paper_source_snapshot_id"] = resolved_required_paper_source_snapshot_id
+            meta["required_paper_source_is_external"] = (
+                str(resolved_required_paper_source_snapshot_id) != str(snapshot_id)
+            )
 
         if required_paper_ids:
-            required_records = self._fetch_papers_by_ids(snapshot_id, required_paper_ids)
+            required_records = self._fetch_papers_by_ids(resolved_required_paper_source_snapshot_id, required_paper_ids)
             found_required_ids = {
                 str(record.get("paper_id") or "").strip()
                 for record in required_records
@@ -1378,9 +1390,15 @@ class KnowledgeStore:
             missing_required_ids = [paper_id for paper_id in required_paper_ids if paper_id not in found_required_ids]
             if missing_required_ids:
                 raise ValueError(
-                    "required_paper_ids not found in snapshot "
-                    f"`{snapshot_id}`: {', '.join(missing_required_ids[:10])}"
+                    "required_paper_ids not found in source snapshot "
+                    f"`{resolved_required_paper_source_snapshot_id}`: {', '.join(missing_required_ids[:10])}"
                 )
+            is_external_required_source = str(resolved_required_paper_source_snapshot_id) != str(snapshot_id)
+            for record in required_records:
+                selection_meta = dict(record.get("selection_meta") or {})
+                selection_meta["required_paper_source_snapshot_id"] = resolved_required_paper_source_snapshot_id
+                selection_meta["required_paper_source_is_external"] = bool(is_external_required_source)
+                record["selection_meta"] = selection_meta
             add_many(required_records, "required_paper_id")
 
         if target_type == "gap":
@@ -1522,6 +1540,9 @@ class KnowledgeStore:
             "stats": {
                 "n_papers": len(selected),
                 "n_required_paper_ids": len(required_paper_ids),
+                "required_paper_source_snapshot_id": (
+                    resolved_required_paper_source_snapshot_id if required_paper_ids else None
+                ),
                 "n_counter_queries": len(counter_queries),
                 "n_discovery_cue_queries": len(cue_queries),
                 "requested": {"exemplars": exemplars, "boundary": boundary, "diverse": diverse},

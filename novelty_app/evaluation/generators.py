@@ -58,6 +58,7 @@ class GenerationContext:
     boundary: int = 8
     diverse: int = 0
     required_paper_ids: Optional[Sequence[str]] = None
+    required_paper_source_snapshot_id: Optional[str] = None
     evidence_pack_profile: str = "focused_eval"
     max_iters: int = 2
     hypotheses_per_target: int = 3
@@ -89,6 +90,8 @@ def _pack_request(context: GenerationContext, target_override: Optional[Dict[str
     }
     if required_paper_ids:
         payload["required_paper_ids"] = required_paper_ids
+    if context.required_paper_source_snapshot_id:
+        payload["required_paper_source_snapshot_id"] = str(context.required_paper_source_snapshot_id)
     discovery_cue = discovery_cue_to_dict(context.discovery_cue)
     if discovery_cue is not None:
         payload["discovery_cue"] = discovery_cue
@@ -268,6 +271,7 @@ def generate_with_orchestrator(context: GenerationContext) -> Tuple[List[Generat
         "cue_similarity_sample_n": context.cue_similarity_sample_n,
         "cue_similarity_seed": context.cue_similarity_seed,
         "required_paper_ids": list(context.required_paper_ids or []),
+        "required_paper_source_snapshot_id": context.required_paper_source_snapshot_id,
     }
     if context.target["target_type"] == "gap":
         state["gap_id"] = context.target["gap_id"]

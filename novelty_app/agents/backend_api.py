@@ -43,6 +43,7 @@ class EvidencePackRequest(BaseModel):
     cluster_a: Optional[int] = None
     cluster_b: Optional[int] = None
     required_paper_ids: List[str] = Field(default_factory=list)
+    required_paper_source_snapshot_id: Optional[str] = None
     profile: Literal["default", "focused_eval"] = "default"
     exemplars: int = 25
     boundary: int = 25
