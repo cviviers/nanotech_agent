@@ -1,4 +1,4 @@
-# Nanotechnology Literature Mapping and Grounded Hypothesis Generation
+# Evidence-Grounded Frontier Mapping and Agentic Hypothesis Generation in Nanomedicine
 
 This repository is research code for mapping nanotechnology and nanomedicine literature, identifying sparse or weakly explored regions in embedding space, and testing whether retrieval-grounded LLM workflows can generate useful research hypotheses from those frontiers.
 
@@ -24,7 +24,7 @@ embedding_models/                FastAPI services for local embedding/reranking
 novelty_app/                     Main analysis app, agent backend, and evaluation code
 assement_app/                    Human review app for assessment bundles
 tests/                           Automated tests
-paper/                           Manuscript notes, figures, and writeup assets
+paper/                           published paper, tbd
 data/                            Local datasets, embeddings, SQLite DB, evaluation outputs
 ```
 
@@ -57,8 +57,6 @@ That means the current codebase is more about:
 - evidence-pack construction
 - grounded ideation and blueprint generation
 - benchmarking generated ideas against held-out future papers
-
-It is less accurately described as the older monolithic `utils/` pipeline referenced by earlier README text.
 
 ## Setup
 
