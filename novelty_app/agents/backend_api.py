@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -99,7 +100,11 @@ def root() -> Dict[str, Any]:
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    return {"ok": True, "db_path": str(STORE.db_path)}
+    return {
+        "ok": True,
+        "db_path": str(STORE.db_path),
+        "qwen_base_url": str(os.getenv("QWEN_BASE_URL", "http://0.0.0.0:8000")).rstrip("/"),
+    }
 
 
 @app.get("/snapshots")
