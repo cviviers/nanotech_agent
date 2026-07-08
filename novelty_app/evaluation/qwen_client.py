@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -21,8 +23,17 @@ class QwenClient:
     def __init__(self, base_url: str = "http://0.0.0.0:8000", timeout_s: float = 120.0):
         self.base_url = base_url.rstrip("/")
         self.timeout_s = timeout_s
+        self._response_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _cache_key(self, path: str, payload: Dict[str, Any]) -> str:
+        return path + ":" + json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        cache_key = self._cache_key(path, payload)
+        cached = self._response_cache.get(cache_key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+
         input_summary: Dict[str, Any] = {
             "path": path,
             "base_url": self.base_url,
@@ -87,6 +98,7 @@ class QwenClient:
             else:
                 output_summary["n_results"] = len(data.get("results") or [])
             observation.update(output=output_summary)
+            self._response_cache[cache_key] = copy.deepcopy(data)
             return data
 
     def embed(

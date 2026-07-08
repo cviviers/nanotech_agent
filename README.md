@@ -84,6 +84,7 @@ pip install -r requirements.txt
 - `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `LANGFUSE_TRACING_ENABLED`: optional tracing
 - `NOVELTY_AGENT_DB`: override the default SQLite path; otherwise the backend uses `data/novelty_agent_knowledge.sqlite`
 - `QWEN_TORCH_DTYPE`, `QWEN_EMBED_TORCH_DTYPE`, `QWEN_RERANK_TORCH_DTYPE`: optional dtype controls for the local Qwen service
+- `QWEN_RERANK_BATCH_SIZE`, `QWEN_EMBED_BATCH_SIZE`, `QWEN_RERANK_MAX_LENGTH`, `QWEN_RERANK_LOGITS_TO_KEEP`: memory controls for the local Qwen service
 
 ### Expected Local Data
 

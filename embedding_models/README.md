@@ -77,6 +77,14 @@ QWEN_EMBED_MAX_LENGTH (default: 8192)
 
 QWEN_RERANK_MAX_LENGTH (default: 8192)
 
+QWEN_EMBED_BATCH_SIZE (default: 16)
+
+QWEN_RERANK_BATCH_SIZE (default: 2)
+
+QWEN_RERANK_LOGITS_TO_KEEP (default: 1; keeps only last-token logits when supported)
+
+QWEN_CUDA_EMPTY_CACHE_EACH_BATCH (default: 0; set to 1 if fragmentation keeps causing OOMs)
+
 QWEN_TORCH_DTYPE (default: float16, fallback for both models on CUDA)
 
 QWEN_EMBED_TORCH_DTYPE (optional override for the embedding model on CUDA)
@@ -88,7 +96,12 @@ Example:
 export QWEN_EMBEDDING_MODEL="Qwen/Qwen3-Embedding-0.6B"
 export QWEN_RERANKER_MODEL="Qwen/Qwen3-Reranker-0.6B"
 export QWEN_RERANK_TORCH_DTYPE="float16"
+export QWEN_RERANK_BATCH_SIZE="2"
+export QWEN_EMBED_BATCH_SIZE="16"
+export QWEN_RERANK_LOGITS_TO_KEEP="1"
 ```
+
+For memory-constrained reranking, lower `QWEN_RERANK_BATCH_SIZE` first. If OOMs continue on very long inputs, lower `QWEN_RERANK_MAX_LENGTH` to `4096` or `2048`.
 
 ## 5. Running the server
 From the project root:
