@@ -267,3 +267,131 @@ for r in data["results"]:
 ```
 
 ### 6.1 Similarity (Embedding-based)
+
+## 7. Evaluation Script
+
+`embedding_models/eval.py` evaluates precomputed document embeddings against document-level keywords. It is designed for offline embedding quality checks rather than serving-time inference.
+
+### What the script does
+
+- Loads a JSON dataset of documents and a matching `.npy` embedding matrix.
+- Cleans keyword fields and removes placeholder values such as `""`, `n/a`, and `none`.
+- Runs a repeated-split multilabel linear probe with a label-prior baseline.
+- Runs a retrieval benchmark where relevance is defined by keyword overlap.
+- Optionally builds a TF-IDF lexical baseline from `title`, `abstract`, `cleaned_text`, or `full_text`.
+- Writes a JSON report with dataset statistics, probe metrics, retrieval metrics, and the retained corpus-level keyword classes.
+
+### Scientific guardrails
+
+The current version of the script is intentionally stricter than a quick exploratory evaluation:
+
+- Row-count mismatches between the dataframe and embeddings raise an error by default instead of silently truncating.
+- The linear probe defines its label space from the training fold only, which avoids leaking held-out label frequencies into the supervised task definition.
+- Threshold tuning uses a validation split inside the training fold rather than the final test fold.
+- Retrieval metrics are averaged over all sampled queries. Queries with no relevant neighbours contribute zeros instead of being dropped from the averages.
+- The linear probe now uses an adaptive backend: `auto` keeps exact one-vs-rest logistic regression for moderate problems and switches to an SGD-based logistic probe for large label spaces so the run stays practical.
+
+If you have independently verified that row order still matches and want the old truncation behavior, pass `--allow_alignment_trim`.
+
+### Inputs
+
+The script expects:
+
+- `--data_json`: a JSON file that loads into a list of records.
+- `--embeddings_npy`: a 2D NumPy array with one embedding row per document.
+- `--keyword_col`: the column containing keyword lists or keyword-like strings. The default is `mesh`.
+
+Useful text columns for the lexical baseline are:
+
+- `title`
+- `abstract`
+- `cleaned_text`
+- `full_text`
+
+### Metrics
+
+Linear probe outputs include:
+
+- `micro_f1`, `macro_f1`, `samples_f1`
+- micro and macro precision/recall
+- `hamming_loss`
+- `lrap`
+- `label_ranking_loss`
+- per-split metadata such as selected threshold, class count, and how many documents had no supported labels inside that split
+
+Retrieval outputs include:
+
+- `mrr`
+- `precision_at_k`
+- `recall_at_k`
+- `hit_rate_at_k`
+- `map_at_k`
+- `ndcg_at_k`
+- `mean_shared_labels_at_k`
+- query coverage metadata such as `n_queries_with_relevant_docs` and `query_coverage`
+
+Retrieval relevance is defined as:
+
+- Binary relevance: two documents share at least one retained keyword.
+- Graded relevance: the number of retained keywords they share.
+
+### Logging and progress
+
+The script always prints stage-level log messages with an `[eval]` prefix so long runs are easier to monitor.
+
+For richer progress bars, add:
+
+```bash
+--progress
+```
+
+For large datasets, the most relevant probe controls are:
+
+- `--probe_backend auto|logistic|sgd`
+- `--threshold_tuning auto|on|off`
+- `--probe_n_jobs 1`
+
+If the probe had previously appeared stuck, `--probe_backend sgd --threshold_tuning off --probe_n_jobs 1` is the safest fast configuration.
+
+### Example
+
+Run from the repository root:
+
+```bash
+python3 embedding_models/eval.py \
+  --data_json ./data/cleaned_dataset.json \
+  --embeddings_npy ./data/qwen_embeddings.npy \
+  --keyword_col mesh \
+  --min_keyword_freq 5 \
+  --probe_backend auto \
+  --threshold_tuning auto \
+  --probe_n_jobs 1 \
+  --n_repeats 3 \
+  --test_size 0.2 \
+  --base_seed 42 \
+  --k_retrieval 10 \
+  --max_retrieval_queries 5000 \
+  --progress \
+  --output_json ./qwen_evaluation_report.json
+```
+
+If your embeddings file and dataframe length differ and you have already verified row-order alignment:
+
+```bash
+python3 embedding_models/eval.py \
+  --data_json ./data/cleaned_dataset.json \
+  --embeddings_npy ./data/qwen_embeddings.npy \
+  --probe_backend sgd \
+  --threshold_tuning off \
+  --probe_n_jobs 1 \
+  --allow_alignment_trim
+```
+
+### Output structure
+
+The output JSON contains four top-level sections:
+
+- `data`: cleaned dataset statistics and filtering metadata
+- `linear_probe`: repeated-split linear probe results and label-prior baseline
+- `retrieval`: embedding retrieval metrics and optional TF-IDF baseline
+- `keyword_classes`: the corpus-level keyword classes retained for retrieval evaluation
