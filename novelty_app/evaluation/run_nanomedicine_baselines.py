@@ -187,6 +187,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Rerun steps even if a matching review packet exists.")
     parser.add_argument("--dry-run", action="store_true", help="Print the planned steps without running them.")
     parser.add_argument(
+        "--disable-benchmark-cache",
+        action="store_true",
+        help="Do not pass a shared benchmark cache path to retrospective evaluations.",
+    )
+    parser.add_argument(
         "--clear-openai-env",
         action="store_true",
         help="Remove OpenAI-related environment variables for subprocesses.",
@@ -245,6 +250,7 @@ def validate_runtime_inputs(args: argparse.Namespace, *, dry_run: bool = False) 
 
 def _subprocess_env(args: argparse.Namespace, domain: Optional[DomainConfig]) -> Dict[str, str]:
     env = dict(os.environ)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
     if args.clear_openai_env:
         for key in list(env):
             if key == "OPENAI_API_KEY" or key.startswith("OPENAI_"):
@@ -305,9 +311,15 @@ def completed_review_packet(step: RunStep) -> Optional[Path]:
     return None
 
 
+def benchmark_cache_path_for_step(step: RunStep, args: argparse.Namespace) -> Optional[Path]:
+    if getattr(args, "disable_benchmark_cache", False):
+        return None
+    return step.output_dir.parent / "_benchmark_cache" / "benchmark.json"
+
+
 def build_retrospective_command(step: RunStep, args: argparse.Namespace) -> List[str]:
     backend_url = f"http://127.0.0.1:{args.backend_port}"
-    return [
+    command = [
         sys.executable,
         "-m",
         "novelty_app.evaluation.run_retrospective",
@@ -351,6 +363,10 @@ def build_retrospective_command(step: RunStep, args: argparse.Namespace) -> List
         str(PROTOCOL["future_semantic_threshold"]),
         "--disable-leakage-check",
     ]
+    cache_path = benchmark_cache_path_for_step(step, args)
+    if cache_path is not None:
+        command.extend(["--benchmark-cache-path", str(cache_path)])
+    return command
 
 
 def _backend_health(port: int, timeout_s: float = 2.0) -> Optional[Dict[str, Any]]:
@@ -482,6 +498,7 @@ def _manifest_payload(step: RunStep, args: argparse.Namespace, status: str, **ex
         "output_dir": str(step.output_dir),
         "qwen_base_url": args.qwen_base_url,
         "backend_port": args.backend_port,
+        "benchmark_cache_path": str(benchmark_cache_path_for_step(step, args) or ""),
         "protocol": dict(PROTOCOL),
         **extra,
     }

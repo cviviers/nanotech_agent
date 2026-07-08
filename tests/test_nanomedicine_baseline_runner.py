@@ -157,6 +157,68 @@ class NanomedicineBaselineRunnerTests(unittest.TestCase):
             step.domain.snapshot_id,
         )
 
+    def test_retrospective_command_includes_default_benchmark_cache_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = runner.parse_args(
+                [
+                    "--qwen-base-url",
+                    "http://192.168.2.35:800",
+                    "--domains",
+                    "payload",
+                    "--methods",
+                    "pack_query_baseline",
+                    "--output-root",
+                    tmpdir,
+                ]
+            )
+            step = runner.build_steps(args)[0]
+
+        command = runner.build_retrospective_command(step, args)
+        self.assertIn("--benchmark-cache-path", command)
+        cache_path = Path(command[command.index("--benchmark-cache-path") + 1])
+        self.assertEqual(cache_path, Path(tmpdir) / "payload" / "_benchmark_cache" / "benchmark.json")
+
+    def test_disable_benchmark_cache_omits_cache_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = runner.parse_args(
+                [
+                    "--qwen-base-url",
+                    "http://192.168.2.35:800",
+                    "--domains",
+                    "payload",
+                    "--methods",
+                    "pack_query_baseline",
+                    "--output-root",
+                    tmpdir,
+                    "--disable-benchmark-cache",
+                ]
+            )
+            step = runner.build_steps(args)[0]
+
+        command = runner.build_retrospective_command(step, args)
+        self.assertNotIn("--benchmark-cache-path", command)
+
+    def test_methods_for_one_domain_share_benchmark_cache_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            args = runner.parse_args(
+                [
+                    "--qwen-base-url",
+                    "http://192.168.2.35:800",
+                    "--domains",
+                    "payload",
+                    "--methods",
+                    "pack_query_baseline",
+                    "heuristic_bridge",
+                    "--output-root",
+                    tmpdir,
+                ]
+            )
+            steps = runner.build_steps(args)
+
+        cache_paths = {runner.benchmark_cache_path_for_step(step, args) for step in steps}
+        self.assertEqual(len(cache_paths), 1)
+        self.assertEqual(next(iter(cache_paths)), Path(tmpdir) / "payload" / "_benchmark_cache" / "benchmark.json")
+
     def test_subprocess_env_sets_qwen_base_url_and_domain_db(self) -> None:
         args = runner.parse_args(
             [

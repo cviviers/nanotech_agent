@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import os
@@ -41,7 +42,6 @@ from novelty_app.discovery_cue import (
     discovery_cue_to_dict,
     normalize_discovery_cue,
     score_fingerprint_against_cue,
-    score_record_against_cue,
 )
 from novelty_app.agents.observability import (
     create_trace_score,
@@ -78,6 +78,9 @@ DEFAULT_METHODS = [
     "pack_query_baseline",
     "random_target_control",
 ]
+
+BENCHMARK_CACHE_SCHEMA_VERSION = 1
+BENCHMARK_CHECKPOINT_EVERY_ROWS = 50
 
 
 @dataclass
@@ -120,6 +123,24 @@ class RetrospectiveProgress:
 
     def to_payload(self) -> Dict[str, Any]:
         return {key: value for key, value in asdict(self).items() if value is not None}
+
+
+class _MemoizingBackend:
+    def __init__(self, backend: BackendClient) -> None:
+        self._backend = backend
+        self._evidence_pack_cache: Dict[str, Dict[str, Any]] = {}
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._backend, name)
+
+    def evidence_pack(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        key = _canonical_json(payload)
+        cached = self._evidence_pack_cache.get(key)
+        if cached is not None:
+            return copy.deepcopy(cached)
+        pack = self._backend.evidence_pack(payload)
+        self._evidence_pack_cache[key] = copy.deepcopy(pack)
+        return pack
 
 
 def _coerce_trace_ref(trace_ref: Any) -> TraceRef:
@@ -318,6 +339,197 @@ def _hash_config(config: Dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(config, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _canonical_json(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=False, default=str, separators=(",", ":"))
+
+
+def _hash_payload(payload: Dict[str, Any]) -> str:
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _atomic_write_json(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, ensure_ascii=False, default=str)
+    os.replace(tmp_path, path)
+
+
+def _load_json_dict(path: Path) -> Optional[Dict[str, Any]]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _benchmark_partial_cache_path(cache_path: Path) -> Path:
+    return cache_path.with_name(f"{cache_path.stem}.partial{cache_path.suffix}")
+
+
+def _paper_id_hash_for_df(df: pd.DataFrame) -> str:
+    return hash_paper_ids(stable_paper_ids(df))
+
+
+def _gold_assignment_to_payload(gold: GoldFutureAssignment) -> Dict[str, Any]:
+    return asdict(gold)
+
+
+def _gold_assignment_from_payload(payload: Dict[str, Any]) -> GoldFutureAssignment:
+    return GoldFutureAssignment(
+        paper_id=str(payload.get("paper_id") or ""),
+        title=str(payload.get("title") or ""),
+        abstract=str(payload.get("abstract") or ""),
+        publication_year=payload.get("publication_year"),
+        paper_fingerprint=dict(payload.get("paper_fingerprint") or {}),
+        best_target_score=float(payload.get("best_target_score") or 0.0),
+        cue_alignment_score=(
+            None if payload.get("cue_alignment_score") is None else float(payload.get("cue_alignment_score") or 0.0)
+        ),
+        ranking_score=float(payload.get("ranking_score") or 0.0),
+        assigned_target=dict(payload.get("assigned_target") or {}),
+        assigned_target_id=str(payload.get("assigned_target_id") or ""),
+        assigned_target_score=float(payload.get("assigned_target_score") or 0.0),
+    )
+
+
+def _benchmark_cache_key_payload(
+    *,
+    snapshot_id: str,
+    cutoff_date: str,
+    future_window_start: str,
+    future_window_end: str,
+    targets: Sequence[Dict[str, Any]],
+    n_gap_targets: int,
+    n_cluster_pair_targets: int,
+    n_gold_future_papers: int,
+    discovery_cue: Optional[Dict[str, Any]],
+    cue_source_snapshot_id: Optional[str],
+    cue_similarity_top_k: int,
+    cue_similarity_sample_n: int,
+    future_prefilter_stats: Dict[str, Any],
+    disable_leakage_check: bool,
+    historical_paper_id_hash: str,
+    future_paper_id_hash_before_prefilter: str,
+    future_paper_id_hash_after_prefilter: str,
+    qwen_base_url: str,
+) -> Dict[str, Any]:
+    target_payloads = [dict(target) for target in targets]
+    return {
+        "schema_version": BENCHMARK_CACHE_SCHEMA_VERSION,
+        "snapshot_id": snapshot_id,
+        "cutoff_date": cutoff_date,
+        "future_window_start": future_window_start,
+        "future_window_end": future_window_end,
+        "target_ids": [target_id(target) for target in target_payloads],
+        "target_payload_hash": _hash_payload({"targets": target_payloads}),
+        "n_targets": len(target_payloads),
+        "n_gap_targets": int(n_gap_targets),
+        "n_cluster_pair_targets": int(n_cluster_pair_targets),
+        "n_gold_future_papers": int(n_gold_future_papers),
+        "discovery_cue": discovery_cue or {},
+        "cue_source_snapshot_id": cue_source_snapshot_id,
+        "cue_similarity_top_k": int(cue_similarity_top_k),
+        "cue_similarity_sample_n": int(cue_similarity_sample_n),
+        "future_prefilter": dict(future_prefilter_stats),
+        "disable_leakage_check": bool(disable_leakage_check),
+        "historical_paper_id_hash": historical_paper_id_hash,
+        "future_paper_id_hash_before_prefilter": future_paper_id_hash_before_prefilter,
+        "future_paper_id_hash_after_prefilter": future_paper_id_hash_after_prefilter,
+        "qwen_base_url": str(qwen_base_url or "").rstrip("/"),
+    }
+
+
+def _load_completed_benchmark_cache(cache_path: Optional[Path], cache_key: str) -> Optional[Dict[str, Any]]:
+    if cache_path is None or not cache_path.exists():
+        return None
+    payload = _load_json_dict(cache_path)
+    if not payload:
+        return None
+    if payload.get("schema_version") != BENCHMARK_CACHE_SCHEMA_VERSION:
+        return None
+    if payload.get("status") != "completed" or payload.get("cache_key") != cache_key:
+        return None
+    required = ("target_pool", "gold_assignments", "benchmark_stats", "future_prefilter_stats")
+    if not all(key in payload for key in required):
+        return None
+    return payload
+
+
+def _load_partial_benchmark_cache(cache_path: Optional[Path], cache_key: str) -> Optional[Dict[str, Any]]:
+    if cache_path is None:
+        return None
+    partial_path = _benchmark_partial_cache_path(cache_path)
+    if not partial_path.exists():
+        return None
+    payload = _load_json_dict(partial_path)
+    if not payload:
+        return None
+    if payload.get("schema_version") != BENCHMARK_CACHE_SCHEMA_VERSION:
+        return None
+    if payload.get("status") != "partial" or payload.get("cache_key") != cache_key:
+        return None
+    if int(payload.get("scanned_rows") or 0) < 0:
+        return None
+    return payload
+
+
+def _write_partial_benchmark_cache(
+    cache_path: Path,
+    *,
+    cache_key: str,
+    cache_key_payload: Dict[str, Any],
+    target_pool: Sequence[Dict[str, Any]],
+    scanned_rows: int,
+    selected: Sequence[GoldFutureAssignment],
+    stats: Dict[str, int],
+) -> None:
+    _atomic_write_json(
+        _benchmark_partial_cache_path(cache_path),
+        {
+            "schema_version": BENCHMARK_CACHE_SCHEMA_VERSION,
+            "status": "partial",
+            "cache_key": cache_key,
+            "cache_key_payload": cache_key_payload,
+            "updated_at": pd.Timestamp.utcnow().isoformat(),
+            "target_pool": list(target_pool),
+            "scanned_rows": int(scanned_rows),
+            "selected": [_gold_assignment_to_payload(item) for item in selected],
+            "stats": dict(stats),
+        },
+    )
+
+
+def _write_completed_benchmark_cache(
+    cache_path: Path,
+    *,
+    cache_key: str,
+    cache_key_payload: Dict[str, Any],
+    target_pool: Sequence[Dict[str, Any]],
+    gold_assignments: Sequence[GoldFutureAssignment],
+    benchmark_stats: Dict[str, int],
+    future_prefilter_stats: Dict[str, Any],
+) -> None:
+    _atomic_write_json(
+        cache_path,
+        {
+            "schema_version": BENCHMARK_CACHE_SCHEMA_VERSION,
+            "status": "completed",
+            "cache_key": cache_key,
+            "cache_key_payload": cache_key_payload,
+            "completed_at": pd.Timestamp.utcnow().isoformat(),
+            "target_pool": list(target_pool),
+            "gold_assignments": [_gold_assignment_to_payload(item) for item in gold_assignments],
+            "benchmark_stats": dict(benchmark_stats),
+            "future_prefilter_stats": dict(future_prefilter_stats),
+        },
+    )
+    try:
+        _benchmark_partial_cache_path(cache_path).unlink()
+    except FileNotFoundError:
+        pass
+
+
 def _metadata_date(snapshot: Dict[str, Any], field: str) -> str:
     metadata = dict(snapshot.get("metadata") or {})
     value = metadata.get(field)
@@ -499,17 +711,31 @@ def _target_request(
     return payload
 
 
-def _target_score_from_pack(pack: Dict[str, Any], discovery_cue: Optional[Dict[str, Any]]) -> float:
+def _target_score_from_fingerprints(
+    fingerprints: Sequence[Dict[str, Any]],
+    discovery_cue: Optional[Dict[str, Any]],
+) -> float:
     if not discovery_cue:
         return 0.0
-    papers = list(pack.get("papers") or [])
-    if not papers:
+    if not fingerprints:
         return 0.0
     scores = [
-        float(score_record_against_cue(paper, discovery_cue).get("score", 0.0) or 0.0)
-        for paper in papers[:6]
+        float(score_fingerprint_against_cue(fingerprint, discovery_cue).get("score", 0.0) or 0.0)
+        for fingerprint in fingerprints
     ]
     return (sum(scores) / len(scores)) if scores else 0.0
+
+
+def _pack_scoring_fingerprints(pack: Dict[str, Any]) -> List[Dict[str, Any]]:
+    fingerprints: List[Dict[str, Any]] = []
+    for paper in list(pack.get("papers") or [])[:6]:
+        text = f"{paper.get('title', '')} {paper.get('abstract', paper.get('processed_content', ''))}".strip()
+        fingerprints.append(fingerprint_text(text))
+    return fingerprints
+
+
+def _target_score_from_pack(pack: Dict[str, Any], discovery_cue: Optional[Dict[str, Any]]) -> float:
+    return _target_score_from_fingerprints(_pack_scoring_fingerprints(pack), discovery_cue)
 
 
 def _paper_id_from_row(row: pd.Series, row_idx: int) -> str:
@@ -528,9 +754,9 @@ def _paper_record_from_row(row: pd.Series, row_idx: int) -> Dict[str, Any]:
     }
 
 
-def _paper_to_pseudo_cue(paper: Dict[str, Any]) -> Dict[str, Any]:
+def _paper_to_pseudo_cue(paper: Dict[str, Any], fingerprint: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     text = f"{paper.get('title', '')} {paper.get('abstract', '')}".strip()
-    fingerprint = fingerprint_text(text)
+    fingerprint = dict(fingerprint or fingerprint_text(text))
     soft_constraints = {
         field: list(fingerprint.get(field) or [])
         for field in ("disease", "material", "payload", "targeting", "mechanism", "model", "route", "outcome")
@@ -657,15 +883,31 @@ def _select_gold_future_papers(
     n_gold_future_papers: int,
     disable_leakage_check: bool = False,
     progress_callback: Optional[Callable[[int, int, Dict[str, int]], None]] = None,
+    checkpoint_callback: Optional[Callable[[int, Sequence[GoldFutureAssignment], Dict[str, int]], None]] = None,
+    resume_state: Optional[Dict[str, Any]] = None,
+    checkpoint_every: int = BENCHMARK_CHECKPOINT_EVERY_ROWS,
 ) -> tuple[List[GoldFutureAssignment], Dict[str, int]]:
-    selected: List[GoldFutureAssignment] = []
-    leakage_filtered = 0
-    frontier_eligible = 0
-    cue_scored = 0
-    cue_positive = 0
+    resume_state = dict(resume_state or {})
+    resume_stats = dict(resume_state.get("stats") or {})
+    selected = [
+        _gold_assignment_from_payload(dict(item))
+        for item in list(resume_state.get("selected") or [])
+        if isinstance(item, dict)
+    ]
+    leakage_filtered = int(resume_stats.get("n_leakage_filtered", 0) or 0)
+    frontier_eligible = int(resume_stats.get("n_frontier_eligible", 0) or 0)
+    cue_scored = int(resume_stats.get("n_cue_scored", 0) or 0)
+    cue_positive = int(resume_stats.get("n_cue_positive", 0) or 0)
+    start_row = max(0, int(resume_state.get("scanned_rows") or 0))
     total_rows = int(len(future_df))
+    target_scoring_pool = [
+        (target_info, _pack_scoring_fingerprints(dict(target_info.get("pack") or {})))
+        for target_info in target_pool
+    ]
 
     for row_number, (row_idx, row) in enumerate(future_df.iterrows(), start=1):
+        if row_number <= start_row:
+            continue
         try:
             paper = _paper_record_from_row(row, row_idx)
             if not paper["title"] or not paper["abstract"]:
@@ -689,12 +931,12 @@ def _select_gold_future_papers(
                     leakage_filtered += 1
                     continue
 
-            paper_cue = _paper_to_pseudo_cue(paper)
+            paper_cue = _paper_to_pseudo_cue(paper, fingerprint)
             best_target_score = float("-inf")
             best_assignment_score = float("-inf")
             best_target: Optional[Dict[str, Any]] = None
-            for target_info in target_pool:
-                paper_target_score = _target_score_from_pack(target_info["pack"], paper_cue)
+            for target_info, pack_fingerprints in target_scoring_pool:
+                paper_target_score = _target_score_from_fingerprints(pack_fingerprints, paper_cue)
                 if paper_target_score > best_target_score:
                     best_target_score = paper_target_score
                 assignment_score = paper_target_score
@@ -714,7 +956,9 @@ def _select_gold_future_papers(
             cue_alignment_score: Optional[float] = None
             ranking_score = best_target_score
             if discovery_cue:
-                cue_alignment_score = float(score_record_against_cue(paper, discovery_cue).get("score", 0.0) or 0.0)
+                cue_alignment_score = float(
+                    score_fingerprint_against_cue(fingerprint, discovery_cue).get("score", 0.0) or 0.0
+                )
                 cue_scored += 1
                 if cue_alignment_score > 0:
                     cue_positive += 1
@@ -737,17 +981,21 @@ def _select_gold_future_papers(
                 )
             )
         finally:
+            stats = {
+                "n_future_pool": total_rows,
+                "n_leakage_filtered": leakage_filtered,
+                "n_frontier_eligible": frontier_eligible,
+                "n_cue_filtered": 0,
+                "n_cue_scored": cue_scored,
+                "n_cue_positive": cue_positive,
+            }
+            if checkpoint_callback and (row_number % max(1, checkpoint_every) == 0 or row_number == total_rows):
+                checkpoint_callback(row_number, selected, stats)
             if progress_callback and (row_number % 10 == 0 or row_number == total_rows):
                 progress_callback(
                     row_number,
                     total_rows,
-                    {
-                        "n_leakage_filtered": leakage_filtered,
-                        "n_frontier_eligible": frontier_eligible,
-                        "n_cue_filtered": 0,
-                        "n_cue_scored": cue_scored,
-                        "n_cue_positive": cue_positive,
-                    },
+                    stats,
                 )
 
     selected.sort(
@@ -941,6 +1189,7 @@ def run_retrospective(
     future_abstract_exclude: Optional[Sequence[str]] = None,
     future_semantic_query: Optional[str] = None,
     future_semantic_threshold: Optional[float] = None,
+    benchmark_cache_path: Optional[str] = None,
     progress_callback: Optional[Callable[[RetrospectiveProgress], None]] = None,
 ) -> RetrospectiveResult:
     return _run_retrospective_progress_core_v2(
@@ -971,6 +1220,7 @@ def run_retrospective(
         future_abstract_exclude=future_abstract_exclude,
         future_semantic_query=future_semantic_query,
         future_semantic_threshold=future_semantic_threshold,
+        benchmark_cache_path=benchmark_cache_path,
         progress_callback=progress_callback,
     )
 
@@ -1004,9 +1254,11 @@ def _run_retrospective_progress_core_v2(
     future_abstract_exclude: Optional[Sequence[str]] = None,
     future_semantic_query: Optional[str] = None,
     future_semantic_threshold: Optional[float] = None,
+    benchmark_cache_path: Optional[str] = None,
     progress_callback: Optional[Callable[[RetrospectiveProgress], None]] = None,
 ) -> RetrospectiveResult:
     run_id = f"retro_eval_{uuid.uuid4().hex[:12]}"
+    backend = _MemoizingBackend(backend)
     methods = list(methods or DEFAULT_METHODS)
     analysis_config = analysis_config or AnalysisConfig()
     normalized_cue = discovery_cue_to_dict(normalize_discovery_cue(discovery_cue))
@@ -1226,17 +1478,6 @@ def _run_retrospective_progress_core_v2(
                 cluster_targets = _select_cluster_pair_targets(backend, snapshot_id, limit=n_cluster_pair_targets)
                 targets: List[Dict[str, Any]] = [*gap_target_rows, *cluster_targets]
 
-                _emit_progress("building_target_pool", message=f"Building focused evidence packs for {len(targets)} targets")
-                target_pool = _prepare_target_pool(
-                    backend,
-                    run_id,
-                    snapshot_id,
-                    targets,
-                    normalized_cue,
-                    cue_source_snapshot_id,
-                    cue_similarity_top_k,
-                    cue_similarity_sample_n,
-                )
                 cluster_ids = [
                     int(c["cluster_id"])
                     for c in backend.list_clusters(snapshot_id=snapshot_id, limit=200).get("clusters", [])
@@ -1244,6 +1485,8 @@ def _run_retrospective_progress_core_v2(
 
                 _emit_progress("building_indices", message="Building historical and future retrieval indices")
                 qwen_client = QwenClient(qwen_base_url)
+                historical_paper_id_hash = _paper_id_hash_for_df(split.historical.df)
+                future_paper_id_hash_before_prefilter = _paper_id_hash_for_df(split.future.df)
                 split.future.df, split.future.embeddings, future_prefilter_stats = _apply_future_prefilter(
                     future_df=split.future.df,
                     future_embeddings=split.future.embeddings,
@@ -1261,42 +1504,165 @@ def _run_retrospective_progress_core_v2(
                             f"{int(future_prefilter_stats['n_future_rows_after'])}"
                         ),
                     )
+                future_paper_id_hash_after_prefilter = _paper_id_hash_for_df(split.future.df)
                 historical_index = build_corpus_index(split.historical.df, split.historical.embeddings["qwen"])
                 future_index = build_corpus_index(split.future.df, split.future.embeddings["qwen"])
 
                 future_total = int(len(split.future.df))
-                _emit_progress(
-                    "selecting_gold_future_papers",
-                    current=0,
-                    total=future_total,
-                    message=_gold_selection_progress_message({}),
-                )
-
-                def _on_gold_selection_progress(current: int, total: int, stats: Dict[str, int]) -> None:
-                    _emit_progress(
-                        "selecting_gold_future_papers",
-                        current=current,
-                        total=total,
-                        message=_gold_selection_progress_message(stats),
-                    )
-
-                gold_assignments, benchmark_stats = _select_gold_future_papers(
-                    future_df=split.future.df,
-                    historical_index=historical_index,
-                    qwen_client=qwen_client,
-                    target_pool=target_pool,
-                    discovery_cue=normalized_cue,
+                cache_path = Path(benchmark_cache_path).expanduser() if benchmark_cache_path else None
+                cache_key_payload = _benchmark_cache_key_payload(
+                    snapshot_id=snapshot_id,
+                    cutoff_date=cutoff_date,
+                    future_window_start=future_window_start,
+                    future_window_end=future_window_end,
+                    targets=targets,
+                    n_gap_targets=n_gap_targets,
+                    n_cluster_pair_targets=n_cluster_pair_targets,
                     n_gold_future_papers=n_gold_future_papers,
+                    discovery_cue=normalized_cue,
+                    cue_source_snapshot_id=cue_source_snapshot_id,
+                    cue_similarity_top_k=cue_similarity_top_k,
+                    cue_similarity_sample_n=cue_similarity_sample_n,
+                    future_prefilter_stats=future_prefilter_stats,
                     disable_leakage_check=disable_leakage_check,
-                    progress_callback=_on_gold_selection_progress if future_total > 0 else None,
+                    historical_paper_id_hash=historical_paper_id_hash,
+                    future_paper_id_hash_before_prefilter=future_paper_id_hash_before_prefilter,
+                    future_paper_id_hash_after_prefilter=future_paper_id_hash_after_prefilter,
+                    qwen_base_url=qwen_base_url,
                 )
-                if future_total == 0:
+                cache_key = _hash_payload(cache_key_payload)
+                benchmark_cache_hit = False
+                completed_cache = _load_completed_benchmark_cache(cache_path, cache_key)
+                if completed_cache is not None:
+                    benchmark_cache_hit = True
+                    target_pool = [dict(item) for item in list(completed_cache.get("target_pool") or [])]
+                    gold_assignments = [
+                        _gold_assignment_from_payload(dict(item))
+                        for item in list(completed_cache.get("gold_assignments") or [])
+                        if isinstance(item, dict)
+                    ]
+                    benchmark_stats = dict(completed_cache.get("benchmark_stats") or {})
+                    future_prefilter_stats = dict(completed_cache.get("future_prefilter_stats") or future_prefilter_stats)
                     _emit_progress(
-                        "selecting_gold_future_papers",
-                        current=0,
-                        total=0,
-                        message=_gold_selection_progress_message(benchmark_stats),
+                        "benchmark_cache",
+                        message=f"Loaded benchmark cache from {cache_path}",
                     )
+                else:
+                    partial_cache = _load_partial_benchmark_cache(cache_path, cache_key)
+                    if partial_cache is not None and int(partial_cache.get("scanned_rows") or 0) > future_total:
+                        partial_cache = None
+
+                    if partial_cache is not None and partial_cache.get("target_pool"):
+                        target_pool = [dict(item) for item in list(partial_cache.get("target_pool") or [])]
+                        _emit_progress(
+                            "building_target_pool",
+                            message=f"Loaded focused evidence packs from partial benchmark cache {cache_path}",
+                        )
+                    else:
+                        _emit_progress(
+                            "building_target_pool",
+                            message=f"Building focused evidence packs for {len(targets)} targets",
+                        )
+                        target_pool = _prepare_target_pool(
+                            backend,
+                            run_id,
+                            snapshot_id,
+                            targets,
+                            normalized_cue,
+                            cue_source_snapshot_id,
+                            cue_similarity_top_k,
+                            cue_similarity_sample_n,
+                        )
+
+                    resume_state = None
+                    if partial_cache is not None:
+                        resume_state = {
+                            "scanned_rows": int(partial_cache.get("scanned_rows") or 0),
+                            "selected": list(partial_cache.get("selected") or []),
+                            "stats": dict(partial_cache.get("stats") or {}),
+                        }
+                        _emit_progress(
+                            "selecting_gold_future_papers",
+                            current=int(resume_state["scanned_rows"]),
+                            total=future_total,
+                            message="Resuming " + _gold_selection_progress_message(dict(resume_state["stats"])),
+                        )
+                    else:
+                        _emit_progress(
+                            "selecting_gold_future_papers",
+                            current=0,
+                            total=future_total,
+                            message=_gold_selection_progress_message({}),
+                        )
+
+                    def _on_gold_selection_progress(current: int, total: int, stats: Dict[str, int]) -> None:
+                        _emit_progress(
+                            "selecting_gold_future_papers",
+                            current=current,
+                            total=total,
+                            message=_gold_selection_progress_message(stats),
+                        )
+
+                    def _on_gold_selection_checkpoint(
+                        current: int,
+                        selected: Sequence[GoldFutureAssignment],
+                        stats: Dict[str, int],
+                    ) -> None:
+                        if cache_path is None:
+                            return
+                        _write_partial_benchmark_cache(
+                            cache_path,
+                            cache_key=cache_key,
+                            cache_key_payload=cache_key_payload,
+                            target_pool=target_pool,
+                            scanned_rows=current,
+                            selected=selected,
+                            stats=stats,
+                        )
+
+                    gold_assignments, benchmark_stats = _select_gold_future_papers(
+                        future_df=split.future.df,
+                        historical_index=historical_index,
+                        qwen_client=qwen_client,
+                        target_pool=target_pool,
+                        discovery_cue=normalized_cue,
+                        n_gold_future_papers=n_gold_future_papers,
+                        disable_leakage_check=disable_leakage_check,
+                        progress_callback=_on_gold_selection_progress if future_total > 0 else None,
+                        checkpoint_callback=_on_gold_selection_checkpoint if cache_path is not None else None,
+                        resume_state=resume_state,
+                    )
+                    if future_total == 0:
+                        _emit_progress(
+                            "selecting_gold_future_papers",
+                            current=0,
+                            total=0,
+                            message=_gold_selection_progress_message(benchmark_stats),
+                        )
+                    if cache_path is not None:
+                        _write_completed_benchmark_cache(
+                            cache_path,
+                            cache_key=cache_key,
+                            cache_key_payload=cache_key_payload,
+                            target_pool=target_pool,
+                            gold_assignments=gold_assignments,
+                            benchmark_stats=benchmark_stats,
+                            future_prefilter_stats=future_prefilter_stats,
+                        )
+                        _emit_progress(
+                            "benchmark_cache",
+                            message=f"Wrote benchmark cache to {cache_path}",
+                        )
+                _update_run_output(
+                    benchmark_cache={
+                        "enabled": cache_path is not None,
+                        "path": str(cache_path) if cache_path is not None else None,
+                        "cache_key": cache_key,
+                        "hit": benchmark_cache_hit,
+                    }
+                    if cache_path is not None
+                    else None
+                )
 
                 all_targets = [dict(item["target"]) for item in target_pool]
                 total_tasks = len(methods) * seeds * len(gold_assignments)
@@ -1622,6 +1988,12 @@ def _run_retrospective_progress_core_v2(
                         "cue_similarity_sample_n": cue_similarity_sample_n,
                         "future_prefilter": future_prefilter_stats,
                         "target_pool_profile": "focused_eval",
+                        "benchmark_cache": {
+                            "enabled": cache_path is not None,
+                            "path": str(cache_path) if cache_path is not None else None,
+                            "cache_key": cache_key,
+                            "hit": benchmark_cache_hit,
+                        },
                     },
                     summary=summary,
                     metrics=metrics,
@@ -1697,6 +2069,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--future-abstract-exclude", nargs="+", default=None)
     parser.add_argument("--future-semantic-query", default=None)
     parser.add_argument("--future-semantic-threshold", type=float, default=None)
+    parser.add_argument("--benchmark-cache-path", default=None)
     return parser.parse_args()
 
 
@@ -1748,6 +2121,7 @@ def main() -> None:
             future_abstract_exclude=args.future_abstract_exclude,
             future_semantic_query=args.future_semantic_query,
             future_semantic_threshold=args.future_semantic_threshold,
+            benchmark_cache_path=args.benchmark_cache_path,
             progress_callback=progress_reporter,
         )
     finally:
@@ -1762,7 +2136,7 @@ def main() -> None:
                 "observability": result.run.get("observability", {}),
             },
             indent=2,
-            ensure_ascii=False,
+            ensure_ascii=True,
         )
     )
 
