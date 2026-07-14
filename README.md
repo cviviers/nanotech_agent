@@ -1,191 +1,222 @@
 # Evidence-Grounded Frontier Mapping and Agentic Hypothesis Generation in Nanomedicine
 
-This repository is research code for mapping nanotechnology and nanomedicine literature, identifying sparse or weakly explored regions in embedding space, and testing whether retrieval-grounded LLM workflows can generate useful research hypotheses from those frontiers.
+This code supports the paper, [*Evidence-Grounded Frontier Mapping and Agentic Hypothesis Generation in Nanomedicine*](https://arxiv.org/abs/2605.18144).
 
-It currently contains:
+Research code for mapping nanotechnology and nanomedicine literature, locating sparse regions in embedding space, and evaluating retrieval-grounded hypothesis-generation workflows.
 
-- a notebook pipeline for PubMed extraction, preprocessing, and embedding generation
-- a Streamlit novelty-analysis workbench
-- a FastAPI backend plus SQLite knowledge store for published analysis snapshots
-- agentic and baseline hypothesis-generation workflows
-- retrospective and prospective evaluation runners
-- a separate human assessment app for blind-first review of generated ideas
-- local embedding and reranking services for Qwen and BioClinical ModernBERT
+The project combines a corpus-preparation notebook pipeline, a Streamlit workbench, a snapshot-backed agent service, local embedding/reranking services, and retrospective/prospective evaluation tools.
 
-## Main Components
+> **Research-use notice.** This is a research prototype, not a clinical, safety, or experimental-design system. Generated ideas require expert review and independent validation. 
+
+## Contents
+
+- [What is included](#what-is-included)
+- [How it works](#how-it-works)
+- [Installation and data](#installation-and-data)
+- [Run the applications](#run-the-applications)
+- [Benchmarking](#benchmarking)
+- [Outputs and human review](#outputs-and-human-review)
+- [Testing and project notes](#testing-and-project-notes)
+
+## What is included
+
+| Area | Location | Purpose |
+| --- | --- | --- |
+| Corpus pipeline | `data_setup/` | PubMed collection, cleaning, and embedding-generation notebooks. |
+| Novelty workbench | `novelty_app/` | Streamlit UI for loading data, clustering, gap analysis, and snapshot publication. |
+| Agent backend | `novelty_app/agents/` | FastAPI service, SQLite knowledge store, evidence-pack retrieval, and LangGraph orchestrator. |
+| Benchmark runners | `novelty_app/evaluation/` | Retrospective future-paper recovery and prospective hypothesis generation. |
+| Embedding services | `embedding_models/` | Local Qwen embedding/reranking and BioClinical ModernBERT services, plus offline embedding evaluation. |
+| Human assessment | `assement_app/` | Blind-first review of generated ideas in an Excel-backed Streamlit app. |
+| Tests | `tests/` | Unit and integration-style coverage for the core pipeline. |
+
+Additional subsystem documentation is available in:
+
+- [`embedding_models/README.md`](embedding_models/README.md)
+- [`novelty_app/agents/README.md`](novelty_app/agents/README.md)
+- [`novelty_app/evaluation/README.md`](novelty_app/evaluation/README.md)
+- [`assement_app/README.md`](assement_app/README.md)
+
+## How it works
 
 ```text
-1.pubmed_data_extraction.ipynb   PubMed collection workflow
-2.data_preprocessing.ipynb       Corpus cleaning / normalization
-3.create_bert_embeddings.ipynb   BioClinical ModernBERT embedding creation
-3.create_qwen_embeddings.ipynb   Qwen embedding creation
-
-embedding_models/                FastAPI services for local embedding/reranking
-novelty_app/                     Main analysis app, agent backend, and evaluation code
-assement_app/                    Human review app for assessment bundles
-tests/                           Automated tests
-paper/                           published paper, tbd
-data/                            Local datasets, embeddings, SQLite DB, evaluation outputs
+PubMed records --> cleaning --> document embeddings --> novelty analysis
+                                                        |
+                                                        v
+                                              published analysis snapshot
+                                                        |
+                                                        v
+                            evidence-pack retrieval <-- agent / baseline generators
+                                                        |
+                                                        v
+                         retrospective future-paper recovery or prospective review
 ```
 
-Useful subsystem docs:
+The novelty-analysis path:
 
-- `embedding_models/README.md`
-- `novelty_app/agents/README.md`
-- `novelty_app/evaluation/README.md`
-- `assement_app/README.md`
+1. loads paper records and aligned precomputed embeddings;
+2. optionally reduces dimensionality with PCA;
+3. clusters papers with K-means, HDBSCAN, or graph community detection;
+4. builds a k-nearest-neighbour graph and multi-`k` density features;
+5. combines z-scored density features into a `gap_score` and finds connected high-gap regions;
+6. publishes a snapshot that can be retrieved by the backend, generators, and evaluation runners.
 
-## What The Code Actually Does
+Agentic generation uses target-specific evidence packs. The canonical orchestrator performs contrastive explanation, audit, optional patch retrieval, hypothesis generation, scoring, and an experimental-blueprint step. All generated claims should be traced back to papers in the evidence pack; a discovery cue steers retrieval and prompting but is never evidence itself.
 
-The current novelty-analysis path is centered on the `novelty_app` package and `novelty_app.evaluation.analysis_v1`.
-
-At a high level it:
-
-1. loads a paper corpus plus precomputed embeddings
-2. optionally applies PCA for downstream analysis
-3. clusters papers with K-means, HDBSCAN, or graph community detection
-4. builds a k-nearest-neighbor graph in embedding space
-5. computes density features as average k-NN distance across multiple `k` values
-6. averages z-scored density features into a `gap_score`
-7. identifies gap regions as connected components among papers above a chosen `gap_quantile`
-8. publishes those results as reusable snapshots for agent and evaluation workflows
-
-That means the current codebase is more about:
-
-- frontier mapping over embedding space
-- snapshot publishing and retrieval
-- evidence-pack construction
-- grounded ideation and blueprint generation
-- benchmarking generated ideas against held-out future papers
-
-## Setup
+## Installation and data
 
 ### Requirements
 
-- Python 3.10+
-- local corpus files and embeddings under `data/`
-- optional GPU for local embedding services
-- `OPENAI_API_KEY` for LLM-backed pages and generation methods
+- Python 3.10 or newer
+- local corpus and embedding artifacts under `data/`
+- a CUDA-capable GPU is strongly recommended for the local Qwen services; CPU execution is possible but slower
+- `OPENAI_API_KEY` only for OpenAI-backed methods and LLM UI features
 
-### Install
+Create and activate an environment from the repository root:
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-### Optional Environment Variables
+If PowerShell prevents activation, use `Set-ExecutionPolicy -Scope Process RemoteSigned` for the current shell, or activate the environment from `cmd.exe` with `.venv\Scripts\activate.bat`.
 
-- `OPENAI_API_KEY`: required for LLM analysis, orchestrator, and LLM-backed evaluation methods
-- `OPENAI_MODEL`: optional override for generation/judging
-- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `LANGFUSE_TRACING_ENABLED`: optional tracing
-- `NOVELTY_AGENT_DB`: override the default SQLite path; otherwise the backend uses `data/novelty_agent_knowledge.sqlite`
-- `QWEN_TORCH_DTYPE`, `QWEN_EMBED_TORCH_DTYPE`, `QWEN_RERANK_TORCH_DTYPE`: optional dtype controls for the local Qwen service
-- `QWEN_RERANK_BATCH_SIZE`, `QWEN_EMBED_BATCH_SIZE`, `QWEN_RERANK_MAX_LENGTH`, `QWEN_RERANK_LOGITS_TO_KEEP`: memory controls for the local Qwen service
+### Environment variables
 
-### Expected Local Data
+Set secrets in the shell or a secure secret manager—never commit them to source files.
 
-The repo code assumes data artifacts like these are available locally:
+| Variable | When needed | Notes |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | LLM methods, LLM analysis, orchestrator | Not required for deterministic baselines. |
+| `OPENAI_MODEL` | Optional | Overrides the default model for generation/judging. |
+| `NOVELTY_AGENT_DB` | Optional | Overrides `data/novelty_agent_knowledge.sqlite`. |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_BASE_URL`, `LANGFUSE_TRACING_ENABLED` | Optional | Enables tracing. |
+| `QWEN_TORCH_DTYPE` | Optional | CUDA dtype fallback for both Qwen models. |
+| `QWEN_EMBED_TORCH_DTYPE`, `QWEN_RERANK_TORCH_DTYPE` | Optional | Per-model CUDA dtype overrides. |
+| `QWEN_EMBED_BATCH_SIZE`, `QWEN_RERANK_BATCH_SIZE`, `QWEN_RERANK_MAX_LENGTH`, `QWEN_RERANK_LOGITS_TO_KEEP` | Optional | Lower batch size or maximum length first if reranking runs out of memory. |
 
-- `data/cleaned_dataset.json`
-- `data/all_papers.json`
-- `data/bert_embeddings.npy`
-- `data/bert_embeddings_metadata.json`
-- `data/qwen_embeddings.npy`
-- `data/qwen_embeddings_metadata.json`
+For example:
 
-Large runtime artifacts are intentionally not tracked in git. The current `.gitignore` excludes `data/*`, `paper/*`, generated review workbooks, and SQLite databases, so a fresh clone will not be self-contained.
+```powershell
+$env:OPENAI_API_KEY = "<your key>"
+$env:OPENAI_MODEL = "<model name>"
+$env:QWEN_TORCH_DTYPE = "float16"
+```
 
-## Run The Main Pieces
+### Data contract
 
-### 1. Streamlit Novelty Workbench
+Large data, model, database, and evaluation artifacts are intentionally ignored by Git, so a fresh clone is not self-contained. The usual local inputs are:
+
+```text
+data/cleaned_dataset.json
+data/all_papers.json
+data/qwen_embeddings.npy
+data/qwen_embeddings_metadata.json
+data/bert_embeddings.npy
+data/bert_embeddings_metadata.json
+```
+
+For retrospective evaluation, `cleaned_dataset.json` must contain publication-date components (`publication_year`, and preferably `publication_month` and `publication_day`). Each embedding matrix must have exactly one row per dataset record in the same order; the time-split loader rejects misaligned arrays. Keep the record order stable throughout extraction, preprocessing, and embedding creation.
+
+Use the notebooks in `data_setup/` to build or reproduce these artifacts:
+
+1. `1.pubmed_data_extraction.ipynb`
+2. `2.data_preprocessing.ipynb`
+3. `3.create_bert_embeddings.ipynb` or `3.create_qwen_embeddings.ipynb`
+
+## Run the applications
+
+### Novelty workbench
 
 ```powershell
 streamlit run novelty_app/app.py
 ```
 
-The app currently exposes pages for:
+The workbench covers data/configuration, embedding processing, filtering, clustering, gap analysis, published snapshots, agent controls, database exploration, and export.
 
-- Data & Config
-- Embeddings
-- Filters
-- Clustering
-- Gap Analysis
-- Gap Regions
-- LLM Analysis
-- Agent Backend
-- Agent Console
-- Database Explorer
-- Export
+### Qwen embedding and reranking service
 
-- The Agent Backend page publishes analyzed snapshots, inspects backend state, runs the orchestrator, and manages backend artifacts.
-- The Agent Console page focuses on retrospective and prospective evaluation runners against published snapshots.
-
-### 2. Local Embedding Services
-
-From `embedding_models/`:
+Start this in a separate shell:
 
 ```powershell
-cd embedding_models
+Set-Location embedding_models
 uvicorn qwen:app --host 0.0.0.0 --port 8000
 ```
 
+The service supplies both embeddings and cross-encoder reranking and is the retrieval backend used by the evaluation stack. Use `http://127.0.0.1:8000` from local CLI clients. See its interactive API documentation at `http://127.0.0.1:8000/docs`.
+
+The BioClinical ModernBERT service can be run independently on port 8001:
+
 ```powershell
-cd embedding_models
+Set-Location embedding_models
 uvicorn bert:app --host 0.0.0.0 --port 8001
 ```
 
-Notes:
+### Snapshot and agent backend
 
-- the Qwen service provides both embeddings and reranking
-- the evaluation stack uses the Qwen service as its retrieval backbone
-- the BERT service is available for embedding experiments and simple ranking/similarity
-
-### 3. Agent Backend
+Start this in another shell from the repository root:
 
 ```powershell
 uvicorn agents.backend_api:app --app-dir novelty_app --host 0.0.0.0 --port 8088
 ```
 
-The backend stores and serves:
+The backend persists published snapshots, papers, clusters, gap membership, evidence packs, generated artifacts, and evaluation runs. Its default SQLite database is `data/novelty_agent_knowledge.sqlite`.
 
-- published snapshots
-- papers, clusters, and gap membership
-- evidence packs
-- generated artifacts
-- retrospective evaluation runs and match records
+### Interactive agent run
 
-By default the persistence layer is SQLite-backed at `data/novelty_agent_knowledge.sqlite`.
-
-### 4. Interactive Agent Smoke Test
+With the backend running:
 
 ```powershell
 python -m novelty_app.agents.run_interactive
 ```
 
-This is a CLI path for selecting a snapshot and target manually, then running the LangGraph orchestrator outside Streamlit.
+This selects a published snapshot and a gap or cluster-pair target, then runs the orchestrator outside Streamlit.
 
-### 5. Retrospective Evaluation
+## Benchmarking
 
-The retrospective runner benchmarks whether historical frontier evidence can recover held-out future papers.
+### What the retrospective benchmark measures
 
-Prerequisites:
+The main benchmark asks: *using evidence available before a time cutoff, can a method generate a hypothesis whose retrieval results recover a later, target-associated paper?*
 
-- backend running on `http://127.0.0.1:8088`
-- Qwen service running on `http://127.0.0.1:8000`
-- local corpus files under `data/`
+For each run, the evaluator:
 
-Smoke example:
+1. splits the corpus into historical and future windows;
+2. builds or reuses a **historical** analysis snapshot;
+3. selects historical gap and cluster-pair targets;
+4. constructs focused evidence packs and assigns eligible future papers to targets;
+5. generates ideas with each configured method and seed;
+6. retrieves over the held-out future corpus and separately checks historical confounders;
+7. stores raw matches, aggregate metrics, and review material.
+
+The standard methods are:
+
+| Method | Role |
+| --- | --- |
+| `orchestrator` | Multi-step evidence-grounded LangGraph workflow. |
+| `single_shot_llm` | Single-pass LLM generator. |
+| `retrieval_summary_direct` | LLM generator based directly on retrieval summaries. |
+| `heuristic_bridge` | Deterministic bridge-style baseline. |
+| `pack_query_baseline` | Deterministic retrieval-oriented baseline derived from the evidence pack. |
+| `random_target_control` | Control that breaks the intended target relationship. |
+
+`orchestrator`, `single_shot_llm`, and `retrieval_summary_direct` require `OPENAI_API_KEY`. The deterministic methods make a useful service and data smoke test without an API key.
+
+### Reproducible smoke run
+
+Before running the command, start the Qwen service and the agent backend as described above. From the repository root, run a small, deterministic comparison:
 
 ```powershell
 python -m novelty_app.evaluation.run_retrospective `
   --backend-url http://127.0.0.1:8088 `
   --qwen-base-url http://127.0.0.1:8000 `
-  --n-gap-targets 2 `
-  --n-cluster-pair-targets 2 `
-  --n-gold-future-papers 10 `
-  --methods orchestrator single_shot_llm heuristic_bridge pack_query_baseline random_target_control `
+  --data-json data/cleaned_dataset.json `
+  --data-dir data `
+  --n-gap-targets 1 `
+  --n-cluster-pair-targets 1 `
+  --n-gold-future-papers 2 `
+  --methods heuristic_bridge pack_query_baseline random_target_control `
   --seeds 1 `
   --hypotheses-per-target 1 `
   --analysis-clustering-method kmeans `
@@ -193,16 +224,49 @@ python -m novelty_app.evaluation.run_retrospective `
   --output-dir data/retrospective_eval_smoke
 ```
 
-Outputs include:
+Use a separate output directory for every run. The default benchmark uses a cutoff of `2020-12-31` and a future window of `2022-01-01` through `2025-12-31`; record any changes to those values alongside results.
 
-- an evaluation run record
-- raw hypothesis-level match records
-- a review packet CSV/JSON
-- an `assessment_bundle_v1` JSON export for manual review
+To compare LLM and non-LLM methods, set `OPENAI_API_KEY` and replace `--methods` with the complete method list shown above. For a paper-grade run, increase targets, future papers, seeds, and hypotheses per target only after inspecting a smoke-run review packet.
 
-### 6. Prospective Generation
+### Cues, cached snapshots, and leakage controls
 
-The prospective runner reuses the same generator registry and snapshot-backed target selection, but does not do time splitting or future-paper recovery evaluation.
+A discovery cue can steer selection, retrieval, and prompting. The current CLI requires `--cue-source-snapshot-id` whenever a cue is active; it identifies the published snapshot used for cue-semantic retrieval. For example:
+
+```powershell
+python -m novelty_app.evaluation.run_retrospective `
+  --backend-url http://127.0.0.1:8088 `
+  --qwen-base-url http://127.0.0.1:8000 `
+  --existing-snapshot-id <historical_snapshot_id> `
+  --cue-source-snapshot-id <historical_snapshot_id> `
+  --discovery-cue-text "Focus on folate-targeted RNA delivery for breast cancer" `
+  --n-gap-targets 2 `
+  --n-cluster-pair-targets 2 `
+  --n-gold-future-papers 10 `
+  --methods orchestrator heuristic_bridge pack_query_baseline random_target_control `
+  --seeds 1 `
+  --hypotheses-per-target 1 `
+  --output-dir data/retrospective_eval_cued
+```
+
+The cue is not literature evidence and should not be cited as support. It reranks eligible future papers rather than hard-filtering them, and cue-aware metrics are reported when one is supplied.
+
+For valid comparisons:
+
+- reuse the same corpus version, date split, snapshot configuration, target counts, seed set, and retrieval service across methods;
+- only pass an `--existing-snapshot-id` known to contain historical papers for the requested cutoff;
+- preserve the default historical near-duplicate screen. `--disable-leakage-check` is a debugging/speed option and should not be used for reported results without explicit justification;
+- inspect the exported review packet for target assignment, future neighbours, and historical confounders before drawing conclusions;
+- report failures and incomplete tasks as well as aggregate scores.
+
+### Metrics and interpretation
+
+Primary recovery labels are `gold_recovered`, `future_neighbor_only`, `historical_confound`, and `not_recovered`. Aggregate output includes `gold_recall_at_1`, `gold_recall_at_5`, `gold_recall_at_10`, `gold_mrr`, `gold_recovered_rate`, `historical_confound_rate`, `median_gold_rank`, and idea-quality summaries. Cue-aware runs additionally report cue-weighted recall/MRR and hypothesis cue alignment.
+
+Higher recovery does not by itself establish that an idea is useful or novel: a future paper may be semantically related but scientifically uninteresting, while a valuable idea might not have a matching future paper. Use blind expert assessment alongside the automatic metrics.
+
+### Prospective generation
+
+Prospective generation runs the same generator registry against an existing snapshot without time splitting or future-paper recovery. It is intended for producing candidates for review, not for measuring benchmark performance.
 
 ```powershell
 python -m novelty_app.evaluation.run_prospective `
@@ -210,56 +274,73 @@ python -m novelty_app.evaluation.run_prospective `
   --snapshot-id <snapshot_id> `
   --n-gap-targets 2 `
   --n-cluster-pair-targets 2 `
-  --methods orchestrator single_shot_llm heuristic_bridge pack_query_baseline `
+  --methods orchestrator heuristic_bridge pack_query_baseline `
   --seeds 1 `
   --hypotheses-per-target 1 `
   --output-dir data/prospective_eval_smoke
 ```
 
-Outputs include:
+Use `--gap-id <id>` or `--cluster-pair <cluster_a> <cluster_b>` to target a specific frontier. Discovery cues again require `--cue-source-snapshot-id`.
 
-- `<run_id>_summary.json`
-- `<run_id>_hypotheses.json`
-- `<run_id>_hypotheses.csv`
+### Offline embedding benchmark
 
-### 7. Human Assessment App
+`embedding_models/eval.py` checks a precomputed embedding matrix independently of the agent workflow. It runs repeated-split multilabel linear probing, keyword-overlap retrieval, and an optional TF-IDF baseline. It rejects row-count mismatches by default.
+
+```powershell
+python embedding_models/eval.py `
+  --data_json data/cleaned_dataset.json `
+  --embeddings_npy data/qwen_embeddings.npy `
+  --keyword_col mesh `
+  --min_keyword_freq 5 `
+  --probe_backend auto `
+  --threshold_tuning auto `
+  --probe_n_jobs 1 `
+  --n_repeats 3 `
+  --test_size 0.2 `
+  --base_seed 42 `
+  --k_retrieval 10 `
+  --max_retrieval_queries 5000 `
+  --progress `
+  --output_json data/qwen_evaluation_report.json
+```
+
+The report includes probe F1/precision/recall, LRAP, ranking loss, MRR, precision/recall/hit rate/MAP/nDCG at `k`, query coverage, and the retained keyword classes. These metrics assess representation quality under keyword-overlap relevance; they do not substitute for the frontier-recovery benchmark.
+
+## Outputs and human review
+
+The retrospective runner stores run and match records in the backend database and writes the following to `--output-dir`:
+
+- `<run_id>_review_packet.csv` and `<run_id>_review_packet.json`: best hypothesis per benchmark task, target, evidence summary, retrievals, cue data, and blank review fields;
+- `<run_id>_assessment_bundle_v1.json`: the complete blind-review payload.
+
+The prospective runner writes `<run_id>_summary.json`, `<run_id>_hypotheses.json`, and `<run_id>_hypotheses.csv`.
+
+Open the human review interface with:
 
 ```powershell
 streamlit run assement_app/app.py
 ```
 
-This app is for blind-first human review of generated ideas. In the Load tab, choose `Retrospective` to load an `assessment_bundle_v1` JSON file from the retrospective runner, or `Prospective` to load a `<run_id>_hypotheses.json` file from the prospective runner. Reviewer state is written to an Excel workbook.
+Choose **Retrospective** to load an `assessment_bundle_v1` file or **Prospective** to load a hypotheses JSON file. The app writes reviewer state to an Excel workbook with `meta`, `ideas`, `assessments`, and `summary` sheets.
 
-Workbook sheets:
+## Testing and project notes
 
-- `meta`
-- `ideas`
-- `assessments`
-- `summary`
-
-## Notebook Pipeline
-
-The top-level notebooks still matter. They are the corpus-building side of the project:
-
-- `1.pubmed_data_extraction.ipynb`: PubMed retrieval and raw paper collection
-- `2.data_preprocessing.ipynb`: corpus cleanup and normalization
-- `3.create_bert_embeddings.ipynb`: BioClinical ModernBERT embeddings
-- `3.create_qwen_embeddings.ipynb`: Qwen embeddings
-
-Those notebooks feed the local `data/` artifacts consumed by the app and evaluation code.
-
-## Testing
-
-Run the test suite with:
+Run the automated test suite from the repository root:
 
 ```powershell
 pytest
 ```
 
-The current tests cover core backend, evaluation, assessment, and agent-support utilities.
+Useful checks before a large run:
 
-## Notes
+1. confirm the Qwen and backend health endpoints are reachable;
+2. run the deterministic smoke benchmark;
+3. inspect the review packet and SQLite run record;
+4. only then scale the method, seed, target, and future-paper counts.
 
-- The directory name is `assement_app/` in the current repo. The spelling is preserved here because that is the actual import/run path.
-- `paper/` contains manuscript and figure assets, not runtime application code.
-- If you want subsystem-specific details, the most accurate docs are the package READMEs inside `embedding_models/`, `novelty_app/agents/`, `novelty_app/evaluation/`, and `assement_app/`.
+Notes:
+
+- `assement_app/` is intentionally spelled this way because it is the current import and run path.
+- `paper/` contains manuscript and figure assets rather than runtime code.
+- Model weights may be downloaded by the local services on first use; ensure the host has appropriate Hugging Face access and storage.
+- No citation metadata or licence file is currently provided in the repository. Add an explicit citation and licence before external distribution.
