@@ -24,16 +24,17 @@ for _path in (str(_PROJECT_ROOT), str(_APP_DIR)):
 from core.state_management import init_session_state, save_state_for_undo, undo_last_action
 
 # Import page functions
-from pages.data_loading import page_data_loading
-from pages.embedding_processing import page_embedding_processing
-from pages.filters import page_filters
-from pages.clustering import page_clustering
-from pages.gap_analysis import page_gap_analysis
-from pages.gap_regions import page_gap_regions
-from pages.llm_analysis import page_llm_analysis
-from pages.agent_console import page_agent_console
-from pages.database_explorer import page_database_explorer
-from pages.export import page_export
+from app_pages.data_loading import page_data_loading
+from app_pages.embedding_processing import page_embedding_processing
+from app_pages.filters import page_filters
+from app_pages.clustering import page_clustering
+from app_pages.gap_analysis import page_gap_analysis
+from app_pages.gap_regions import page_gap_regions
+from app_pages.llm_analysis import page_llm_analysis
+from app_pages.agent_backend import page_agent_backend
+from app_pages.agent_console import page_agent_console
+from app_pages.database_explorer import page_database_explorer
+from app_pages.export import page_export
 
 # Main app function
 def main():
@@ -61,6 +62,7 @@ def main():
                 "🔍 Gap Analysis",
                 "🌉 Gap Regions",
                 "🤖 LLM Analysis",
+                "🛰️ Agent Backend",
                 "🧠 Agent Console",
                 "📚 Database Explorer",
                 "💾 Export"
@@ -84,19 +86,19 @@ def main():
         # Undo button
         if st.session_state.undo_history:
             last_action = st.session_state.undo_history[-1]['action_name']
-            if st.button(f"↩️ Undo: {last_action}", use_container_width=True):
+            if st.button(f"↩️ Undo: {last_action}", width="stretch"):
                 if undo_last_action():
                     st.success(f"Undone: {last_action}")
                     st.rerun()
         else:
-            st.button("↩️ Undo (no actions)", disabled=True, use_container_width=True)
+            st.button("↩️ Undo (no actions)", disabled=True, width="stretch")
         
         st.markdown("---")
         
         if st.session_state.df_valid is not None:
             st.metric("Current Papers", len(st.session_state.df_valid))
     
-    # Route to pages
+    # Route to app sections
     if page == "📊 Data & Config":
         page_data_loading()
     elif page == "🧬 Embeddings":
@@ -111,6 +113,8 @@ def main():
         page_gap_regions()
     elif page == "🤖 LLM Analysis":
         page_llm_analysis()
+    elif page == "🛰️ Agent Backend":
+        page_agent_backend()
     elif page == "🧠 Agent Console":
         page_agent_console()
     elif page == "📚 Database Explorer":
@@ -121,5 +125,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# streamlit run app.py

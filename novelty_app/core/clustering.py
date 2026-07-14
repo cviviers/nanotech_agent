@@ -18,6 +18,8 @@ def build_knn_graph(X: np.ndarray, k: int, metric: str = 'cosine') -> nx.Graph:
     for i in range(len(X)):
         for j, d in zip(indices[i, 1:], dists[i, 1:]):
             weight = 1.0 - float(d)
+            if weight <= 0.0:
+                continue
             if not G.has_edge(i, j):
                 G.add_edge(i, j, weight=weight)
             elif G[i][j]['weight'] < weight:

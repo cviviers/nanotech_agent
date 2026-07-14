@@ -15,10 +15,16 @@ from novelty_app.agents.schemas import AnalysisConfig, GeneratedHypothesis
 from novelty_app.agents.snapshot_builder import build_snapshot_payload
 from novelty_app.evaluation.analysis_v1 import run_analysis_v1
 from novelty_app.evaluation.run_retrospective import (
+    _MemoizingBackend,
     _apply_future_prefilter,
+    _benchmark_cache_key_payload,
+    _gold_assignment_to_payload,
     _normalize_future_prefilter,
+    _select_gold_future_papers,
     run_retrospective,
 )
+from novelty_app.evaluation.candidate_match import build_corpus_index
+from novelty_app.evaluation.qwen_client import QwenClient
 from novelty_app.evaluation.time_split import load_dataset_and_embeddings, split_corpus_by_time
 
 
@@ -29,6 +35,7 @@ class _FakeBackend:
         self.artifacts = []
         self.matches = []
         self.run = None
+        self.evidence_pack_calls = 0
 
     def publish_snapshot(self, payload):
         self.snapshot = payload
@@ -53,6 +60,7 @@ class _FakeBackend:
         return {"clusters": clusters[:limit]}
 
     def evidence_pack(self, payload):
+        self.evidence_pack_calls += 1
         papers = [] if self.snapshot is None else list(self.snapshot.get("papers", []))[:4]
         return {
             "snapshot_id": payload.get("snapshot_id"),
@@ -477,8 +485,8 @@ class RetrospectiveMinimalTests(unittest.TestCase):
                     "loading_inputs",
                     "preparing_snapshot",
                     "selecting_targets",
-                    "building_target_pool",
                     "building_indices",
+                    "building_target_pool",
                     "selecting_gold_future_papers",
                     "evaluating_tasks",
                     "persisting_matches",
@@ -518,6 +526,274 @@ class RetrospectiveMinimalTests(unittest.TestCase):
                 assessment_bundle["ideas"][0]["hypothesis"]["title"],
                 "Folate liposome siRNA bridge",
             )
+
+    def test_memoizing_backend_caches_identical_evidence_pack_requests(self) -> None:
+        backend = _FakeBackend()
+        memoized = _MemoizingBackend(backend)
+        payload = {"snapshot_id": "s1", "target_type": "cluster_pair", "cluster_a": 0, "cluster_b": 1}
+
+        first = memoized.evidence_pack(payload)
+        first["papers"].append({"paper_id": "mutated"})
+        second = memoized.evidence_pack(dict(payload))
+
+        self.assertEqual(backend.evidence_pack_calls, 1)
+        self.assertNotIn({"paper_id": "mutated"}, second["papers"])
+
+    def test_qwen_client_caches_identical_embed_and_rank_requests(self) -> None:
+        class _Response:
+            ok = True
+            content = b"{}"
+            status_code = 200
+            text = "{}"
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def json(self):
+                return self._payload
+
+        calls = []
+
+        def _fake_post(url, json, timeout):
+            calls.append((url, dict(json), timeout))
+            if url.endswith("/embed"):
+                return _Response({"embeddings": [[1.0, 0.0, 0.0] for _ in json["texts"]]})
+            return _Response({"results": [{"index": 0, "reranker_score": 0.9, "embedding_score": 0.8}]})
+
+        with patch("novelty_app.evaluation.qwen_client.requests.post", side_effect=_fake_post):
+            client = QwenClient("http://fake")
+            self.assertEqual(client.embed(["same"]), client.embed(["same"]))
+            self.assertEqual(
+                client.rank(query="q", documents=["doc"]),
+                client.rank(query="q", documents=["doc"]),
+            )
+
+        self.assertEqual(len(calls), 2)
+
+    def test_run_retrospective_writes_and_reuses_benchmark_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            data_json, data_dir = _write_fixture_dataset(tmp)
+            cache_path = tmp / "benchmark.json"
+
+            backend_first = _FakeBackend()
+            snapshot_id = _prepare_existing_snapshot(backend_first, data_json, data_dir)
+            with patch("novelty_app.evaluation.run_retrospective.QwenClient", _FakeQwen), patch(
+                "novelty_app.evaluation.run_retrospective.run_generation_method",
+                _fake_generation,
+            ):
+                first = run_retrospective(
+                    backend=backend_first,
+                    data_json=str(data_json),
+                    data_dir=str(data_dir),
+                    qwen_base_url="http://fake",
+                    existing_snapshot_id=snapshot_id,
+                    n_gap_targets=0,
+                    n_cluster_pair_targets=1,
+                    n_gold_future_papers=1,
+                    methods=["dummy"],
+                    seeds=1,
+                    hypotheses_per_target=1,
+                    output_dir=str(tmp / "out_first"),
+                    benchmark_cache_path=str(cache_path),
+                )
+
+            self.assertTrue(cache_path.exists())
+            self.assertFalse(first.run["config"]["benchmark_cache"]["hit"])
+
+            backend_second = _FakeBackend()
+            snapshot_id_second = _prepare_existing_snapshot(backend_second, data_json, data_dir)
+            with patch("novelty_app.evaluation.run_retrospective.QwenClient", _FakeQwen), patch(
+                "novelty_app.evaluation.run_retrospective.run_generation_method",
+                _fake_generation,
+            ), patch(
+                "novelty_app.evaluation.run_retrospective._prepare_target_pool",
+                side_effect=AssertionError("target pool should come from cache"),
+            ), patch(
+                "novelty_app.evaluation.run_retrospective._select_gold_future_papers",
+                side_effect=AssertionError("gold selection should come from cache"),
+            ):
+                second = run_retrospective(
+                    backend=backend_second,
+                    data_json=str(data_json),
+                    data_dir=str(data_dir),
+                    qwen_base_url="http://fake",
+                    existing_snapshot_id=snapshot_id_second,
+                    n_gap_targets=0,
+                    n_cluster_pair_targets=1,
+                    n_gold_future_papers=1,
+                    methods=["dummy"],
+                    seeds=1,
+                    hypotheses_per_target=1,
+                    output_dir=str(tmp / "out_second"),
+                    benchmark_cache_path=str(cache_path),
+                )
+
+            self.assertTrue(second.run["config"]["benchmark_cache"]["hit"])
+            self.assertEqual(
+                first.run["summary"]["n_future_pool_after_prefilter"],
+                second.run["summary"]["n_future_pool_after_prefilter"],
+            )
+            self.assertEqual(
+                first.matches[0]["gold_future_paper_id"],
+                second.matches[0]["gold_future_paper_id"],
+            )
+
+    def test_run_retrospective_ignores_corrupt_benchmark_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            data_json, data_dir = _write_fixture_dataset(tmp)
+            cache_path = tmp / "benchmark.json"
+            cache_path.write_text("{not valid json", encoding="utf-8")
+
+            backend = _FakeBackend()
+            snapshot_id = _prepare_existing_snapshot(backend, data_json, data_dir)
+            with patch("novelty_app.evaluation.run_retrospective.QwenClient", _FakeQwen), patch(
+                "novelty_app.evaluation.run_retrospective.run_generation_method",
+                _fake_generation,
+            ):
+                result = run_retrospective(
+                    backend=backend,
+                    data_json=str(data_json),
+                    data_dir=str(data_dir),
+                    qwen_base_url="http://fake",
+                    existing_snapshot_id=snapshot_id,
+                    n_gap_targets=0,
+                    n_cluster_pair_targets=1,
+                    n_gold_future_papers=1,
+                    methods=["dummy"],
+                    seeds=1,
+                    hypotheses_per_target=1,
+                    output_dir=str(tmp / "out"),
+                    benchmark_cache_path=str(cache_path),
+                )
+
+            self.assertFalse(result.run["config"]["benchmark_cache"]["hit"])
+            self.assertEqual(json.loads(cache_path.read_text(encoding="utf-8"))["status"], "completed")
+
+    def test_benchmark_cache_key_changes_for_protocol_inputs(self) -> None:
+        def _payload(**overrides):
+            params = {
+                "snapshot_id": "snapshot_a",
+                "cutoff_date": "2019-12-31",
+                "future_window_start": "2020-01-01",
+                "future_window_end": "2026-01-01",
+                "targets": [{"target_type": "cluster_pair", "cluster_a": 0, "cluster_b": 1}],
+                "n_gap_targets": 20,
+                "n_cluster_pair_targets": 10,
+                "n_gold_future_papers": 50,
+                "discovery_cue": {"text": "cue"},
+                "cue_source_snapshot_id": "snapshot_a",
+                "cue_similarity_top_k": 50,
+                "cue_similarity_sample_n": 6,
+                "future_prefilter_stats": {
+                    "active": True,
+                    "semantic_query": "biofilm",
+                    "semantic_threshold": 0.45,
+                    "n_future_rows_before": 100,
+                    "n_future_rows_after": 20,
+                },
+                "disable_leakage_check": True,
+                "historical_paper_id_hash": "hist_hash",
+                "future_paper_id_hash_before_prefilter": "future_hash",
+                "future_paper_id_hash_after_prefilter": "prefiltered_hash",
+                "qwen_base_url": "http://fake",
+            }
+            params.update(overrides)
+            return _benchmark_cache_key_payload(**params)
+
+        baseline = _payload()
+        changed_prefilter = _payload(
+            future_prefilter_stats={
+                **baseline["future_prefilter"],
+                "semantic_threshold": 0.55,
+            }
+        )
+        self.assertNotEqual(baseline, changed_prefilter)
+        self.assertNotEqual(baseline, _payload(n_cluster_pair_targets=9))
+        self.assertNotEqual(baseline, _payload(cue_source_snapshot_id="snapshot_b"))
+        self.assertNotEqual(baseline, _payload(disable_leakage_check=False))
+        self.assertNotEqual(baseline, _payload(future_paper_id_hash_after_prefilter="other_hash"))
+
+    def test_gold_selection_resume_state_matches_clean_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            data_json, data_dir = _write_fixture_dataset(tmp)
+            df, embeddings = load_dataset_and_embeddings(str(data_json), str(data_dir), embedding_names=["qwen", "bert"])
+            split = split_corpus_by_time(
+                df,
+                embeddings,
+                cutoff_date="2020-12-31",
+                future_window_start="2022-01-01",
+                future_window_end="2025-12-31",
+            )
+            historical_index = build_corpus_index(split.historical.df, split.historical.embeddings["qwen"])
+            target_pool = [
+                {
+                    "target": {"target_type": "cluster_pair", "cluster_a": 0, "cluster_b": 1},
+                    "target_id": "cluster_pair_0_1",
+                    "pack": {
+                        "papers": [
+                            {
+                                "paper_id": "h1",
+                                "title": "Liposome breast cancer delivery",
+                                "abstract": "liposome delivery for breast cancer",
+                            }
+                        ]
+                    },
+                    "cue_target_score": 0.0,
+                }
+            ]
+
+            clean, clean_stats = _select_gold_future_papers(
+                future_df=split.future.df,
+                historical_index=historical_index,
+                qwen_client=_FakeQwen(),
+                target_pool=target_pool,
+                discovery_cue=None,
+                n_gold_future_papers=1,
+                disable_leakage_check=True,
+            )
+
+            captured = {}
+
+            def _checkpoint(current, selected, stats):
+                captured.update(
+                    {
+                        "scanned_rows": current,
+                        "selected": [_gold_assignment_to_payload(item) for item in selected],
+                        "stats": dict(stats),
+                    }
+                )
+                if current == 1:
+                    raise RuntimeError("simulated interruption")
+
+            with self.assertRaisesRegex(RuntimeError, "simulated interruption"):
+                _select_gold_future_papers(
+                    future_df=split.future.df,
+                    historical_index=historical_index,
+                    qwen_client=_FakeQwen(),
+                    target_pool=target_pool,
+                    discovery_cue=None,
+                    n_gold_future_papers=1,
+                    disable_leakage_check=True,
+                    checkpoint_callback=_checkpoint,
+                    checkpoint_every=1,
+                )
+
+            resumed, resumed_stats = _select_gold_future_papers(
+                future_df=split.future.df,
+                historical_index=historical_index,
+                qwen_client=_FakeQwen(),
+                target_pool=target_pool,
+                discovery_cue=None,
+                n_gold_future_papers=1,
+                disable_leakage_check=True,
+                resume_state=captured,
+            )
+
+            self.assertEqual([item.paper_id for item in resumed], [item.paper_id for item in clean])
+            self.assertEqual(resumed_stats["n_frontier_eligible"], clean_stats["n_frontier_eligible"])
 
     def test_apply_future_prefilter_filters_df_and_embeddings_in_lockstep(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

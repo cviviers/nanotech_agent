@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
@@ -42,6 +43,8 @@ class EvidencePackRequest(BaseModel):
     gap_id: Optional[str] = None
     cluster_a: Optional[int] = None
     cluster_b: Optional[int] = None
+    required_paper_ids: List[str] = Field(default_factory=list)
+    required_paper_source_snapshot_id: Optional[str] = None
     profile: Literal["default", "focused_eval"] = "default"
     exemplars: int = 25
     boundary: int = 25
@@ -97,7 +100,11 @@ def root() -> Dict[str, Any]:
 
 @app.get("/health")
 def health() -> Dict[str, Any]:
-    return {"ok": True, "db_path": str(STORE.db_path)}
+    return {
+        "ok": True,
+        "db_path": str(STORE.db_path),
+        "qwen_base_url": str(os.getenv("QWEN_BASE_URL", "http://0.0.0.0:8000")).rstrip("/"),
+    }
 
 
 @app.get("/snapshots")
@@ -167,8 +174,21 @@ def list_clusters(
 def papers_batch(req: PaperBatchRequest) -> Dict[str, Any]:
     try:
         resolved = STORE.resolve_snapshot_id(req.snapshot_id)
-        papers = STORE.papers_batch(snapshot_id=resolved, paper_ids=req.paper_ids, fields=req.fields or None)
-        return {"snapshot_id": resolved, "papers": papers}
+        resolution = STORE.resolve_paper_ids(snapshot_id=resolved, paper_ids=req.paper_ids)
+        papers = STORE.papers_batch(
+            snapshot_id=resolved,
+            paper_ids=resolution.get("resolved_paper_ids") or [],
+            fields=req.fields or None,
+        )
+        return {
+            "snapshot_id": resolved,
+            "papers": papers,
+            "requested_paper_ids": resolution.get("requested_paper_ids") or [],
+            "resolved_paper_ids": resolution.get("resolved_paper_ids") or [],
+            "paper_id_aliases": resolution.get("resolved_map") or {},
+            "unresolved_paper_ids": resolution.get("unresolved_paper_ids") or [],
+            "ambiguous_paper_ids": resolution.get("ambiguous_paper_ids") or {},
+        }
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

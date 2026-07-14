@@ -1,8 +1,11 @@
-# app/main.py
 import os
 import sys
 import traceback
 from typing import List, Optional
+
+# Keep this before CUDA initialization. It reduces allocator fragmentation during
+# repeated long-sequence reranking requests.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import torch
 import torch.nn.functional as F
@@ -20,8 +23,33 @@ RERANK_MODEL_NAME = os.getenv("QWEN_RERANKER_MODEL", "Qwen/Qwen3-Reranker-0.6B")
 
 EMBED_MAX_LENGTH = int(os.getenv("QWEN_EMBED_MAX_LENGTH", "8192"))
 RERANK_MAX_LENGTH = int(os.getenv("QWEN_RERANK_MAX_LENGTH", "8192"))
+EMBED_BATCH_SIZE = int(os.getenv("QWEN_EMBED_BATCH_SIZE", "16"))
+RERANK_BATCH_SIZE = int(os.getenv("QWEN_RERANK_BATCH_SIZE", "2"))
+RERANK_LOGITS_TO_KEEP = int(os.getenv("QWEN_RERANK_LOGITS_TO_KEEP", "1"))
+CUDA_EMPTY_CACHE_EACH_BATCH = os.getenv("QWEN_CUDA_EMPTY_CACHE_EACH_BATCH", "0").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _positive_int(value: int, name: str) -> int:
+    if value < 1:
+        raise ValueError(f"{name} must be >= 1, got {value}")
+    return value
+
+
+def _nonnegative_int(value: int, name: str) -> int:
+    if value < 0:
+        raise ValueError(f"{name} must be >= 0, got {value}")
+    return value
+
+
+EMBED_BATCH_SIZE = _positive_int(EMBED_BATCH_SIZE, "QWEN_EMBED_BATCH_SIZE")
+RERANK_BATCH_SIZE = _positive_int(RERANK_BATCH_SIZE, "QWEN_RERANK_BATCH_SIZE")
+RERANK_LOGITS_TO_KEEP = _nonnegative_int(RERANK_LOGITS_TO_KEEP, "QWEN_RERANK_LOGITS_TO_KEEP")
 
 
 def _print_local_qwen_error(context: str, exc: Exception) -> None:
@@ -40,6 +68,20 @@ def _resolve_torch_dtype(env_var: str, default: str = "float16") -> torch.dtype:
     if dtype_name == "float32":
         return torch.float32
     raise ValueError(f"Unsupported {env_var}: {dtype_name!r}")
+
+
+def _batches(items: List[str], batch_size: int):
+    for start in range(0, len(items), batch_size):
+        yield items[start : start + batch_size]
+
+
+def _empty_cuda_cache() -> None:
+    if DEVICE == "cuda":
+        torch.cuda.empty_cache()
+
+
+def _is_cuda_oom(exc: Exception) -> bool:
+    return "cuda" in str(exc).lower() and "out of memory" in str(exc).lower()
 
 
 EMBED_TORCH_DTYPE = _resolve_torch_dtype(
@@ -73,6 +115,7 @@ rerank_tokenizer = AutoTokenizer.from_pretrained(
     padding_side="left",
 )
 rerank_model = AutoModelForCausalLM.from_pretrained(RERANK_MODEL_NAME, **RERANK_MODEL_LOAD_KWARGS).to(DEVICE).eval()
+_RERANK_LOGITS_TO_KEEP_KWARG: Optional[str] = "logits_to_keep" if RERANK_LOGITS_TO_KEEP else None
 
 # Tokens and prompts for reranking (adapted from official README)
 token_false_id = rerank_tokenizer.convert_tokens_to_ids("no")
@@ -134,22 +177,39 @@ def embed_texts(
     else:
         processed_texts = texts
 
-    batch_dict = embed_tokenizer(
-        processed_texts,
-        padding=True,
-        truncation=True,
-        max_length=EMBED_MAX_LENGTH,
-        return_tensors="pt",
-    )
-    batch_dict = {k: v.to(DEVICE) for k, v in batch_dict.items()}
+    chunks = []
+    for batch_texts in _batches(processed_texts, EMBED_BATCH_SIZE):
+        batch_dict = None
+        outputs = None
+        embeddings = None
+        try:
+            batch_dict = embed_tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=EMBED_MAX_LENGTH,
+                return_tensors="pt",
+            )
+            batch_dict = {k: v.to(DEVICE) for k, v in batch_dict.items()}
 
-    with torch.inference_mode():
-        outputs = embed_model(**batch_dict)
-        embeddings = last_token_pool(outputs.last_hidden_state, batch_dict["attention_mask"])
-        if normalize:
-            embeddings = F.normalize(embeddings, p=2, dim=1)
+            with torch.inference_mode():
+                outputs = embed_model(**batch_dict)
+                embeddings = last_token_pool(outputs.last_hidden_state, batch_dict["attention_mask"])
+                if normalize:
+                    embeddings = F.normalize(embeddings, p=2, dim=1)
+                chunks.append(embeddings.detach().cpu())
+        except Exception as e:
+            if _is_cuda_oom(e):
+                _empty_cuda_cache()
+            raise
+        finally:
+            del batch_dict, outputs, embeddings
+            if CUDA_EMPTY_CACHE_EACH_BATCH:
+                _empty_cuda_cache()
 
-    return embeddings
+    if len(chunks) == 1:
+        return chunks[0]
+    return torch.cat(chunks, dim=0)
 
 
 def cosine_similarity_matrix(a: Tensor, b: Tensor) -> Tensor:
@@ -201,12 +261,31 @@ def compute_rerank_scores(inputs) -> List[float]:
     Compute reranking scores following the official Qwen3-Reranker usage:
     probability that answer is "yes".
     """
-    batch_scores = rerank_model(**inputs).logits[:, -1, :]
+    global _RERANK_LOGITS_TO_KEEP_KWARG
+    forward_kwargs = {}
+    if _RERANK_LOGITS_TO_KEEP_KWARG:
+        forward_kwargs[_RERANK_LOGITS_TO_KEEP_KWARG] = RERANK_LOGITS_TO_KEEP
+    try:
+        outputs = rerank_model(**inputs, **forward_kwargs)
+    except TypeError as e:
+        if _RERANK_LOGITS_TO_KEEP_KWARG and _RERANK_LOGITS_TO_KEEP_KWARG in str(e):
+            _RERANK_LOGITS_TO_KEEP_KWARG = "num_logits_to_keep"
+            try:
+                outputs = rerank_model(**inputs, num_logits_to_keep=RERANK_LOGITS_TO_KEEP)
+            except TypeError as inner:
+                if "num_logits_to_keep" not in str(inner):
+                    raise
+                _RERANK_LOGITS_TO_KEEP_KWARG = None
+                outputs = rerank_model(**inputs)
+        else:
+            raise
+    batch_scores = outputs.logits[:, -1, :]
     true_vector = batch_scores[:, token_true_id]
     false_vector = batch_scores[:, token_false_id]
-    batch_scores = torch.stack([false_vector, true_vector], dim=1)
-    batch_scores = torch.nn.functional.log_softmax(batch_scores, dim=1)
-    scores = batch_scores[:, 1].exp().tolist()
+    yes_no_scores = torch.stack([false_vector, true_vector], dim=1)
+    yes_no_scores = torch.nn.functional.log_softmax(yes_no_scores, dim=1)
+    scores = yes_no_scores[:, 1].exp().detach().cpu().tolist()
+    del outputs, batch_scores, true_vector, false_vector, yes_no_scores
     return scores
 
 
@@ -218,8 +297,22 @@ def rerank_query_documents(
     if len(documents) == 0:
         raise ValueError("documents must be a non-empty list")
     pairs = [format_instruction(instruction, query, doc) for doc in documents]
-    inputs = process_rerank_inputs(pairs)
-    return compute_rerank_scores(inputs)
+    scores: List[float] = []
+    for pair_batch in _batches(pairs, RERANK_BATCH_SIZE):
+        inputs = None
+        try:
+            inputs = process_rerank_inputs(pair_batch)
+            scores.extend(compute_rerank_scores(inputs))
+        except Exception as e:
+            if _is_cuda_oom(e):
+                _empty_cuda_cache()
+            raise
+        finally:
+            if inputs is not None:
+                del inputs
+            if CUDA_EMPTY_CACHE_EACH_BATCH:
+                _empty_cuda_cache()
+    return scores
 
 
 # -------------------------------------------------------------------
@@ -301,6 +394,11 @@ def read_root():
         "device": DEVICE,
         "embed_torch_dtype": str(EMBED_TORCH_DTYPE),
         "rerank_torch_dtype": str(RERANK_TORCH_DTYPE),
+        "embed_batch_size": EMBED_BATCH_SIZE,
+        "rerank_batch_size": RERANK_BATCH_SIZE,
+        "embed_max_length": EMBED_MAX_LENGTH,
+        "rerank_max_length": RERANK_MAX_LENGTH,
+        "rerank_logits_to_keep": RERANK_LOGITS_TO_KEEP,
         "embedding_dim": 1024,  # per Qwen3-Embedding-0.6B spec
     }
 

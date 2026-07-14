@@ -492,7 +492,7 @@ def _render_main_view_nav() -> str:
         if nav_cols[idx].button(
             view,
             key=f"main_view_{view.lower()}",
-            use_container_width=True,
+            width="stretch",
             type="primary" if active_view == view else "secondary",
         ):
             if view != active_view:
@@ -589,7 +589,7 @@ def _render_overlap_diagnostics(overlap_analysis: Dict[str, Any]) -> None:
                     "shared_evidence_ids": ", ".join(str(value) for value in (group.get("shared_evidence_ids") or [])),
                 }
             )
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
 
 def _current_form_values() -> Dict[str, Any]:
@@ -908,7 +908,7 @@ def _render_idea_context(idea: Dict[str, Any]) -> None:
                     }
                 )
 
-            st.dataframe(pd.DataFrame(evidence_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(evidence_rows), width="stretch", hide_index=True)
 
             selector_key = f"evidence_focus_{str(idea.get('idea_id') or '')}"
             selected_label = st.selectbox(
@@ -989,10 +989,10 @@ def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | N
     st.text_area("Reviewer notes", key="form_reviewer_notes", height=100)
 
     button_cols = st.columns(4)
-    if button_cols[0].button("Save Draft", use_container_width=True):
+    if button_cols[0].button("Save Draft", width="stretch"):
         if _persist_current_form(submit=False):
             st.rerun()
-    if button_cols[1].button("Submit", use_container_width=True, type="primary"):
+    if button_cols[1].button("Submit", width="stretch", type="primary"):
         if _persist_current_form(submit=True):
             st.rerun()
 
@@ -1002,13 +1002,13 @@ def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | N
     next_id = str(queue[current_index + 1].get("idea_id") or "") if queue and current_index + 1 < len(queue) else ""
     next_incomplete_id = next_incomplete_idea_id(queue, _workbook().assessments, _reviewer_id()) if _workbook() else None
 
-    if button_cols[2].button("Previous", use_container_width=True, disabled=not prev_id):
+    if button_cols[2].button("Previous", width="stretch", disabled=not prev_id):
         _navigate_to(prev_id, reason="moving to the previous idea")
-    if button_cols[3].button("Next Incomplete", use_container_width=True, disabled=not next_incomplete_id):
+    if button_cols[3].button("Next Incomplete", width="stretch", disabled=not next_incomplete_id):
         _navigate_to(str(next_incomplete_id), reason="moving to the next incomplete idea")
 
     nav_cols = st.columns(2)
-    if nav_cols[0].button("Next", use_container_width=True, disabled=not next_id):
+    if nav_cols[0].button("Next", width="stretch", disabled=not next_id):
         _navigate_to(next_id, reason="moving to the next idea")
 
     jump_options = {str(item.get("idea_id") or ""): str((item.get("hypothesis") or {}).get("title") or item.get("idea_id")) for item in queue}
@@ -1026,14 +1026,14 @@ def _render_assessment_form(idea: Dict[str, Any], assessment: Dict[str, Any] | N
     current_status = idea_review_status(assessment)
     if model_context_visible(assessment):
         st.markdown("### Post-Submission Comparison")
-        st.dataframe(_criterion_score_table(idea), use_container_width=True, hide_index=True)
+        st.dataframe(_criterion_score_table(idea), width="stretch", hide_index=True)
         judge_context = dict(idea.get("judge_context") or {})
         if judge_context.get("score_summary"):
             st.info(str(judge_context.get("score_summary")))
         st.markdown("#### Retrospective Retrieval Outcomes")
         evaluations = list(((idea.get("benchmark_context") or {}).get("evaluations") or []))
         if evaluations:
-            st.dataframe(pd.DataFrame(evaluations), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(evaluations), width="stretch", hide_index=True)
         elif str((_bundle() or {}).get("source_kind") or "") == "prospective_run":
             st.caption("Retrospective retrieval outcomes are not applicable for prospective runs.")
         else:
@@ -1066,7 +1066,7 @@ def _render_progress_tab() -> None:
 
     if reviewer_progress:
         st.markdown("### Reviewer Progress")
-        st.dataframe(pd.DataFrame(reviewer_progress), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(reviewer_progress), width="stretch", hide_index=True)
 
     lookup = reviewer_assessment_lookup(workbook.assessments, reviewer_id)
     disagreement_rows: List[Dict[str, Any]] = []
@@ -1096,7 +1096,7 @@ def _render_progress_tab() -> None:
         disagreement_df = pd.DataFrame(disagreement_rows)
         disagreement_df["abs_difference"] = disagreement_df["difference"].abs()
         disagreement_df = disagreement_df.sort_values(by=["abs_difference", "idea_id"], ascending=[False, True])
-        st.dataframe(disagreement_df.drop(columns=["abs_difference"]), use_container_width=True, hide_index=True)
+        st.dataframe(disagreement_df.drop(columns=["abs_difference"]), width="stretch", hide_index=True)
     else:
         st.caption("No submitted assessments are available for disagreement analysis yet.")
 

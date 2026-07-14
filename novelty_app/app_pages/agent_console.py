@@ -394,6 +394,20 @@ def _suggest_cue_source_snapshot_id(snapshots: List[Dict[str, Any]]) -> Optional
     return None
 
 
+def _prioritize_required_paper_source_snapshots(snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    ranked: List[Tuple[int, int, Dict[str, Any]]] = []
+    for idx, snapshot in enumerate(snapshots):
+        snapshot_id = str(snapshot.get("snapshot_id") or "").strip()
+        if not snapshot_id:
+            continue
+        metadata = dict(snapshot.get("metadata") or {})
+        split_role = str(metadata.get("split_role") or "").strip().lower()
+        rank = 0 if split_role in {"", "full"} else 1
+        ranked.append((rank, idx, snapshot))
+    ranked.sort(key=lambda item: (item[0], item[1]))
+    return [snapshot for _, _, snapshot in ranked]
+
+
 def _resolve_snapshot_by_id(
     snapshot_id: str,
     snapshot_by_id: Dict[str, Dict[str, Any]],
@@ -428,6 +442,24 @@ def _cue_source_scope_error(
             f"Cue source snapshot `{sid}` uses embedding scope `{scope}`; "
             "cue similarity requires `qwen` embeddings."
         )
+    return None
+
+
+def _required_paper_source_error(
+    required_paper_ids: Sequence[str],
+    required_paper_source_snapshot_id: str,
+    required_paper_source_snapshot: Optional[Dict[str, Any]],
+    required_paper_source_lookup_error: Optional[str] = None,
+) -> Optional[str]:
+    if not list(required_paper_ids or []):
+        return None
+    sid = str(required_paper_source_snapshot_id or "").strip()
+    if not sid:
+        return "Required paper source snapshot is required when required paper IDs are provided."
+    if required_paper_source_snapshot is None:
+        if required_paper_source_lookup_error:
+            return f"Required paper source snapshot `{sid}` lookup failed: {required_paper_source_lookup_error}"
+        return f"Required paper source snapshot `{sid}` was not found."
     return None
 
 
@@ -483,6 +515,22 @@ def _sanitize_snapshot_id_fragment(value: str, fallback: str) -> str:
     cleaned = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in text)
     cleaned = cleaned.strip("_")
     return cleaned or fallback
+
+
+def _default_full_cue_source_snapshot_id(base_snapshot_id: Optional[str] = None) -> str:
+    fallback = f"snapshot_{uuid.uuid4().hex[:10]}"
+    candidate = (
+        str(base_snapshot_id or "").strip()
+        or str(st.session_state.get("agent_snapshot_publish_id") or "").strip()
+        or str(st.session_state.get("agent_snapshot_id") or "").strip()
+        or fallback
+    )
+    normalized = _sanitize_snapshot_id_fragment(candidate, fallback)
+    for suffix in ("_historical", "_future", "_full"):
+        if normalized.endswith(suffix):
+            normalized = normalized[: -len(suffix)].rstrip("_-") or fallback
+            break
+    return f"{normalized}_full"
 
 
 def _cli_quote(value: Any) -> str:
@@ -623,6 +671,22 @@ def _snapshot_metadata_with_defaults(metadata_overrides: Optional[Dict[str, Any]
     if primary_embedding:
         merged["embedding_source"] = primary_embedding
     return merged
+
+
+def _full_cue_source_snapshot_metadata(frontend_manifest: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    metadata = _snapshot_metadata_with_defaults({"split_role": "full"})
+    manifest = dict(frontend_manifest or {})
+    extra = dict(metadata.get("extra") or {})
+    extra.update(
+        {
+            "publish_mode": "streamlit_full_cue_source",
+            "cue_source_ready": True,
+            "source_corpus_row_count": int(manifest.get("row_count") or 0),
+            "source_corpus_paper_id_hash": str(manifest.get("retained_paper_id_hash") or ""),
+        }
+    )
+    metadata["extra"] = extra
+    return metadata
 
 
 def _snapshot_publish_intent_from_state() -> str:
@@ -956,6 +1020,14 @@ def _set_active_published_snapshot(snapshot_id: str) -> None:
     st.session_state["agent_eval_cue_source_snapshot_id"] = sid
 
 
+def _set_cue_source_published_snapshot(snapshot_id: str) -> None:
+    sid = str(snapshot_id or "").strip()
+    if not sid:
+        return
+    st.session_state["agent_eval_cue_source_snapshot_id"] = sid
+    st.session_state["agent_eval_cue_source_snapshot_picker"] = sid
+
+
 def _upsert_snapshot_record_in_cache(cache_payload: Any, snapshot_record: Dict[str, Any]) -> Dict[str, Any]:
     sid = str(snapshot_record.get("snapshot_id") or "").strip()
     if not sid:
@@ -1239,6 +1311,15 @@ def _build_prospective_command_preview(config: Dict[str, Any]) -> str:
         parts.extend(["--gap-id", gap_id])
     for cluster_a, cluster_b in config.get("cluster_pairs") or []:
         parts.extend(["--cluster-pair", str(cluster_a), str(cluster_b)])
+    for paper_id in config.get("required_paper_ids") or []:
+        parts.extend(["--paper-id", paper_id])
+    if config.get("required_paper_source_snapshot_id"):
+        parts.extend(
+            [
+                "--required-paper-source-snapshot-id",
+                str(config["required_paper_source_snapshot_id"]),
+            ]
+        )
     if config.get("discovery_cue_text"):
         parts.extend(["--discovery-cue-text", config["discovery_cue_text"]])
     if config.get("discovery_cue_goal"):
@@ -1257,10 +1338,21 @@ def _build_prospective_command_preview(config: Dict[str, Any]) -> str:
     return _command_preview(parts)
 
 
+def _ensure_agent_page_state() -> None:
+    if "agent_backend_url" not in st.session_state:
+        st.session_state["agent_backend_url"] = DEFAULT_BACKEND_URL
+    if "agent_snapshot_id" not in st.session_state:
+        st.session_state["agent_snapshot_id"] = ""
+    if "agent_full_cue_snapshot_publish_id" not in st.session_state:
+        st.session_state["agent_full_cue_snapshot_publish_id"] = ""
+    if "agent_full_cue_publish_result" not in st.session_state:
+        st.session_state["agent_full_cue_publish_result"] = None
+
+
 def page_agent_console() -> None:
     st.title("Agent Console")
     st.caption(
-        "Publish current analysis state as a snapshot, query the agent backend endpoints, and run the LangGraph orchestrator."
+        "Run retrospective and prospective evaluation workflows against published backend snapshots."
     )
     st.code("uvicorn agents.backend_api:app --app-dir novelty_app --host 0.0.0.0 --port 8088", language="bash")
     if _BACKEND_IMPORT_ERROR is not None:
@@ -1271,47 +1363,12 @@ def page_agent_console() -> None:
         st.caption(str(_BACKEND_IMPORT_ERROR))
         return
 
-    if "agent_backend_url" not in st.session_state:
-        st.session_state.agent_backend_url = DEFAULT_BACKEND_URL
-    if "agent_snapshot_id" not in st.session_state:
-        st.session_state.agent_snapshot_id = ""
-
-    col1, col2, col3 = st.columns([3, 1, 1])
-    with col1:
-        st.session_state.agent_backend_url = st.text_input(
-            "Backend URL",
-            value=st.session_state.agent_backend_url,
-            key="agent_backend_url_input",
-        )
-    with col2:
-        if st.button("Health Check", use_container_width=True):
-            try:
-                st.session_state.agent_last_health = _get_backend().health()
-            except Exception as exc:
-                st.session_state.agent_last_health = {"error": str(exc)}
-    with col3:
-        if st.button("List Snapshots", use_container_width=True):
-            try:
-                st.session_state.agent_snapshots_cache = _get_backend().list_snapshots(limit=50)
-            except Exception as exc:
-                st.session_state.agent_snapshots_cache = {"error": str(exc)}
+    _ensure_agent_page_state()
 
     if st.session_state.get("agent_snapshot_id"):
         st.info(f"Active snapshot: {st.session_state.agent_snapshot_id}")
 
-    if st.session_state.get("agent_last_health"):
-        st.json(st.session_state.agent_last_health)
-
-    tabs = st.tabs(["Snapshot Publish", "Skills Playground", "Orchestrator", "Artifacts"])
-
-    with tabs[0]:
-        _tab_snapshot_publish()
-    with tabs[1]:
-        _tab_skills_playground()
-    with tabs[2]:
-        _tab_orchestrator()
-    with tabs[3]:
-        _tab_artifacts()
+    _tab_evaluation_runner()
 
 
 def _tab_snapshot_publish() -> None:
@@ -1436,6 +1493,107 @@ def _tab_snapshot_publish() -> None:
 
     if st.checkbox("Preview first 3 paper records", value=False, key="agent_preview_records"):
         st.json(payload["papers"][:3])
+
+    st.divider()
+    st.subheader("Publish Full Cue Snapshot")
+    st.caption(
+        "Publish the preserved full frontend corpus as a dedicated cue-source snapshot. "
+        "This updates only the cue-source selector and leaves the active evaluation snapshot unchanged."
+    )
+
+    full_cue_payload: Optional[Dict[str, Any]] = None
+    full_cue_summary: Optional[Dict[str, Any]] = None
+    try:
+        if not include_embeddings:
+            raise ValueError("Full cue-source snapshots require primary embeddings. Enable embedding export above.")
+        if st.session_state.get("df_valid_full") is None:
+            raise ValueError("The preserved full frontend corpus is unavailable. Reload data before publishing a full cue snapshot.")
+        if not (st.session_state.get("embeddings_dict_full") or {}):
+            raise ValueError("The preserved full-corpus embeddings are unavailable. Reload data before publishing a full cue snapshot.")
+        full_cue_source_df = _frontend_authoritative_df()
+        full_cue_embeddings = _frontend_authoritative_embeddings()
+        frontend_manifest = _frontend_corpus_manifest_from_state()
+        full_cue_metadata = _full_cue_source_snapshot_metadata(frontend_manifest)
+        embedding_source = str(full_cue_metadata.get("embedding_source") or "").strip()
+        if not embedding_source:
+            raise ValueError("Primary embedding source is not configured for the preserved frontend corpus.")
+        if embedding_source not in full_cue_embeddings:
+            raise ValueError(f"Primary embedding `{embedding_source}` is not available in the preserved frontend corpus.")
+        if not str(st.session_state.get("agent_full_cue_snapshot_publish_id") or "").strip():
+            st.session_state["agent_full_cue_snapshot_publish_id"] = _default_full_cue_source_snapshot_id()
+        full_cue_snapshot_id = st.text_input(
+            "Full Cue Snapshot ID",
+            key="agent_full_cue_snapshot_publish_id",
+            help="Defaults to `<base>_full` and is intended for cue-similarity retrieval over the preserved full corpus.",
+        ).strip()
+        if not full_cue_snapshot_id:
+            full_cue_snapshot_id = _default_full_cue_source_snapshot_id()
+        full_cue_payload, full_cue_summary = _build_snapshot_payload_for_df(
+            df=full_cue_source_df,
+            include_raw_rows=include_raw_rows,
+            include_embeddings=include_embeddings,
+            snapshot_id=full_cue_snapshot_id,
+            metadata_overrides=full_cue_metadata,
+            gap_regions=[],
+            llm_results=None,
+            x_primary=full_cue_embeddings[embedding_source],
+            x_umap_2d=None,
+            selected_clustering=None,
+        )
+    except Exception as exc:
+        st.info("Load and preserve the frontend corpus before publishing a dedicated full cue snapshot.")
+        st.caption(str(exc))
+
+    if full_cue_payload is not None and full_cue_summary is not None:
+        cue_cols = st.columns(4)
+        cue_cols[0].metric("Papers", full_cue_summary["n_papers"])
+        cue_cols[1].metric("Embeddings", full_cue_summary["n_embeddings"])
+        cue_cols[2].metric("Emb Dim", full_cue_summary["embedding_dim"] or "None")
+        cue_cols[3].metric("Cluster Col", full_cue_summary["cluster_column"] or "None")
+
+        with st.expander("Full Cue Snapshot Metadata", expanded=False):
+            st.json(full_cue_payload["metadata"])
+
+        if st.button("Publish Full Cue Snapshot", key="agent_publish_full_cue_snapshot"):
+            try:
+                backend = _get_backend()
+                resp = backend.publish_snapshot(full_cue_payload)
+                st.session_state.agent_full_cue_publish_result = resp
+                published_snapshot_id = str(resp.get("snapshot_id") or full_cue_payload.get("snapshot_id") or "").strip()
+                if published_snapshot_id:
+                    _set_cue_source_published_snapshot(published_snapshot_id)
+                sync_error = _sync_snapshot_cache_after_publish(
+                    backend,
+                    [
+                        {
+                            "snapshot_id": published_snapshot_id or str(full_cue_payload.get("snapshot_id") or "").strip(),
+                            "metadata": dict(full_cue_payload.get("metadata") or {}),
+                        }
+                    ],
+                )
+                st.success("Full cue snapshot published")
+                if sync_error:
+                    st.caption(
+                        "Snapshot options refresh failed after publish; the new snapshot was added locally to picker options."
+                    )
+            except Exception as exc:
+                st.session_state.agent_full_cue_publish_result = {
+                    "error": str(exc),
+                    "repr": repr(exc),
+                    "traceback": traceback.format_exc(),
+                }
+                st.error(f"Full cue snapshot publish failed: {exc}")
+                with st.expander("Full Cue Publish Debug Details", expanded=True):
+                    st.json(
+                        {
+                            "error": str(exc),
+                            "repr": repr(exc),
+                        }
+                    )
+                    st.code(traceback.format_exc())
+
+        if st.session_state.get("agent_full_cue_publish_result"):
+            st.json(st.session_state.agent_full_cue_publish_result)
 
     st.divider()
     st.subheader("Retrospective Split Export")
@@ -1714,8 +1872,6 @@ def _tab_snapshot_publish() -> None:
     if st.session_state.get("agent_split_publish_result"):
         st.json(st.session_state.agent_split_publish_result)
 
-    _tab_evaluation_runner()
-
 
 def _tab_evaluation_runner() -> None:
     st.divider()
@@ -1752,6 +1908,8 @@ def _tab_evaluation_runner() -> None:
         st.session_state.agent_eval_snapshot_id = st.session_state.get("agent_snapshot_id") or ""
     if "agent_eval_cue_source_snapshot_id" not in st.session_state:
         st.session_state.agent_eval_cue_source_snapshot_id = ""
+    if "agent_eval_required_paper_source_snapshot_id" not in st.session_state:
+        st.session_state.agent_eval_required_paper_source_snapshot_id = ""
     if "agent_eval_snapshot_options_loaded" not in st.session_state:
         st.session_state.agent_eval_snapshot_options_loaded = False
 
@@ -2269,6 +2427,10 @@ def _tab_evaluation_runner() -> None:
         cluster_pair_parse_error: Optional[str] = None
         gap_ids_text = ""
         cluster_pairs_text = ""
+        required_paper_ids_text = ""
+        required_paper_source_snapshot_id = ""
+        required_paper_source_snapshot: Optional[Dict[str, Any]] = None
+        required_paper_source_lookup_error: Optional[str] = None
         st.markdown("**Explicit Targets**")
         gap_ids_text = st.text_area(
             "Gap IDs (one per line)",
@@ -2276,14 +2438,71 @@ def _tab_evaluation_runner() -> None:
             height=80,
             key="agent_eval_pro_gap_ids",
         )
+        st.caption("Example: `gap_0` or `gap_0, gap_3`")
         cluster_pairs_text = st.text_area(
             "Cluster pairs (`cluster_a,cluster_b` per line)",
             value="",
             height=80,
             key="agent_eval_pro_cluster_pairs",
         )
+        required_paper_ids_text = st.text_area(
+            "Paper IDs (one per line)",
+            value="",
+            height=80,
+            key="agent_eval_pro_required_paper_ids",
+        )
+        st.caption(
+            "Example: `9165532`, `id:8719955__src2`, or `9165532, 18445731` "
+            "(bare dataset IDs resolve if they map uniquely in the selected source snapshot)"
+        )
 
         gap_ids = _parse_multivalue_text(gap_ids_text)
+        required_paper_ids = _parse_multivalue_text(required_paper_ids_text)
+        if required_paper_ids:
+            prioritized_required_source_options = _prioritize_required_paper_source_snapshots(snapshot_options)
+            required_source_picker_ids = [
+                ""
+            ] + [
+                str(option.get("snapshot_id") or "").strip()
+                for option in prioritized_required_source_options
+                if str(option.get("snapshot_id") or "").strip()
+            ]
+            current_required_source_id = str(
+                st.session_state.get("agent_eval_required_paper_source_snapshot_id") or ""
+            ).strip()
+            required_source_picker_index = (
+                required_source_picker_ids.index(current_required_source_id)
+                if current_required_source_id in required_source_picker_ids
+                else 0
+            )
+            required_paper_source_snapshot_id = str(
+                st.selectbox(
+                    "Required Paper Source Snapshot",
+                    options=required_source_picker_ids,
+                    index=required_source_picker_index,
+                    key="agent_eval_required_paper_source_snapshot_picker",
+                    format_func=lambda sid: (
+                        "Select a published snapshot"
+                        if not sid
+                        else snapshot_label_by_id.get(str(sid), str(sid))
+                    ),
+                    help=(
+                        "Published snapshot from which required paper IDs are fetched before they are injected "
+                        "into each evidence pack."
+                    ),
+                )
+                or ""
+            ).strip()
+            st.session_state.agent_eval_required_paper_source_snapshot_id = required_paper_source_snapshot_id
+            if required_paper_source_snapshot_id:
+                if snapshot_id and required_paper_source_snapshot_id == snapshot_id and snapshot is not None:
+                    required_paper_source_snapshot = snapshot
+                else:
+                    required_paper_source_snapshot, required_paper_source_lookup_error = _resolve_snapshot_by_id(
+                        required_paper_source_snapshot_id,
+                        snapshot_by_id,
+                        backend,
+                    )
         try:
             cluster_pairs = _parse_cluster_pair_text(cluster_pairs_text)
         except ValueError as exc:
@@ -2293,6 +2512,13 @@ def _tab_evaluation_runner() -> None:
             st.caption(cluster_pair_parse_error)
         if gap_ids or cluster_pairs:
             st.caption("Explicit targets override the gap-target and cluster-pair counts.")
+        if required_paper_ids:
+            st.caption(
+                "Required paper IDs are fetched from the selected source snapshot and added to every evidence pack. "
+                "They do not override target counts."
+            )
+        else:
+            st.caption("Required paper IDs are added to every evidence pack and do not override target counts.")
 
         prospective_hard_failures: List[str] = []
         prospective_warnings: List[str] = []
@@ -2312,6 +2538,14 @@ def _tab_evaluation_runner() -> None:
             )
             if cue_error:
                 prospective_hard_failures.append(cue_error)
+        required_paper_source_error = _required_paper_source_error(
+            required_paper_ids,
+            required_paper_source_snapshot_id,
+            required_paper_source_snapshot,
+            required_paper_source_lookup_error,
+        )
+        if required_paper_source_error:
+            prospective_hard_failures.append(required_paper_source_error)
         if any(method in LLM_REQUIRED_EVALUATION_METHODS for method in methods) and not openai_api_key:
             prospective_warnings.append("OPENAI_API_KEY is required for selected LLM-backed methods.")
         if snapshot_error and snapshot_id:
@@ -2343,6 +2577,8 @@ def _tab_evaluation_runner() -> None:
                 "max_iters": max_iters,
                 "gap_ids": gap_ids,
                 "cluster_pairs": cluster_pairs,
+                "required_paper_ids": required_paper_ids,
+                "required_paper_source_snapshot_id": required_paper_source_snapshot_id or None,
             }
         )
         st.code(prospective_command, language="bash")
@@ -2399,6 +2635,8 @@ def _tab_evaluation_runner() -> None:
                         boundary=boundary,
                         diverse=diverse,
                         max_iters=max_iters,
+                        required_paper_ids=required_paper_ids or None,
+                        required_paper_source_snapshot_id=required_paper_source_snapshot_id or None,
                         progress_callback=_progress_callback,
                     )
                 st.session_state.agent_evaluation_result = {

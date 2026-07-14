@@ -103,6 +103,18 @@ def _sanitize_id_fragment(value: str, fallback: str) -> str:
     return cleaned[:48] or fallback
 
 
+def _normalize_required_paper_ids(values: Optional[Sequence[Any]]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values or []:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
 def _target_summary(target: Dict[str, Any]) -> Dict[str, Any]:
     summary: Dict[str, Any] = {"target_type": target.get("target_type")}
     if target.get("target_type") == "gap":
@@ -443,6 +455,8 @@ def run_prospective(
     boundary: int = 8,
     diverse: int = 0,
     max_iters: int = 2,
+    required_paper_ids: Optional[Sequence[str]] = None,
+    required_paper_source_snapshot_id: Optional[str] = None,
     progress_callback: Optional[Callable[[ProspectiveProgress], None]] = None,
 ) -> ProspectiveResult:
     snapshot_id = str(snapshot_id or "").strip()
@@ -468,6 +482,56 @@ def run_prospective(
     backend = BackendClient(backend_url)
     snapshot = backend.get_snapshot(snapshot_id)
     resolved_snapshot_id = str(snapshot.get("snapshot_id") or snapshot_id)
+    normalized_required_paper_source_snapshot_id = str(required_paper_source_snapshot_id or "").strip() or None
+    resolved_required_paper_source_snapshot_id = resolved_snapshot_id
+    if normalized_required_paper_source_snapshot_id:
+        if normalized_required_paper_source_snapshot_id == resolved_snapshot_id:
+            resolved_required_paper_source_snapshot_id = resolved_snapshot_id
+        else:
+            required_source_snapshot = backend.get_snapshot(normalized_required_paper_source_snapshot_id)
+            resolved_required_paper_source_snapshot_id = str(
+                required_source_snapshot.get("snapshot_id") or normalized_required_paper_source_snapshot_id
+            )
+    normalized_required_paper_ids = _normalize_required_paper_ids(required_paper_ids)
+    if normalized_required_paper_ids:
+        batch_payload = backend.papers_batch(
+            snapshot_id=resolved_required_paper_source_snapshot_id,
+            paper_ids=normalized_required_paper_ids,
+            fields=["paper_id"],
+        )
+        unresolved_ids = [
+            str(paper_id).strip()
+            for paper_id in (batch_payload.get("unresolved_paper_ids") or [])
+            if str(paper_id).strip()
+        ]
+        if unresolved_ids:
+            raise ValueError(
+                "required_paper_ids not found in source snapshot "
+                f"`{resolved_required_paper_source_snapshot_id}`: {', '.join(unresolved_ids[:10])}"
+            )
+        ambiguous_ids = batch_payload.get("ambiguous_paper_ids") or {}
+        if ambiguous_ids:
+            alias, candidates = next(iter(ambiguous_ids.items()))
+            raise ValueError(
+                "required_paper_ids are ambiguous in source snapshot "
+                f"`{resolved_required_paper_source_snapshot_id}` for `{alias}`: {', '.join(candidates[:10])}"
+            )
+        resolved_required_ids = [
+            str(paper_id).strip()
+            for paper_id in (batch_payload.get("resolved_paper_ids") or [])
+            if str(paper_id).strip()
+        ]
+        if resolved_required_ids:
+            normalized_required_paper_ids = resolved_required_ids
+        else:
+            fetched_papers = batch_payload.get("papers", [])
+            found_ids = {str(paper.get("paper_id") or "").strip() for paper in fetched_papers if paper.get("paper_id")}
+            missing_ids = [paper_id for paper_id in normalized_required_paper_ids if paper_id not in found_ids]
+            if missing_ids:
+                raise ValueError(
+                    "required_paper_ids not found in source snapshot "
+                    f"`{resolved_required_paper_source_snapshot_id}`: {', '.join(missing_ids[:10])}"
+                )
     normalized_cue = discovery_cue_to_dict(discovery_cue)
     cue_source_snapshot_id = str(cue_source_snapshot_id or "").strip() or None
     if normalized_cue and not cue_source_snapshot_id:
@@ -505,6 +569,12 @@ def run_prospective(
             "boundary": boundary,
             "diverse": diverse,
             "max_iters": max_iters,
+            "required_paper_ids": list(normalized_required_paper_ids),
+            "required_paper_source_snapshot_id": (
+                resolved_required_paper_source_snapshot_id
+                if normalized_required_paper_source_snapshot_id
+                else None
+            ),
             "model_name": model_name or os.getenv("OPENAI_MODEL", "gpt-5-mini-2025-08-07"),
             "cue_source_snapshot_id": cue_source_snapshot_id,
             "cue_similarity_top_k": cue_similarity_top_k,
@@ -661,6 +731,12 @@ def run_prospective(
                                             boundary=boundary,
                                             diverse=diverse,
                                             max_iters=max_iters,
+                                            required_paper_ids=normalized_required_paper_ids,
+                                            required_paper_source_snapshot_id=(
+                                                resolved_required_paper_source_snapshot_id
+                                                if normalized_required_paper_source_snapshot_id
+                                                else None
+                                            ),
                                         )
                                         generated_hypotheses, gen_meta = run_generation_method(method_name, context)
                                         effective_target = dict(gen_meta.get("effective_target") or target)
@@ -793,6 +869,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--snapshot-id", required=True)
     parser.add_argument("--gap-id", action="append", default=None, help="Explicit gap target to run. Repeatable.")
     parser.add_argument(
+        "--paper-id",
+        action="append",
+        default=None,
+        help="Paper id to force-include in every evidence pack. Repeatable.",
+    )
+    parser.add_argument(
+        "--required-paper-source-snapshot-id",
+        default=None,
+        help="Published snapshot from which required paper ids are fetched.",
+    )
+    parser.add_argument(
         "--cluster-pair",
         action="append",
         nargs=2,
@@ -865,6 +952,8 @@ def main() -> None:
         boundary=args.boundary,
         diverse=args.diverse,
         max_iters=args.max_iters,
+        required_paper_ids=args.paper_id,
+        required_paper_source_snapshot_id=args.required_paper_source_snapshot_id,
         progress_callback=reporter,
     )
     print(

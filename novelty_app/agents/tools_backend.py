@@ -35,6 +35,14 @@ class EvidencePackArgs(BaseModel):
     gap_id: str | None = Field(default=None, description="Gap id when target_type='gap'.")
     cluster_a: int | None = Field(default=None, description="Cluster A id when target_type='cluster_pair'.")
     cluster_b: int | None = Field(default=None, description="Cluster B id when target_type='cluster_pair'.")
+    required_paper_ids: List[str] = Field(
+        default_factory=list,
+        description="Optional paper ids to force-include in the evidence pack.",
+    )
+    required_paper_source_snapshot_id: str | None = Field(
+        default=None,
+        description="Optional published snapshot from which required paper ids are fetched.",
+    )
     exemplars: int = Field(default=25, ge=0, le=200)
     boundary: int = Field(default=25, ge=0, le=200)
     diverse: int = Field(default=25, ge=0, le=200)
@@ -90,6 +98,8 @@ def make_backend_tools(backend: BackendClient) -> List[Any]:
         gap_id: str | None = None,
         cluster_a: int | None = None,
         cluster_b: int | None = None,
+        required_paper_ids: List[str] | None = None,
+        required_paper_source_snapshot_id: str | None = None,
         exemplars: int = 25,
         boundary: int = 25,
         diverse: int = 25,
@@ -107,6 +117,8 @@ def make_backend_tools(backend: BackendClient) -> List[Any]:
                 "gap_id": gap_id,
                 "cluster_a": cluster_a,
                 "cluster_b": cluster_b,
+                "required_paper_ids": required_paper_ids or [],
+                "required_paper_source_snapshot_id": required_paper_source_snapshot_id,
                 "exemplars": exemplars,
                 "boundary": boundary,
                 "diverse": diverse,
@@ -145,7 +157,7 @@ def make_backend_tools(backend: BackendClient) -> List[Any]:
         ),
         StructuredTool.from_function(
             name="build_evidence_pack",
-            description="Build an evidence pack for a gap or cluster pair (workhorse retrieval tool).",
+            description="Build an evidence pack for a gap or cluster pair, optionally force-including paper ids from another snapshot.",
             func=_evidence_pack,
             args_schema=EvidencePackArgs,
         ),

@@ -98,7 +98,7 @@ def page_database_explorer():
         # Display dataframe
         st.dataframe(
             df_display[selected_columns].head(rows_to_show),
-            use_container_width=True,
+            width="stretch",
             hide_index=not show_index,
             height=600
         )
@@ -323,5 +323,5 @@ def page_database_explorer():
                         'Count': value_counts.values,
                         'Percentage': (value_counts.values / len(df) * 100).round(2)
                     }),
-                    use_container_width=True
+                    width="stretch"
                 )

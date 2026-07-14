@@ -46,7 +46,7 @@ def add_figure_export_button(fig, filename_prefix: str, key: str = None):
         file_name=default_filename,
         mime="image/svg+xml",
         key=key,
-        use_container_width=False
+        width="content"
     )
 
 
@@ -60,5 +60,5 @@ def display_figure_with_export(fig, filename_prefix: str, key: str = None, use_c
         key: Unique key for the button (required if multiple buttons on same page)
         use_container_width: Whether to use full container width for the chart
     """
-    st.plotly_chart(fig, use_container_width=use_container_width)
+    st.plotly_chart(fig, width="stretch" if use_container_width else "content")
     add_figure_export_button(fig, filename_prefix, key=key)

@@ -44,6 +44,141 @@ class KnowledgeStoreTests(unittest.TestCase):
         paper = self.store.papers_batch(snapshot_id="snap_1", paper_ids=["p1"])[0]
         self.assertEqual(paper["gap_score"], 0.75)
 
+    def test_resolve_paper_ids_accepts_unique_aliases(self) -> None:
+        payload = {
+            "snapshot_id": "snap_aliases",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "id:8719955__src2",
+                    "title": "Paper 1",
+                    "abstract": "Abstract 1",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                },
+                {
+                    "paper_id": "pmid:18445731",
+                    "title": "Paper 2",
+                    "abstract": "Abstract 2",
+                    "publication_year": 2021,
+                    "cluster_id": 1,
+                },
+            ],
+            "clusters": [{"cluster_id": 1, "size": 2, "metadata": {}}],
+            "gaps": [],
+            "gap_papers": [],
+            "llm_analyses": [],
+        }
+
+        self.store.publish_snapshot(payload)
+
+        resolution = self.store.resolve_paper_ids(
+            "snap_aliases",
+            ["8719955", "pmid:18445731", "id:8719955", "id:8719955__src2"],
+        )
+
+        self.assertEqual(
+            resolution["resolved_paper_ids"],
+            ["id:8719955__src2", "pmid:18445731"],
+        )
+        self.assertEqual(resolution["resolved_map"]["8719955"], "id:8719955__src2")
+        self.assertEqual(resolution["resolved_map"]["id:8719955"], "id:8719955__src2")
+        self.assertEqual(resolution["resolved_map"]["id:8719955__src2"], "id:8719955__src2")
+        self.assertEqual(resolution["unresolved_paper_ids"], [])
+        self.assertEqual(resolution["ambiguous_paper_ids"], {})
+
+    def test_resolve_paper_ids_reports_ambiguous_bare_alias(self) -> None:
+        payload = {
+            "snapshot_id": "snap_alias_ambiguous",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "id:9165532__src2",
+                    "title": "Paper 1",
+                    "abstract": "Abstract 1",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                },
+                {
+                    "paper_id": "pmid:9165532__src7",
+                    "title": "Paper 2",
+                    "abstract": "Abstract 2",
+                    "publication_year": 2021,
+                    "cluster_id": 1,
+                },
+            ],
+            "clusters": [{"cluster_id": 1, "size": 2, "metadata": {}}],
+            "gaps": [],
+            "gap_papers": [],
+            "llm_analyses": [],
+        }
+
+        self.store.publish_snapshot(payload)
+
+        resolution = self.store.resolve_paper_ids("snap_alias_ambiguous", ["9165532"])
+
+        self.assertEqual(resolution["resolved_paper_ids"], [])
+        self.assertEqual(resolution["unresolved_paper_ids"], [])
+        self.assertEqual(
+            resolution["ambiguous_paper_ids"]["9165532"],
+            ["id:9165532__src2", "pmid:9165532__src7"],
+        )
+
+    def test_build_evidence_pack_resolves_required_paper_id_aliases(self) -> None:
+        payload = {
+            "snapshot_id": "snap_required_alias",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "id:8719955__src2",
+                    "title": "Paper 1",
+                    "abstract": "Abstract 1",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.9,
+                },
+                {
+                    "paper_id": "id:9999999__src4",
+                    "title": "Paper 2",
+                    "abstract": "Abstract 2",
+                    "publication_year": 2021,
+                    "cluster_id": 1,
+                    "gap_score": 0.8,
+                },
+            ],
+            "clusters": [{"cluster_id": 1, "size": 2, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 2, "avg_gap_score": 0.85, "max_gap_score": 0.9, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [
+                {"gap_id": "gap_0", "paper_id": "id:8719955__src2", "rank": 0, "gap_score": 0.9},
+                {"gap_id": "gap_0", "paper_id": "id:9999999__src4", "rank": 1, "gap_score": 0.8},
+            ],
+            "llm_analyses": [],
+        }
+
+        self.store.publish_snapshot(payload)
+
+        evidence = self.store.build_evidence_pack(
+            {
+                "snapshot_id": "snap_required_alias",
+                "target_type": "gap",
+                "gap_id": "gap_0",
+                "required_paper_ids": ["8719955"],
+                "required_paper_source_snapshot_id": "snap_required_alias",
+                "profile": "focused_eval",
+                "exemplars": 1,
+                "boundary": 1,
+                "diverse": 0,
+            }
+        )
+
+        self.assertEqual(evidence["meta"]["required_paper_ids"], ["id:8719955__src2"])
+        self.assertEqual(evidence["meta"]["required_paper_id_inputs"], ["8719955"])
+        self.assertEqual(evidence["meta"]["required_paper_id_aliases"]["8719955"], "id:8719955__src2")
+        self.assertEqual(evidence["papers"][0]["paper_id"], "id:8719955__src2")
+
     def test_publish_snapshot_recreates_schema_after_db_truncation(self) -> None:
         self.db_path.write_bytes(b"")
         payload = {
@@ -504,6 +639,176 @@ class KnowledgeStoreTests(unittest.TestCase):
                 for paper in cue_similarity_papers
             )
         )
+
+    def test_build_evidence_pack_includes_required_paper_ids_once(self) -> None:
+        payload = {
+            "snapshot_id": "snap_required_ids",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Gap paper",
+                    "abstract": "boundary evidence",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.9,
+                },
+                {
+                    "paper_id": "p2",
+                    "title": "Required paper two",
+                    "abstract": "secondary evidence",
+                    "publication_year": 2019,
+                    "cluster_id": 1,
+                    "gap_score": 0.3,
+                },
+                {
+                    "paper_id": "p3",
+                    "title": "Required paper three",
+                    "abstract": "tertiary evidence",
+                    "publication_year": 2018,
+                    "cluster_id": 1,
+                    "gap_score": 0.2,
+                },
+            ],
+            "clusters": [{"cluster_id": 1, "size": 3, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 1, "avg_gap_score": 0.9, "max_gap_score": 0.9, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [{"gap_id": "gap_0", "paper_id": "p1", "rank": 0, "gap_score": 0.9}],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(payload)
+
+        evidence = self.store.build_evidence_pack(
+            {
+                "snapshot_id": "snap_required_ids",
+                "target_type": "gap",
+                "gap_id": "gap_0",
+                "profile": "focused_eval",
+                "exemplars": 1,
+                "boundary": 1,
+                "diverse": 0,
+                "required_paper_ids": ["p3", "p3", "p2"],
+            }
+        )
+
+        paper_ids = [paper["paper_id"] for paper in evidence["papers"]]
+        self.assertIn("p2", paper_ids)
+        self.assertIn("p3", paper_ids)
+        self.assertEqual(paper_ids.count("p2"), 1)
+        self.assertEqual(paper_ids.count("p3"), 1)
+        self.assertEqual(evidence["meta"]["required_paper_ids"], ["p3", "p2"])
+        self.assertEqual(evidence["meta"]["required_paper_source_snapshot_id"], "snap_required_ids")
+        self.assertFalse(bool(evidence["meta"]["required_paper_source_is_external"]))
+        self.assertEqual(int(evidence["stats"]["n_required_paper_ids"]), 2)
+
+        required_p3 = next(paper for paper in evidence["papers"] if paper["paper_id"] == "p3")
+        self.assertIn("required_paper_id", list(required_p3.get("selection_sources") or []))
+        self.assertEqual(required_p3["selection_meta"]["required_paper_source_snapshot_id"], "snap_required_ids")
+        self.assertFalse(bool(required_p3["selection_meta"]["required_paper_source_is_external"]))
+
+    def test_build_evidence_pack_includes_required_paper_ids_from_source_snapshot(self) -> None:
+        target_payload = {
+            "snapshot_id": "snap_target_required_ids",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Target gap paper",
+                    "abstract": "target evidence",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.9,
+                }
+            ],
+            "clusters": [{"cluster_id": 1, "size": 1, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 1, "avg_gap_score": 0.9, "max_gap_score": 0.9, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [{"gap_id": "gap_0", "paper_id": "p1", "rank": 0, "gap_score": 0.9}],
+            "llm_analyses": [],
+        }
+        source_payload = {
+            "snapshot_id": "snap_source_required_ids",
+            "created_at": "2026-03-12T00:00:00+00:00",
+            "metadata": {"source": "test", "split_role": "full"},
+            "papers": [
+                {
+                    "paper_id": "p2",
+                    "title": "External required paper",
+                    "abstract": "external evidence",
+                    "publication_year": 2021,
+                    "cluster_id": 2,
+                    "gap_score": 0.1,
+                }
+            ],
+            "clusters": [{"cluster_id": 2, "size": 1, "metadata": {}}],
+            "gaps": [],
+            "gap_papers": [],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(target_payload)
+        self.store.publish_snapshot(source_payload)
+
+        evidence = self.store.build_evidence_pack(
+            {
+                "snapshot_id": "snap_target_required_ids",
+                "target_type": "gap",
+                "gap_id": "gap_0",
+                "required_paper_ids": ["p2"],
+                "required_paper_source_snapshot_id": "snap_source_required_ids",
+            }
+        )
+
+        paper_ids = [paper["paper_id"] for paper in evidence["papers"]]
+        self.assertIn("p2", paper_ids)
+        self.assertEqual(evidence["meta"]["required_paper_source_snapshot_id"], "snap_source_required_ids")
+        self.assertTrue(bool(evidence["meta"]["required_paper_source_is_external"]))
+        required_p2 = next(paper for paper in evidence["papers"] if paper["paper_id"] == "p2")
+        self.assertEqual(required_p2["selection_meta"]["required_paper_source_snapshot_id"], "snap_source_required_ids")
+        self.assertTrue(bool(required_p2["selection_meta"]["required_paper_source_is_external"]))
+
+    def test_build_evidence_pack_rejects_unknown_required_paper_id(self) -> None:
+        target_payload = {
+            "snapshot_id": "snap_missing_required_id",
+            "created_at": "2026-03-11T00:00:00+00:00",
+            "metadata": {"source": "test"},
+            "papers": [
+                {
+                    "paper_id": "p1",
+                    "title": "Known paper",
+                    "abstract": "known abstract",
+                    "publication_year": 2020,
+                    "cluster_id": 1,
+                    "gap_score": 0.9,
+                }
+            ],
+            "clusters": [{"cluster_id": 1, "size": 1, "metadata": {}}],
+            "gaps": [{"gap_id": "gap_0", "region_index": 0, "size": 1, "avg_gap_score": 0.9, "max_gap_score": 0.9, "cluster_ids": [1], "metadata": {}}],
+            "gap_papers": [{"gap_id": "gap_0", "paper_id": "p1", "rank": 0, "gap_score": 0.9}],
+            "llm_analyses": [],
+        }
+        source_payload = {
+            "snapshot_id": "snap_missing_required_source",
+            "created_at": "2026-03-12T00:00:00+00:00",
+            "metadata": {"source": "test", "split_role": "full"},
+            "papers": [],
+            "clusters": [],
+            "gaps": [],
+            "gap_papers": [],
+            "llm_analyses": [],
+        }
+        self.store.publish_snapshot(target_payload)
+        self.store.publish_snapshot(source_payload)
+
+        with self.assertRaisesRegex(ValueError, "snap_missing_required_source"):
+            self.store.build_evidence_pack(
+                {
+                    "snapshot_id": "snap_missing_required_id",
+                    "target_type": "gap",
+                    "gap_id": "gap_0",
+                    "required_paper_ids": ["missing_paper"],
+                    "required_paper_source_snapshot_id": "snap_missing_required_source",
+                }
+            )
 
 
 if __name__ == "__main__":

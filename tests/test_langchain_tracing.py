@@ -23,8 +23,10 @@ from novelty_app.evaluation.judge import (
 class _FakeBackend:
     def __init__(self) -> None:
         self.artifact_calls = []
+        self.evidence_pack_calls = []
 
     def evidence_pack(self, payload):
+        self.evidence_pack_calls.append(dict(payload))
         return {
             "snapshot_id": payload.get("snapshot_id"),
             "target_type": payload.get("target_type"),
@@ -119,8 +121,9 @@ class LangchainTracingTests(unittest.TestCase):
         self.assertEqual(config["callbacks"][1].tags, ["judge"])
 
     def test_generate_single_shot_llm_passes_langfuse_config_to_structured_invoke(self) -> None:
+        backend = _FakeBackend()
         context = GenerationContext(
-            backend=_FakeBackend(),
+            backend=backend,
             snapshot_id="snapshot_1",
             target={"target_type": "gap", "gap_id": "gap_1"},
             openai_api_key="test-key",
@@ -154,6 +157,40 @@ class LangchainTracingTests(unittest.TestCase):
         self.assertIsNotNone(instance)
         self.assertIs(instance.structured, fake_structured)
         self.assertEqual(fake_structured.calls[0]["config"], sentinel_config)
+
+    def test_generate_single_shot_llm_forwards_required_paper_ids_to_evidence_pack(self) -> None:
+        backend = _FakeBackend()
+        context = GenerationContext(
+            backend=backend,
+            snapshot_id="snapshot_1",
+            target={"target_type": "gap", "gap_id": "gap_1"},
+            openai_api_key="test-key",
+            model_name="test-model",
+            hypotheses_per_target=1,
+            required_paper_ids=["paper_7", "paper_8"],
+            required_paper_source_snapshot_id="snapshot_full_77",
+        )
+        fake_response = HypothesesOut(
+            hypotheses=[
+                Hypothesis(
+                    id="hyp_1",
+                    title="Folate liposome bridge",
+                    bridge_type="delivery",
+                    mechanistic_rationale="Use folate-targeted liposomes for siRNA delivery.",
+                    citations=["p1"],
+                )
+            ]
+        )
+        _FakeChatOpenAI.next_structured = _FakeStructuredInvoker(fake_response)
+
+        with patch("novelty_app.evaluation.generators.ChatOpenAI", _FakeChatOpenAI):
+            generate_single_shot_llm(context)
+
+        self.assertEqual(backend.evidence_pack_calls[0]["required_paper_ids"], ["paper_7", "paper_8"])
+        self.assertEqual(
+            backend.evidence_pack_calls[0]["required_paper_source_snapshot_id"],
+            "snapshot_full_77",
+        )
 
     def test_node_explain_passes_langfuse_config_to_structured_invoke(self) -> None:
         llm = _FakeChatOpenAI(model="test-model")

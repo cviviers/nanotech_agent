@@ -132,6 +132,36 @@ def _to_text(value: Any) -> Optional[str]:
         return _json_dumps(value)
 
 
+def _normalize_paper_ids(values: Sequence[Any]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+_PAPER_ID_ALIAS_PREFIXES = ("pmid", "id", "paper_id", "doi")
+
+
+def _escape_sql_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _split_paper_id_prefix(value: str) -> Tuple[Optional[str], Optional[str]]:
+    prefix, sep, raw_value = str(value or "").partition(":")
+    if not sep:
+        return None, None
+    normalized_prefix = prefix.strip().lower()
+    normalized_raw_value = raw_value.strip()
+    if not normalized_prefix or not normalized_raw_value:
+        return None, None
+    return normalized_prefix, normalized_raw_value
+
+
 def _to_embedding_list(value: Any) -> Optional[List[float]]:
     if value is None:
         return None
@@ -730,6 +760,80 @@ class KnowledgeStore:
         records.sort(key=lambda r: order.get(str(r.get("paper_id")), 10**9))
         return records
 
+    def _lookup_paper_id_alias_candidates(self, snapshot_id: str, paper_id: str) -> List[str]:
+        text = str(paper_id or "").strip()
+        if not text:
+            return []
+
+        prefix, raw_value = _split_paper_id_prefix(text)
+        candidate_specs: List[Tuple[str, str]] = []
+        if prefix and raw_value and "__src" not in raw_value:
+            base = f"{prefix}:{raw_value}"
+            candidate_specs.append((base, f"{_escape_sql_like(base)}__src%"))
+        elif not prefix:
+            for candidate_prefix in _PAPER_ID_ALIAS_PREFIXES:
+                base = f"{candidate_prefix}:{text}"
+                candidate_specs.append((base, f"{_escape_sql_like(base)}__src%"))
+
+        clauses = ["paper_id = ?"]
+        params: List[Any] = [snapshot_id, text]
+        for exact_value, like_pattern in candidate_specs:
+            clauses.append("paper_id = ?")
+            params.append(exact_value)
+            clauses.append("paper_id LIKE ? ESCAPE '\\'")
+            params.append(like_pattern)
+
+        sql = (
+            "SELECT paper_id FROM papers WHERE snapshot_id = ? AND ("
+            + " OR ".join(clauses)
+            + ") ORDER BY row_index ASC"
+        )
+        with self._connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+
+        seen: set[str] = set()
+        out: List[str] = []
+        for row in rows:
+            candidate = str(row["paper_id"] or "").strip()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            out.append(candidate)
+        return out
+
+    def resolve_paper_ids(self, snapshot_id: Optional[str], paper_ids: Sequence[str]) -> Dict[str, Any]:
+        sid = self.resolve_snapshot_id(snapshot_id)
+        requested_paper_ids = _normalize_paper_ids(paper_ids)
+        resolved_paper_ids: List[str] = []
+        resolved_map: Dict[str, str] = {}
+        unresolved_paper_ids: List[str] = []
+        ambiguous_paper_ids: Dict[str, List[str]] = {}
+        seen_resolved: set[str] = set()
+
+        for requested_paper_id in requested_paper_ids:
+            candidates = self._lookup_paper_id_alias_candidates(sid, requested_paper_id)
+            if not candidates:
+                unresolved_paper_ids.append(requested_paper_id)
+                continue
+            if len(candidates) > 1:
+                ambiguous_paper_ids[requested_paper_id] = candidates
+                continue
+            canonical_paper_id = candidates[0]
+            resolved_map[requested_paper_id] = canonical_paper_id
+            if canonical_paper_id in seen_resolved:
+                continue
+            seen_resolved.add(canonical_paper_id)
+            resolved_paper_ids.append(canonical_paper_id)
+
+        return {
+            "snapshot_id": sid,
+            "requested_paper_ids": requested_paper_ids,
+            "resolved_paper_ids": resolved_paper_ids,
+            "resolved_map": resolved_map,
+            "unresolved_paper_ids": unresolved_paper_ids,
+            "ambiguous_paper_ids": ambiguous_paper_ids,
+        }
+
     def papers_batch(
         self,
         snapshot_id: Optional[str],
@@ -1302,6 +1406,8 @@ class KnowledgeStore:
         exemplars = max(0, int(req.get("exemplars", 25)))
         boundary = max(0, int(req.get("boundary", 25)))
         diverse = max(0, int(req.get("diverse", 25)))
+        required_paper_ids = _normalize_paper_ids(req.get("required_paper_ids") or [])
+        required_paper_source_snapshot_id = str(req.get("required_paper_source_snapshot_id") or "").strip() or None
         counter_queries = [str(q).strip() for q in (req.get("counter_queries") or []) if str(q).strip()]
         discovery_cue = normalize_discovery_cue(req.get("discovery_cue"))
         cue_queries = discovery_cue_query_terms(discovery_cue, max_queries=8) if discovery_cue is not None else []
@@ -1319,6 +1425,13 @@ class KnowledgeStore:
             raise ValueError("target_type must be 'gap' or 'cluster_pair'")
         if discovery_cue is not None and not cue_source_snapshot_id:
             raise ValueError("cue_source_snapshot_id is required when discovery_cue is active.")
+
+        resolved_required_paper_source_snapshot_id = snapshot_id
+        if required_paper_source_snapshot_id:
+            required_source_snapshot = self.get_snapshot(required_paper_source_snapshot_id)
+            resolved_required_paper_source_snapshot_id = str(
+                required_source_snapshot.get("snapshot_id") or required_paper_source_snapshot_id
+            )
 
         selected: List[Dict[str, Any]] = []
         seen: set[str] = set()
@@ -1352,6 +1465,42 @@ class KnowledgeStore:
         }
         if discovery_cue is not None:
             meta["discovery_cue"] = discovery_cue.model_dump()
+        if required_paper_ids:
+            meta["required_paper_id_inputs"] = list(required_paper_ids)
+            meta["required_paper_source_snapshot_id"] = resolved_required_paper_source_snapshot_id
+            meta["required_paper_source_is_external"] = (
+                str(resolved_required_paper_source_snapshot_id) != str(snapshot_id)
+            )
+
+        if required_paper_ids:
+            resolution = self.resolve_paper_ids(resolved_required_paper_source_snapshot_id, required_paper_ids)
+            unresolved_required_ids = list(resolution.get("unresolved_paper_ids") or [])
+            ambiguous_required_ids = dict(resolution.get("ambiguous_paper_ids") or {})
+            if unresolved_required_ids:
+                raise ValueError(
+                    "required_paper_ids not found in source snapshot "
+                    f"`{resolved_required_paper_source_snapshot_id}`: {', '.join(unresolved_required_ids[:10])}"
+                )
+            if ambiguous_required_ids:
+                alias, candidates = next(iter(ambiguous_required_ids.items()))
+                raise ValueError(
+                    "required_paper_ids are ambiguous in source snapshot "
+                    f"`{resolved_required_paper_source_snapshot_id}` for `{alias}`: {', '.join(candidates[:10])}"
+                )
+            resolved_required_paper_ids = list(resolution.get("resolved_paper_ids") or [])
+            meta["required_paper_ids"] = resolved_required_paper_ids
+            meta["required_paper_id_aliases"] = dict(resolution.get("resolved_map") or {})
+            required_records = self._fetch_papers_by_ids(
+                resolved_required_paper_source_snapshot_id,
+                resolved_required_paper_ids,
+            )
+            is_external_required_source = str(resolved_required_paper_source_snapshot_id) != str(snapshot_id)
+            for record in required_records:
+                selection_meta = dict(record.get("selection_meta") or {})
+                selection_meta["required_paper_source_snapshot_id"] = resolved_required_paper_source_snapshot_id
+                selection_meta["required_paper_source_is_external"] = bool(is_external_required_source)
+                record["selection_meta"] = selection_meta
+            add_many(required_records, "required_paper_id")
 
         if target_type == "gap":
             gap_id = str(req.get("gap_id") or "")
@@ -1491,6 +1640,10 @@ class KnowledgeStore:
             "papers": selected,
             "stats": {
                 "n_papers": len(selected),
+                "n_required_paper_ids": len(required_paper_ids),
+                "required_paper_source_snapshot_id": (
+                    resolved_required_paper_source_snapshot_id if required_paper_ids else None
+                ),
                 "n_counter_queries": len(counter_queries),
                 "n_discovery_cue_queries": len(cue_queries),
                 "requested": {"exemplars": exemplars, "boundary": boundary, "diverse": diverse},
