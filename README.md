@@ -72,7 +72,9 @@ Agentic generation uses target-specific evidence packs. The canonical orchestrat
 - a CUDA-capable GPU is strongly recommended for the local Qwen services; CPU execution is possible but slower
 - `OPENAI_API_KEY` only for OpenAI-backed methods and LLM UI features
 
-Create and activate an environment from the repository root:
+Create and activate an environment from the repository root.
+
+**Windows (PowerShell)**
 
 ```powershell
 python -m venv .venv
@@ -81,7 +83,16 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-If PowerShell prevents activation, use `Set-ExecutionPolicy -Scope Process RemoteSigned` for the current shell, or activate the environment from `cmd.exe` with `.venv\Scripts\activate.bat`.
+**Linux (Bash)**
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
+
+On Linux distributions that separate venv support, install the `python3-venv` package first. If PowerShell prevents activation, use `Set-ExecutionPolicy -Scope Process RemoteSigned` for the current shell, or activate from `cmd.exe` with `.venv\Scripts\activate.bat`.
 
 ### Environment variables
 
@@ -97,12 +108,22 @@ Set secrets in the shell or a secure secret manager—never commit them to sourc
 | `QWEN_EMBED_TORCH_DTYPE`, `QWEN_RERANK_TORCH_DTYPE` | Optional | Per-model CUDA dtype overrides. |
 | `QWEN_EMBED_BATCH_SIZE`, `QWEN_RERANK_BATCH_SIZE`, `QWEN_RERANK_MAX_LENGTH`, `QWEN_RERANK_LOGITS_TO_KEEP` | Optional | Lower batch size or maximum length first if reranking runs out of memory. |
 
-For example:
+For example, set variables for the active shell as follows.
+
+**Windows (PowerShell)**
 
 ```powershell
 $env:OPENAI_API_KEY = "<your key>"
 $env:OPENAI_MODEL = "<model name>"
 $env:QWEN_TORCH_DTYPE = "float16"
+```
+
+**Linux (Bash)**
+
+```bash
+export OPENAI_API_KEY="<your key>"
+export OPENAI_MODEL="<model name>"
+export QWEN_TORCH_DTYPE="float16"
 ```
 
 ### Data contract
@@ -130,7 +151,7 @@ Use the notebooks in `data_setup/` to build or reproduce these artifacts:
 
 ### Novelty workbench
 
-```powershell
+```console
 streamlit run novelty_app/app.py
 ```
 
@@ -138,10 +159,19 @@ The workbench covers data/configuration, embedding processing, filtering, cluste
 
 ### Qwen embedding and reranking service
 
-Start this in a separate shell:
+Start this in a separate shell. Run the command matching your shell:
+
+**Windows (PowerShell)**
 
 ```powershell
 Set-Location embedding_models
+uvicorn qwen:app --host 0.0.0.0 --port 8000
+```
+
+**Linux (Bash)**
+
+```bash
+cd embedding_models
 uvicorn qwen:app --host 0.0.0.0 --port 8000
 ```
 
@@ -149,8 +179,17 @@ The service supplies both embeddings and cross-encoder reranking and is the retr
 
 The BioClinical ModernBERT service can be run independently on port 8001:
 
+**Windows (PowerShell)**
+
 ```powershell
 Set-Location embedding_models
+uvicorn bert:app --host 0.0.0.0 --port 8001
+```
+
+**Linux (Bash)**
+
+```bash
+cd embedding_models
 uvicorn bert:app --host 0.0.0.0 --port 8001
 ```
 
@@ -158,7 +197,7 @@ uvicorn bert:app --host 0.0.0.0 --port 8001
 
 Start this in another shell from the repository root:
 
-```powershell
+```console
 uvicorn agents.backend_api:app --app-dir novelty_app --host 0.0.0.0 --port 8088
 ```
 
@@ -168,7 +207,7 @@ The backend persists published snapshots, papers, clusters, gap membership, evid
 
 With the backend running:
 
-```powershell
+```console
 python -m novelty_app.agents.run_interactive
 ```
 
@@ -205,7 +244,9 @@ The standard methods are:
 
 ### Reproducible smoke run
 
-Before running the command, start the Qwen service and the agent backend as described above. From the repository root, run a small, deterministic comparison:
+Before running the command, start the Qwen service and the agent backend as described above. From the repository root, run a small, deterministic comparison.
+
+**Windows (PowerShell)**
 
 ```powershell
 python -m novelty_app.evaluation.run_retrospective `
@@ -224,7 +265,28 @@ python -m novelty_app.evaluation.run_retrospective `
   --output-dir data/retrospective_eval_smoke
 ```
 
+**Linux (Bash)**
+
+```bash
+python -m novelty_app.evaluation.run_retrospective \
+  --backend-url http://127.0.0.1:8088 \
+  --qwen-base-url http://127.0.0.1:8000 \
+  --data-json data/cleaned_dataset.json \
+  --data-dir data \
+  --n-gap-targets 1 \
+  --n-cluster-pair-targets 1 \
+  --n-gold-future-papers 2 \
+  --methods heuristic_bridge pack_query_baseline random_target_control \
+  --seeds 1 \
+  --hypotheses-per-target 1 \
+  --analysis-clustering-method kmeans \
+  --analysis-pca-components 16 \
+  --output-dir data/retrospective_eval_smoke
+```
+
 Use a separate output directory for every run. The default benchmark uses a cutoff of `2020-12-31` and a future window of `2022-01-01` through `2025-12-31`; record any changes to those values alongside results.
+
+The remaining multiline benchmark examples use PowerShell syntax. For Linux, replace each trailing backtick (`` ` ``) with a backslash (`\`); the arguments and relative paths are otherwise identical. Alternatively, place the command on one line.
 
 To compare LLM and non-LLM methods, set `OPENAI_API_KEY` and replace `--methods` with the complete method list shown above. For a paper-grade run, increase targets, future papers, seeds, and hypotheses per target only after inspecting a smoke-run review packet.
 
